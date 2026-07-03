@@ -1,0 +1,13 @@
+from telebot import token_from_env, bot, on_command, on_button_command, on_callback, on_document_command, on_message, run_polling;
+
+var token = token_from_env("TELEGRAM_BOT_TOKEN");
+var app = bot(token, "build/telebot_demo");
+
+on_command(app, "/start", "Welcome to RayQuiro Telebot.");
+on_command(app, "/help", "Commands: /start /help /menu /doc");
+on_button_command(app, "/menu", "Choose an action:", "Website=>https://raytolfas.com;Support=>support_callback");
+on_callback(app, "support_callback", "Support button clicked.");
+on_document_command(app, "/doc", "README.md", "RayQuiro document demo");
+on_message(app, "I got your message.");
+
+run_polling(app);

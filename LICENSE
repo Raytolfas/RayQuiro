@@ -1,0 +1,62 @@
+RayQuiro Source-Available License 1.0
+
+Copyright (c) 2026 Raytolfas
+
+All rights reserved.
+
+1. Definitions
+
+   "Software" means the RayQuiro project, including source code, binaries,
+   build scripts, assets, documentation, examples, and related files in this
+   repository.
+
+   "You" means any person or organization that accesses or uses the Software.
+
+2. Grant of permission
+
+   You may:
+   - view the source code of the Software
+   - run the Software for personal, educational, non-commercial internal, or evaluation use
+   - modify the Software privately for your own non-public use, or publicly solely for the purpose of preparing and submitting contributions back to the official repository
+   - submit modifications back to the copyright holder in the form of contributions 
+     (e.g., pull requests or patches) to the official repository of the Software
+
+3. Restrictions
+
+   You may not, without prior written permission from the copyright holder:
+   - redistribute the Software or any modified version of it
+   - publish the Software or any derivative work in source or binary form (except for 
+     contributions specified in Section 2)
+   - sell, sublicense, or commercially exploit the Software
+   - remove or alter copyright, license, or attribution notices
+   - claim ownership of the Software or present it as your own work
+   - use the Software, its source code, or its architecture to create, distribute, or 
+     host any language, compiler, runtime, package manager, or related core tooling based on or derived from the Software
+
+4. Third-party components
+
+   Third-party dependencies bundled in this repository remain under their own
+   licenses. Their license terms continue to apply separately.
+
+5. No warranty
+
+   The Software is provided "as is", without warranty of any kind, express or
+   implied, including but not limited to merchantability, fitness for a
+   particular purpose, and non-infringement.
+
+6. Limitation of liability
+
+   In no event shall the copyright holder be liable for any claim, damages, or
+   other liability arising from or related to the Software or its use.
+
+7. Permission requests
+
+   If you want to redistribute, publish, or commercialize the Software, contact
+   the copyright holder and get written permission first.
+
+8. Output and Applications
+
+   This license does not impose restrictions on the ownership or licensing of 
+   programs, scripts, or applications that You write in the RayQuiro programming 
+   language, provided that such applications are not compilers, interpreters, runtimes, 
+   or core tooling for the RayQuiro language itself, and do not otherwise violate Section 3.

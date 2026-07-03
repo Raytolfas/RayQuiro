@@ -1,0 +1,66 @@
+import rayquiro.json as json;
+import rayquiro.time as time;
+import rayquiro.os as os;
+
+fn total(items) {
+    var sum = 0;
+    for (var i = 0; i < len(items); i = i + 1) {
+        sum = sum + items[i];
+    }
+    return sum;
+}
+
+fn average(items) {
+    if (len(items) == 0) {
+        return 0;
+    }
+    return total(items) / len(items);
+}
+
+fn longest(texts) {
+    if (len(texts) == 0) {
+        return "";
+    }
+    var best = texts[0];
+    for (var i = 1; i < len(texts); i = i + 1) {
+        if (len(texts[i]) > len(best)) {
+            best = texts[i];
+        }
+    }
+    return best;
+}
+
+var started = time.now_ms();
+var meta = json.parse("{\"name\":\"RayQuiro\",\"version\":\"0.1.0\",\"mode\":\"language-tour\"}");
+var scores = [92, 88, 97, 91, 94, 86];
+var tags = ["syntax", "arrays", "strings", "json", "control-flow", "runtime"];
+var labels = ["fast", "typed-by-convention", "expressive", "scriptable", "backend-ready"];
+
+print("=== RAYQUIRO LANGUAGE TOUR ===");
+print("Name: " + meta["name"]);
+print("Version: " + meta["version"]);
+print("Mode: " + meta["mode"]);
+print("OS: " + os.name() + " / " + os.arch());
+print("Working directory: " + os.cwd());
+print("Temp directory: " + os.temp());
+print("Path separator: " + os.sep());
+print("Available tags: " + str(len(tags)));
+print("Longest label: " + longest(labels));
+print("Score total: " + str(total(scores)));
+print("Score average: " + str(average(scores)));
+
+print("Feature list:");
+for (var i = 0; i < len(tags); i = i + 1) {
+    print(" - " + upper(tags[i]) + " => " + lower(tags[i]));
+}
+
+var showcase_text = "  RayQuiro turns source into apps, web, runtime and backend flows.  ";
+print("Trimmed: " + trim(showcase_text));
+print("Slice: " + slice(showcase_text, 2, 11));
+print("Replace: " + replace(showcase_text, "apps", "services"));
+print("Contains 'backend': " + str(contains(showcase_text, "backend")));
+
+var elapsed = time.now_ms() - started;
+print("Elapsed (ms): " + str(elapsed));
+print("JSON:");
+print(json.stringify(meta));

@@ -1,0 +1,119 @@
+import rayquiro.ui as ui;
+import rayquiro.fs as fs;
+from rayquiro.env import path_add;
+from rayquiro.process import exe_dir;
+
+var install_root = "C:/rayquiro";
+var install_bin = install_root + "/bin";
+var source_root = exe_dir();
+var source_exe = source_root + "/rqio.exe";
+var target_exe = install_bin + "/rqio.exe";
+var action = "close";
+var status = "Ready to install";
+var details = "Click Download to install the RayQuiro runtime into C:/rayquiro.";
+
+ui.init("RayQuiro Installer", 960, 640);
+ui.style("
+window {
+  background: #08111d;
+  background-end: #0f766e;
+  font: Segoe UI;
+}
+
+card {
+  background: #f7fbff;
+  border: #d6e6f4;
+  radius: 30;
+}
+
+badge {
+  background: #0f9bd7;
+  color: #ffffff;
+}
+
+title {
+  color: #0b1d32;
+  size: 38;
+}
+
+subtitle {
+  color: #4b617f;
+  size: 20;
+}
+
+status-box {
+  background: #e8f4fb;
+  border: #cfe4f1;
+}
+
+button.primary {
+  background: #0f766e;
+  background-hover: #11998f;
+  color: #ffffff;
+  radius: 20;
+}
+
+button.secondary {
+  background: #edf4f8;
+  border: #d2e0ea;
+  color: #14324f;
+  radius: 20;
+}
+
+text {
+  color: #22374c;
+  size: 18;
+}
+
+text.muted {
+  color: #68819b;
+  size: 17;
+}
+");
+ui.hero("RayQuiro 0.1.0", "A fast scripting language with native app, web, engine and installer workflows.");
+ui.status("One-click local install", "This installer places rqio.exe into C:/rayquiro/bin and updates PATH for runtime use.");
+ui.info("Source executable", source_exe);
+ui.info("Install root", install_root);
+ui.info("Release mode", "Local machine install");
+ui.text("The installer is intentionally simple, but the UI is themeable through ui.style(...) with CSS-like selectors.", "body");
+ui.text("Public runtime releases install rqio.exe for run, vm, pack and bundle workflows.", "muted");
+ui.button("download", "Download", "primary");
+ui.button("close", "Close", "secondary");
+action = ui.run();
+
+if (action == "download") {
+    fs.mkdir(install_root);
+    fs.mkdir(install_bin);
+
+    if (!fs.exists(source_exe)) {
+        status = "rqio.exe was not found";
+        details = "Place rayquiro_installer.exe next to rqio.exe in the release folder and try again.";
+    } else {
+        if (!fs.copy(source_exe, target_exe)) {
+            status = "Copy failed";
+            details = "Could not copy rqio.exe into C:/rayquiro/bin.";
+        } else {
+            if (path_add(install_bin)) {
+                status = "Installation complete";
+                details = "RayQuiro is now installed. Open a new terminal and run rqio your_file.rq";
+            } else {
+                status = "Installed, but PATH update failed";
+                details = "rqio.exe is ready in C:/rayquiro, but PATH was not updated automatically.";
+            }
+        }
+    }
+
+    ui.init("RayQuiro Installer", 900, 560);
+    ui.style("
+window { background: #08111d; background-end: #1d4ed8; }
+card { background: #f8fbff; border: #d7e3ef; radius: 28; }
+button.primary { background: #0f766e; background-hover: #11998f; color: #ffffff; radius: 20; }
+");
+    ui.hero("Installation Result", "RayQuiro used its own UI, filesystem and environment APIs to install itself.");
+    ui.status(status, details);
+    ui.info("Installed executable", target_exe);
+    ui.info("Runtime root", install_root);
+    ui.info("Next step", "Restart terminal and run rqio examples/main.rq");
+    ui.button("done", "Done", "primary");
+    ui.run();
+}

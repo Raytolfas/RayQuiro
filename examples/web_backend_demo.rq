@@ -1,0 +1,38 @@
+import rayquiro.web as web;
+
+web.begin("RayQuiro Server Demo", "build/site/index.html");
+web.public("examples/web_public");
+web.head("<meta name='description' content='RayQuiro server and web demo'>");
+web.style("
+.page {
+  max-width: 1040px;
+}
+.hero {
+  color: #0a1f33;
+}
+.panel {
+  border-radius: 28px;
+}
+");
+
+web.open("<main class='page'>");
+web.h1("RayQuiro on Linux or a VPS", "hero");
+web.p("This example shows how the language builds pages, serves them live and keeps the code readable.");
+web.p("Bind to 0.0.0.0 when you want external access from a server.");
+web.open("<div class='panel'>");
+web.h2("What this demonstrates", "section");
+web.p("builder-style web generation");
+web.p("live mode over HTTP");
+web.p("static public assets");
+web.p("route-aware page output");
+web.close();
+web.close();
+
+web.route("/about", "About");
+web.open("<main class='page'>");
+web.h1("About", "hero");
+web.p("The point of RayQuiro is to use one language for app shells, web pages and backend services.");
+web.close();
+
+web.live(8080, "0.0.0.0");
+web.end();

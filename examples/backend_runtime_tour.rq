@@ -1,0 +1,82 @@
+import rayquiro.fs as fs;
+import rayquiro.env as env;
+import rayquiro.process as process;
+import rayquiro.time as time;
+import rayquiro.os as os;
+import rayquiro.http as http;
+import rayquiro.net as net;
+import rayquiro.db as db;
+import rayquiro.json as json;
+
+var root = "build/backend_tour";
+var data_root = root + "/data";
+var report_file = data_root + "/report.txt";
+var started = time.now_ms();
+
+fs.mkdir(root);
+fs.mkdir(data_root);
+
+var session = "rq-" + str(time.unix_ms());
+env.set("RQIO_SESSION", session);
+
+var manifest = json.parse("{\"layer\":\"runtime\",\"services\":[\"fs\",\"env\",\"process\",\"time\",\"os\",\"http\",\"net\",\"db\"]}");
+var report = "RayQuiro Backend Tour\n";
+report = report + "Session: " + session + "\n";
+report = report + "OS: " + os.name() + " / " + os.arch() + "\n";
+report = report + "CWD: " + os.cwd() + "\n";
+report = report + "Temp: " + os.temp() + "\n";
+report = report + "Features: " + str(len(manifest["services"])) + "\n";
+
+fs.write(report_file, report);
+
+print("=== RAYQUIRO BACKEND TOUR ===");
+print("Session env: " + env.get("RQIO_SESSION"));
+print("Project root: " + process.exe_dir());
+print("Report file exists: " + str(fs.exists(report_file)));
+print("Report content:");
+print(fs.read(report_file));
+
+var http_url = env.get("RQIO_HTTP_URL");
+if (http_url != "") {
+    var http_result = http.get(http_url);
+    print("HTTP status: " + str(http_result["status"]));
+    print("HTTP body size: " + str(len(http_result["body"])));
+} else {
+    print("HTTP probe skipped. Set RQIO_HTTP_URL to test http.get().");
+}
+
+var tcp_host = env.get("RQIO_TCP_HOST");
+var tcp_port = env.get("RQIO_TCP_PORT");
+if (tcp_host != "" && tcp_port != "") {
+    var socket_handle = net.tcp_connect(tcp_host, num(tcp_port));
+    print("TCP handle: " + str(socket_handle));
+    if (socket_handle != 0) {
+        net.tcp_send(socket_handle, "PING from RayQuiro\n");
+        net.tcp_close(socket_handle);
+    }
+} else {
+    print("TCP probe skipped. Set RQIO_TCP_HOST and RQIO_TCP_PORT.");
+}
+
+var db_url = env.get("POSTGRES_URL");
+if (db_url != "") {
+    var conn = db.connect(db_url);
+    if (conn != 0) {
+        print("PostgreSQL connected. Handle: " + str(conn));
+        print("Server version:");
+        print(db.scalar(conn, "select version() as version;"));
+        print("Current database/user:");
+        print(db.query(conn, "select current_database() as db, current_user as user;"));
+        db.close(conn);
+    } else {
+        print("PostgreSQL connection failed.");
+    }
+} else {
+    print("PostgreSQL demo skipped. Set POSTGRES_URL to try db.connect().");
+}
+
+var shell_code = process.run("echo RayQuiro backend tour");
+var elapsed = time.now_ms() - started;
+
+print("Shell exit code: " + str(shell_code));
+print("Elapsed (ms): " + str(elapsed));

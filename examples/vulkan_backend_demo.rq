@@ -1,0 +1,389 @@
+import rayquiro.engine;
+
+var player_x = 0;
+var player_y = 1.6;
+var player_z = 4;
+var player_velocity_y = 0;
+var player_grounded = true;
+var facing = 0;
+var turn_cooldown = 0;
+
+var orb_height = 2.2;
+var orb_dir = 1;
+var patrol_x = -4;
+var patrol_dir = 1;
+
+var saved_scene_path = "";
+var watch_enabled = false;
+var status_text = "Walk with WASD, turn with Q/E, jump with Space.";
+var status_timer = 0;
+
+var exposure_value = 1.08;
+var bloom_value = 0.16;
+var fog_density_value = 0.82;
+var volumetric_value = 0.24;
+
+fn abs_num(value) {
+    if (value < 0) {
+        return 0 - value;
+    }
+    return value;
+}
+
+fn clamp_num(value, min_value, max_value) {
+    return clamp(value, min_value, max_value);
+}
+
+fn direction_x() {
+    if (facing == 0) { return 0; }
+    if (facing == 1) { return 0.707; }
+    if (facing == 2) { return 1; }
+    if (facing == 3) { return 0.707; }
+    if (facing == 4) { return 0; }
+    if (facing == 5) { return -0.707; }
+    if (facing == 6) { return -1; }
+    return -0.707;
+}
+
+fn direction_z() {
+    if (facing == 0) { return -1; }
+    if (facing == 1) { return -0.707; }
+    if (facing == 2) { return 0; }
+    if (facing == 3) { return 0.707; }
+    if (facing == 4) { return 1; }
+    if (facing == 5) { return 0.707; }
+    if (facing == 6) { return 0; }
+    return -0.707;
+}
+
+fn right_x() {
+    return 0 - direction_z();
+}
+
+fn right_z() {
+    return direction_x();
+}
+
+fn set_status(text) {
+    status_text = text;
+    status_timer = 2.8;
+}
+
+fn inside_platform(px, pz, cx, cz, sx, sz) {
+    var half_x = sx * 0.5;
+    var half_z = sz * 0.5;
+    return px >= cx - half_x && px <= cx + half_x && pz >= cz - half_z && pz <= cz + half_z;
+}
+
+fn world_floor(px, pz) {
+    var floor = 0;
+
+    if (inside_platform(px, pz, 0, -2, 18, 18)) {
+        floor = max(floor, 0);
+    }
+
+    if (inside_platform(px, pz, -4, -6, 4.5, 4.5)) {
+        floor = max(floor, 1.6);
+    }
+
+    if (inside_platform(px, pz, 0, -11, 5, 5)) {
+        floor = max(floor, 3.2);
+    }
+
+    if (inside_platform(px, pz, 4.5, -16.5, 4.5, 4.5)) {
+        floor = max(floor, 4.8);
+    }
+
+    if (inside_platform(px, pz, 0, -22, 10, 3.2)) {
+        floor = max(floor, 6.2);
+    }
+
+    return floor;
+}
+
+fn apply_camera() {
+    var eye_x = player_x;
+    var eye_y = player_y + 1.65;
+    var eye_z = player_z;
+    var look_x = eye_x + direction_x() * 4;
+    var look_y = eye_y - 0.12;
+    var look_z = eye_z + direction_z() * 4;
+    engine.camera([eye_x, eye_y, eye_z], [look_x, look_y, look_z], [0, 1, 0], 70);
+}
+
+fn setup_scene() {
+    engine.scene("raylib");
+    engine.scene_clear();
+    engine.assets_root("assets");
+    engine.light_ambient([20, 24, 38, 255]);
+    engine.light_directional([-0.45, -1, -0.35], [255, 238, 208, 255], 1.55);
+
+    engine.mesh("ground", "plane", [18, 18]);
+    engine.mesh("platform", "cube", [4.2, 0.8, 4.2]);
+    engine.mesh("bridge", "cube", [10, 0.8, 3.2]);
+    engine.mesh("tower", "cube", [2.6, 3.4, 2.6]);
+    engine.mesh("orb", "sphere", [1, 1, 1]);
+
+    engine.material("ground-mat", [48, 72, 118, 255], 0.24, 0.04, [0, 0, 0, 255]);
+    engine.material("platform-a", [255, 182, 96, 255], 0.28, 0.05, [72, 28, 10, 255]);
+    engine.material("platform-b", [104, 214, 255, 255], 0.22, 0.08, [18, 60, 98, 255]);
+    engine.material("platform-c", [152, 255, 186, 255], 0.24, 0.05, [20, 66, 44, 255]);
+    engine.material("bridge-mat", [238, 205, 108, 255], 0.3, 0.04, [32, 24, 8, 255]);
+    engine.material("tower-mat", [98, 136, 196, 255], 0.32, 0.1, [10, 18, 34, 255]);
+    engine.material("orb-mat", [196, 132, 255, 255], 0.18, 0.18, [88, 36, 148, 255]);
+    engine.material("runner-mat", [255, 108, 132, 255], 0.18, 0.08, [88, 20, 28, 255]);
+
+    engine.entity("ground", "plane", [0, 0, -2], [18, 18], [48, 72, 118, 255], "ground-mat", "ground");
+    engine.entity("platform-1", "cube", [-4, 1.2, -6], [4.5, 0.8, 4.5], [255, 182, 96, 255], "platform-a", "platform");
+    engine.entity("platform-2", "cube", [0, 2.8, -11], [5, 0.8, 5], [104, 214, 255, 255], "platform-b", "platform");
+    engine.entity("platform-3", "cube", [4.5, 4.4, -16.5], [4.5, 0.8, 4.5], [152, 255, 186, 255], "platform-c", "platform");
+    engine.entity("bridge", "cube", [0, 5.8, -22], [10, 0.8, 3.2], [238, 205, 108, 255], "bridge-mat", "bridge");
+    engine.entity("tower-left", "cube", [-8, 1.7, -10], [2.6, 3.4, 2.6], [98, 136, 196, 255], "tower-mat", "tower");
+    engine.entity("tower-right", "cube", [8, 1.7, -13], [2.6, 3.4, 2.6], [98, 136, 196, 255], "tower-mat", "tower");
+    engine.entity("hover-orb", "sphere", [0, orb_height, -11], 1.05, [196, 132, 255, 255], "orb-mat", "orb");
+    engine.entity("patrol-runner", "cube", [patrol_x, 0.9, -1], [1.2, 1.8, 1.2], [255, 108, 132, 255], "runner-mat", "platform");
+
+    saved_scene_path = engine.scene_save("build/vulkan_backend_demo.scene", "vulkan-demo");
+}
+
+fn update_postfx_controls() {
+    if (engine.key_pressed(49)) {
+        exposure_value = clamp_num(exposure_value - 0.06, 0.72, 1.45);
+        engine.exposure(exposure_value);
+        set_status("Exposure: " + str(exposure_value));
+    }
+
+    if (engine.key_pressed(50)) {
+        exposure_value = clamp_num(exposure_value + 0.06, 0.72, 1.45);
+        engine.exposure(exposure_value);
+        set_status("Exposure: " + str(exposure_value));
+    }
+
+    if (engine.key_pressed(51)) {
+        bloom_value = clamp_num(bloom_value - 0.04, 0, 0.4);
+        engine.bloom(bloom_value);
+        set_status("Bloom: " + str(bloom_value));
+    }
+
+    if (engine.key_pressed(52)) {
+        bloom_value = clamp_num(bloom_value + 0.04, 0, 0.4);
+        engine.bloom(bloom_value);
+        set_status("Bloom: " + str(bloom_value));
+    }
+
+    if (engine.key_pressed(53)) {
+        fog_density_value = clamp_num(fog_density_value - 0.08, 0.2, 1.4);
+        engine.fog([18, 24, 38, 255], 12, 60, fog_density_value);
+        set_status("Fog density: " + str(fog_density_value));
+    }
+
+    if (engine.key_pressed(54)) {
+        fog_density_value = clamp_num(fog_density_value + 0.08, 0.2, 1.4);
+        engine.fog([18, 24, 38, 255], 12, 60, fog_density_value);
+        set_status("Fog density: " + str(fog_density_value));
+    }
+
+    if (engine.key_pressed(55)) {
+        volumetric_value = clamp_num(volumetric_value - 0.04, 0, 0.7);
+        engine.volumetric(volumetric_value);
+        set_status("Volumetric: " + str(volumetric_value));
+    }
+
+    if (engine.key_pressed(56)) {
+        volumetric_value = clamp_num(volumetric_value + 0.04, 0, 0.7);
+        engine.volumetric(volumetric_value);
+        set_status("Volumetric: " + str(volumetric_value));
+    }
+}
+
+fn update_scene_controls() {
+    if (engine.key_pressed(116)) {
+        saved_scene_path = engine.scene_save("build/vulkan_backend_demo.scene", "vulkan-demo");
+        set_status("Scene saved: " + saved_scene_path);
+    }
+
+    if (engine.key_pressed(117)) {
+        if (saved_scene_path != "") {
+            watch_enabled = !watch_enabled;
+            if (watch_enabled) {
+                engine.scene_watch(saved_scene_path, "vulkan-demo");
+                set_status("Scene watch enabled.");
+            } else {
+                engine.scene_watch();
+                set_status("Scene watch disabled.");
+            }
+        }
+    }
+
+    if (engine.key_pressed(120)) {
+        if (saved_scene_path != "") {
+            engine.scene_reload(saved_scene_path, "vulkan-demo");
+            set_status("Scene reloaded from disk.");
+        }
+    }
+}
+
+fn update_player(dt) {
+    if (turn_cooldown > 0) {
+        turn_cooldown = turn_cooldown - dt;
+    }
+
+    if (turn_cooldown <= 0) {
+        if (engine.key_down(81) || engine.key_down(37)) {
+            facing = facing - 1;
+            if (facing < 0) {
+                facing = 7;
+            }
+            turn_cooldown = 0.15;
+        }
+
+        if (engine.key_down(69) || engine.key_down(39)) {
+            facing = facing + 1;
+            if (facing > 7) {
+                facing = 0;
+            }
+            turn_cooldown = 0.15;
+        }
+    }
+
+    var speed = 5.4;
+    if (engine.key_down(16)) {
+        speed = 7.4;
+    }
+
+    var move_x = 0;
+    var move_z = 0;
+
+    if (engine.key_down(87)) {
+        move_x = move_x + direction_x();
+        move_z = move_z + direction_z();
+    }
+
+    if (engine.key_down(83)) {
+        move_x = move_x - direction_x();
+        move_z = move_z - direction_z();
+    }
+
+    if (engine.key_down(68)) {
+        move_x = move_x + right_x();
+        move_z = move_z + right_z();
+    }
+
+    if (engine.key_down(65)) {
+        move_x = move_x - right_x();
+        move_z = move_z - right_z();
+    }
+
+    player_x = clamp_num(player_x + move_x * speed * dt, -8.5, 8.5);
+    player_z = clamp_num(player_z + move_z * speed * dt, -25.5, 8.5);
+
+    if (player_grounded && engine.key_pressed(32)) {
+        player_velocity_y = 7.2;
+        player_grounded = false;
+    }
+
+    player_velocity_y = player_velocity_y - 18 * dt;
+    player_y = player_y + player_velocity_y * dt;
+
+    var floor_y = world_floor(player_x, player_z);
+    if (player_y <= floor_y) {
+        player_y = floor_y;
+        player_velocity_y = 0;
+        player_grounded = true;
+    } else {
+        player_grounded = false;
+    }
+}
+
+fn update_dynamic_entities(dt) {
+    orb_height = orb_height + dt * 1.2 * orb_dir;
+    if (orb_height > 3.1) {
+        orb_height = 3.1;
+        orb_dir = -1;
+    }
+    if (orb_height < 1.9) {
+        orb_height = 1.9;
+        orb_dir = 1;
+    }
+
+    patrol_x = patrol_x + dt * 2.2 * patrol_dir;
+    if (patrol_x > 4.6) {
+        patrol_x = 4.6;
+        patrol_dir = -1;
+    }
+    if (patrol_x < -4.6) {
+        patrol_x = -4.6;
+        patrol_dir = 1;
+    }
+
+    engine.entity_set_position("hover-orb", [0, orb_height, -11]);
+    engine.entity_set_position("patrol-runner", [patrol_x, 0.9, -1]);
+    engine.entity_set_scale("hover-orb", [1 + (orb_height - 1.9) * 0.18, 1 + (orb_height - 1.9) * 0.18, 1 + (orb_height - 1.9) * 0.18]);
+}
+
+fn draw_hud() {
+    var backend = engine.backend_info();
+    var postfx = engine.postfx_info();
+
+    if (status_timer > 0) {
+        status_timer = status_timer - engine.frame_time();
+    }
+
+    engine.draw_text("RAYQUIRO VULKAN PLAYGROUND", 18, 18, 24, [236, 242, 255, 255]);
+    engine.draw_text("WASD move | Q/E or arrows turn | Space jump | Shift sprint", 18, 48, 18, [182, 212, 255, 255]);
+    engine.draw_text("F5 save scene | F6 watch scene | F9 reload scene", 18, 70, 18, [182, 212, 255, 255]);
+    engine.draw_text("1/2 exposure | 3/4 bloom | 5/6 fog | 7/8 volumetric", 18, 92, 18, [182, 212, 255, 255]);
+    engine.draw_text("Backend: " + backend["active"] + " | Pipeline: " + str(backend["graphics_pipeline_ready"]), 18, 126, 18, [128, 236, 198, 255]);
+    engine.draw_text("Presented: " + str(backend["presented_frames"]) + " | GPU count: " + str(backend["gpu_count"]), 18, 148, 18, [128, 236, 198, 255]);
+    engine.draw_text("Exposure " + str(postfx["exposure"]) + " | Bloom " + str(postfx["bloom"]) + " | Fog " + str(postfx["fog_density"]), 18, 170, 18, [255, 223, 148, 255]);
+    engine.draw_text("Volumetric " + str(postfx["volumetric"]) + " | VSync " + str(engine.vsync()) + " | MSAA " + str(engine.msaa()), 18, 192, 18, [255, 223, 148, 255]);
+    engine.draw_text("Position: [" + str(player_x) + ", " + str(player_y) + ", " + str(player_z) + "]", 18, 214, 18, [212, 220, 234, 255]);
+    engine.draw_text("Facing: " + str(facing) + " | Grounded: " + str(player_grounded), 18, 236, 18, [212, 220, 234, 255]);
+    engine.draw_text("Saved scene: " + saved_scene_path, 18, 258, 18, [128, 188, 228, 255]);
+    engine.draw_text("Watch enabled: " + str(watch_enabled), 18, 280, 18, [128, 188, 228, 255]);
+
+    if (status_timer > 0) {
+        engine.draw_text(status_text, 18, 316, 20, [255, 180, 120, 255]);
+    } else {
+        engine.draw_text("Reach the upper bridge and test save/reload/postfx live.", 18, 316, 20, [196, 206, 218, 255]);
+    }
+
+    engine.draw_fps(18, 346);
+}
+
+fn run_demo() {
+    engine.backend("vulkan");
+    engine.vsync(true);
+    engine.msaa(4);
+    engine.window(1280, 720, "RayQuiro Vulkan Playground");
+    engine.target_fps(60);
+    engine.exposure(exposure_value);
+    engine.vignette(0.12);
+    engine.film_grain(0.012);
+    engine.saturation(1.06);
+    engine.contrast(1.08);
+    engine.bloom(bloom_value);
+    engine.fog([18, 24, 38, 255], 12, 60, fog_density_value);
+    engine.volumetric(volumetric_value);
+    setup_scene();
+    apply_camera();
+
+    while (!engine.should_close()) {
+        var dt = engine.frame_time();
+        update_postfx_controls();
+        update_scene_controls();
+        update_player(dt);
+        update_dynamic_entities(dt);
+        apply_camera();
+
+        engine.frame_begin([10, 14, 24, 255]);
+        engine.draw_grid(24, 1);
+        engine.scene_draw();
+        draw_hud();
+        engine.frame_end();
+    }
+
+    engine.shutdown();
+}
+
+run_demo();

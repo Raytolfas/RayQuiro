@@ -1,0 +1,212 @@
+import rayquiro.engine;
+
+var player_lane = 0;
+var player_z = 3.5;
+var move_cooldown = 0;
+var score = 0;
+var best = 0;
+var speed_boost = 0;
+
+var enemy1_lane = -2;
+var enemy1_z = -10;
+var enemy2_lane = 0;
+var enemy2_z = -16;
+var enemy3_lane = 2;
+var enemy3_z = -22;
+var backend_label = "raylib";
+var backend_requested = "raylib";
+
+fn abs_num(value) {
+    if (value < 0) {
+        return 0 - value;
+    }
+    return value;
+}
+
+fn reset_run() {
+    if (score > best) {
+        best = score;
+    }
+    score = 0;
+    speed_boost = 0;
+    player_lane = 0;
+    move_cooldown = 0;
+    enemy1_lane = -2;
+    enemy1_z = -10;
+    enemy2_lane = 0;
+    enemy2_z = -16;
+    enemy3_lane = 2;
+    enemy3_z = -22;
+}
+
+fn recycle_enemy(enemy_id) {
+    score = score + 1;
+    speed_boost = speed_boost + 0.08;
+
+    if (enemy_id == 1) {
+        enemy1_z = -18;
+        if (score % 3 == 0) {
+            enemy1_lane = 2;
+        } else {
+            if (score % 2 == 0) {
+                enemy1_lane = 0;
+            } else {
+                enemy1_lane = -2;
+            }
+        }
+    }
+
+    if (enemy_id == 2) {
+        enemy2_z = -24;
+        if (score % 4 == 0) {
+            enemy2_lane = -2;
+        } else {
+            if (score % 2 == 0) {
+                enemy2_lane = 2;
+            } else {
+                enemy2_lane = 0;
+            }
+        }
+    }
+
+    if (enemy_id == 3) {
+        enemy3_z = -30;
+        if (score % 5 == 0) {
+            enemy3_lane = 0;
+        } else {
+            if (score % 2 == 0) {
+                enemy3_lane = -2;
+            } else {
+                enemy3_lane = 2;
+            }
+        }
+    }
+}
+
+fn enemy_hit(enemy_lane, enemy_z) {
+    return enemy_lane == player_lane && abs_num(enemy_z - player_z) < 1.2;
+}
+
+fn update_player(dt) {
+    if (move_cooldown > 0) {
+        move_cooldown = move_cooldown - dt;
+    }
+
+    if (move_cooldown <= 0) {
+        if (engine.key_down(65) && player_lane > -2) {
+            player_lane = player_lane - 2;
+            move_cooldown = 0.16;
+        }
+
+        if (engine.key_down(68) && player_lane < 2) {
+            player_lane = player_lane + 2;
+            move_cooldown = 0.16;
+        }
+    }
+
+    if (engine.key_down(81)) {
+        engine.camera_orbit(-32 * dt, 0, 0);
+    }
+
+    if (engine.key_down(69)) {
+        engine.camera_orbit(32 * dt, 0, 0);
+    }
+}
+
+fn update_enemies(dt) {
+    var base_speed = 8 + speed_boost;
+    enemy1_z = enemy1_z + dt * (base_speed + 0.8);
+    enemy2_z = enemy2_z + dt * (base_speed + 1.4);
+    enemy3_z = enemy3_z + dt * (base_speed + 2.1);
+
+    if (enemy1_z > 7) {
+        recycle_enemy(1);
+    }
+    if (enemy2_z > 7) {
+        recycle_enemy(2);
+    }
+    if (enemy3_z > 7) {
+        recycle_enemy(3);
+    }
+
+    if (enemy_hit(enemy1_lane, enemy1_z) || enemy_hit(enemy2_lane, enemy2_z) || enemy_hit(enemy3_lane, enemy3_z)) {
+        reset_run();
+    }
+}
+
+fn draw_scene() {
+    engine.entity_set_position("player", [player_lane, 0.6, player_z]);
+    engine.entity_set_position("enemy-1", [enemy1_lane, 0.8, enemy1_z]);
+    engine.entity_set_position("enemy-2", [enemy2_lane, 0.8, enemy2_z]);
+    engine.entity_set_position("enemy-3", [enemy3_lane, 0.8, enemy3_z]);
+    engine.entity_set_scale("player", [1 + speed_boost * 0.01, 1, 1 + speed_boost * 0.01]);
+    engine.draw_grid(18, 1);
+    engine.scene_draw();
+
+    engine.draw_text("NEON LANE DODGE", 18, 18, 26, [235, 242, 255, 255]);
+    engine.draw_text("A / D to move, Q / E to orbit camera", 18, 50, 20, [152, 201, 255, 255]);
+    engine.draw_text("Score: " + str(score), 18, 86, 22, [255, 226, 129, 255]);
+    engine.draw_text("Best: " + str(best), 18, 114, 22, [180, 236, 205, 255]);
+    engine.draw_text("Avoid the three comets. Crashes reset the run.", 18, 148, 20, [199, 213, 231, 255]);
+    engine.draw_text("Assets root: " + engine.assets_root(), 18, 176, 18, [120, 164, 196, 255]);
+    engine.draw_text("Backend: " + backend_label, 18, 198, 18, [120, 214, 196, 255]);
+    engine.draw_text("Requested: " + backend_requested, 18, 220, 18, [120, 214, 164, 255]);
+    engine.draw_text("FOV: " + str(engine.camera_fov()), 18, 242, 18, [180, 214, 255, 255]);
+    engine.draw_fps(18, 264);
+}
+
+fn setup_scene_graph() {
+    engine.scene("main");
+    engine.assets_root("assets");
+    engine.scene_clear();
+    engine.light_ambient([16, 24, 36, 255]);
+    engine.light_directional([-0.3, -1, -0.2], [255, 232, 198, 255], 1.2);
+    engine.texture("road-albedo", "textures/road.png", true, false);
+    engine.texture("player-albedo", "textures/player.png", true, false);
+    engine.texture("enemy-albedo", "textures/enemy.png", true, false);
+    engine.mesh("road-plane", "plane", [9, 22]);
+    engine.mesh("lane-strip", "cube", [0.14, 0.1, 18]);
+    engine.mesh("player-ship", "cube", [1.1, 1.1, 1.1]);
+    engine.mesh("enemy-orb", "sphere", [0.75, 0.75, 0.75]);
+    engine.material("road-surface", [19, 33, 52, 255], 0.92, 0.05, [0, 0, 0, 255]);
+    engine.material("player-core", [98, 204, 255, 255], 0.28, 0.65, [32, 96, 196, 255]);
+    engine.material("enemy-hot", [255, 164, 72, 255], 0.35, 0.18, [255, 96, 40, 255]);
+    engine.material_texture("road-surface", "road-albedo");
+    engine.material_texture("player-core", "player-albedo");
+    engine.material_texture("enemy-hot", "enemy-albedo");
+
+    engine.entity("road", "plane", [0, 0, -4], [9, 22], [19, 33, 52, 255], "road-surface", "road-plane", "road-albedo");
+    engine.entity("lane-left", "cube", [-2, 0.05, -4], [0.14, 0.1, 18], [48, 86, 120, 255], "", "lane-strip");
+    engine.entity("lane-center", "cube", [0, 0.05, -4], [0.14, 0.1, 18], [48, 86, 120, 255], "", "lane-strip");
+    engine.entity("lane-right", "cube", [2, 0.05, -4], [0.14, 0.1, 18], [48, 86, 120, 255], "", "lane-strip");
+    engine.entity("player", "cube", [player_lane, 0.6, player_z], [1.1, 1.1, 1.1], [98, 204, 255, 255], "player-core", "player-ship", "player-albedo");
+    engine.entity("enemy-1", "sphere", [enemy1_lane, 0.8, enemy1_z], 0.7, [255, 120, 84, 255], "enemy-hot", "enemy-orb", "enemy-albedo");
+    engine.entity("enemy-2", "sphere", [enemy2_lane, 0.8, enemy2_z], 0.75, [255, 164, 72, 255], "enemy-hot", "enemy-orb", "enemy-albedo");
+    engine.entity("enemy-3", "sphere", [enemy3_lane, 0.8, enemy3_z], 0.8, [255, 210, 96, 255], "enemy-hot", "enemy-orb", "enemy-albedo");
+}
+
+fn main_scene() {
+    engine.backend("raylib");
+    engine.vsync(true);
+    engine.msaa(4);
+    engine.window(1280, 720, "RayQuiro - Neon Lane Dodge");
+    engine.target_fps(60);
+    engine.camera([0, 14, 14], [0, 0, -2], [0, 1, 0], 45);
+    setup_scene_graph();
+    backend_requested = engine.backend_info()["requested"];
+    backend_label = engine.backend_name();
+
+    while (!engine.should_close()) {
+        var dt = engine.frame_time();
+        update_player(dt);
+        update_enemies(dt);
+
+        engine.frame_begin([8, 13, 22, 255]);
+        draw_scene();
+        engine.frame_end();
+    }
+
+    engine.shutdown();
+}
+
+main_scene();

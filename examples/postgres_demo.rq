@@ -1,0 +1,27 @@
+import rayquiro.db as db;
+import rayquiro.env as env;
+import rayquiro.json as json;
+
+var conninfo = env.get("POSTGRES_URL");
+
+print("=== RAYQUIRO POSTGRES DEMO ===");
+if (conninfo == "") {
+    print("Set POSTGRES_URL to an existing PostgreSQL connection string.");
+    print("Example:");
+    print("host=127.0.0.1 port=5432 dbname=mydb user=myuser password=secret");
+} else {
+    var conn = db.connect(conninfo);
+    if (conn == 0) {
+        print("Connection failed.");
+    } else {
+        print("Connected. Handle: " + str(conn));
+        print("Database metadata:");
+        print(db.query(conn, "select current_database() as db, current_user as user, version() as version;"));
+        print("Server version:");
+        print(db.scalar(conn, "select version() as version;"));
+        db.close(conn);
+        print("Connection closed.");
+    }
+}
+
+print("This demo only connects to an existing database. It never creates a database.");

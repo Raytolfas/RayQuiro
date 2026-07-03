@@ -1,0 +1,24 @@
+{
+  "modules": [
+    {
+      "name": "rayquiro.app",
+      "file": "app.dll",
+      "download_url": "https://raw.githubusercontent.com/Raytolfas/Assets/refs/heads/main/RayQuiro/modules/app.dll"
+    },
+    {
+      "name": "rayquiro.engine",
+      "file": "engine.dll",
+      "download_url": "https://raw.githubusercontent.com/Raytolfas/Assets/refs/heads/main/RayQuiro/modules/engine.dll"
+    },
+    {
+      "name": "rayquiro.ui",
+      "file": "ui.dll",
+      "download_url": "https://raw.githubusercontent.com/Raytolfas/Assets/refs/heads/main/RayQuiro/modules/ui.dll"
+    },
+    {
+      "name": "rayquiro.web",
+      "file": "web.dll",
+      "download_url": "https://raw.githubusercontent.com/Raytolfas/Assets/refs/heads/main/RayQuiro/modules/web.dll"
+    }
+  ]
+}
