@@ -130,28 +130,28 @@ inline std::string frameworksRegistryUrl() {
     if (const auto custom = RayQuiroUserPaths::getenvString("RAYQUIRO_FRAMEWORKS_REGISTRY_URL")) {
         return custom.value();
     }
-    return "https://raw.githubusercontent.com/Raytolfas/Assets/refs/heads/main/RayQuiro/frameworks.json";
+    return "https://rq.raytolfas.cc/framework";
 }
 
 inline std::string updateManifestUrl() {
     if (const auto custom = RayQuiroUserPaths::getenvString("RAYQUIRO_UPDATE_URL")) {
         return custom.value();
     }
-    return "https://raw.githubusercontent.com/Raytolfas/Assets/refs/heads/main/RayQuiro/update.json";
+    return "https://rq.raytolfas.cc/update";
 }
 
 inline std::string nativeModulesBaseUrl() {
     if (const auto custom = RayQuiroUserPaths::getenvString("RAYQUIRO_MODULES_BASE_URL")) {
         return custom.value();
     }
-    return "https://raw.githubusercontent.com/Raytolfas/Assets/refs/heads/main/RayQuiro/modules/";
+    return "https://rq.raytolfas.cc/modules/";
 }
 
 inline std::string nativeModulesRegistryUrl() {
     if (const auto custom = RayQuiroUserPaths::getenvString("RAYQUIRO_MODULES_REGISTRY_URL")) {
         return custom.value();
     }
-    return "https://raw.githubusercontent.com/Raytolfas/Assets/refs/heads/main/RayQuiro/modules.json";
+    return "https://rq.raytolfas.cc/modules";
 }
 
 inline bool isNativeModuleSpec(const std::string& spec) {
