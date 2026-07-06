@@ -8,7 +8,6 @@ togithub/
 in-all/
 scripts/
 vscode/
-modules/
 toolchain/*
 !toolchain/README.md
 !toolchain/setup-toolchain.ps1
