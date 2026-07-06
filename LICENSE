@@ -14,24 +14,34 @@ All rights reserved.
 
 2. Grant of permission
 
-   You may:
-   - view the source code of the Software
-   - run the Software for personal, educational, non-commercial internal, or evaluation use
-   - modify the Software privately for your own non-public use, or publicly solely for the purpose of preparing and submitting contributions back to the official repository
-   - submit modifications back to the copyright holder in the form of contributions 
-     (e.g., pull requests or patches) to the official repository of the Software
+   Subject to the terms of this License, the Copyright Holder hereby grants You 
+   a worldwide, non-exclusive, no-charge, royalty-free license to:
+   - view and study the source code of the Software;
+   - run and use the Software for personal, educational, evaluation, or any 
+     commercial and non-commercial end-use development;
+   - modify the Software privately for Your own internal use, or publicly solely 
+     for the purpose of preparing and submitting contributions back to the official repository;
+   - redistribute the Software in its original, unmodified form, solely for the purpose 
+     of packaging and distribution via public operating system repositories or package managers;
+   - submit modifications back to the Copyright Holder in the form of contributions 
+     (e.g., pull requests or patches). By submitting a contribution, You grant the 
+     Copyright Holder a perpetual, worldwide, non-exclusive, no-charge, royalty-free, 
+     irrevocable license to use, modify, and distribute Your contribution under these terms.
 
 3. Restrictions
 
-   You may not, without prior written permission from the copyright holder:
-   - redistribute the Software or any modified version of it
-   - publish the Software or any derivative work in source or binary form (except for 
-     contributions specified in Section 2)
-   - sell, sublicense, or commercially exploit the Software
-   - remove or alter copyright, license, or attribution notices
-   - claim ownership of the Software or present it as your own work
+   You may not, without prior written permission from the Copyright Holder:
+   - redistribute modified versions of the Software, or publish any derivative work 
+     in source or binary form (except for official contributions specified in Section 2);
+   - sell, rent, sublicense, or directly commercialize the Software itself;
+   - use the Software to provide commercial managed hosting, cloud-based programming 
+     environments, or "Language-as-a-Service" platforms where the primary value 
+     offered to users is the execution or tooling of the Software;
+   - remove or alter any copyright, license, or attribution notices;
+   - claim ownership of the Software or present it as Your own work;
    - use the Software, its source code, or its architecture to create, distribute, or 
-     host any language, compiler, runtime, package manager, or related core tooling based on or derived from the Software
+     host any competing language, compiler, interpreter, runtime, package manager, 
+     or related core tooling based on or derived from the Software.
 
 4. Third-party components
 
@@ -46,17 +56,21 @@ All rights reserved.
 
 6. Limitation of liability
 
-   In no event shall the copyright holder be liable for any claim, damages, or
-   other liability arising from or related to the Software or its use.
+   In no event shall the Copyright Holder be liable for any claim, damages, or
+   other liability, whether in an action of contract, tort or otherwise, arising 
+   from, out of or in connection with the Software or its use.
 
 7. Permission requests
 
-   If you want to redistribute, publish, or commercialize the Software, contact
-   the copyright holder and get written permission first.
+   If You want to redistribute modified versions, publish, or otherwise commercialize 
+   the Software beyond the scope of Section 2, contact the Copyright Holder to obtain 
+   prior written permission.
 
-8. Output and Applications
+8. Output, Applications, and Commercial Services
 
-   This license does not impose restrictions on the ownership or licensing of 
-   programs, scripts, or applications that You write in the RayQuiro programming 
-   language, provided that such applications are not compilers, interpreters, runtimes, 
-   or core tooling for the RayQuiro language itself, and do not otherwise violate Section 3.
+   This License does not impose any restrictions, licensing requirements, or fees 
+   on any programs, websites, backends, applications, or commercial services that 
+   You build, host, and monetize using the RayQuiro programming language. You are 
+   fully entitled to commercially exploit Your own products created with the Software, 
+   provided that such products are not compilers, interpreters, runtimes, or core 
+   tooling for the RayQuiro language itself, and do not otherwise violate Section 3.
