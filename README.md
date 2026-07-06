@@ -13,7 +13,7 @@ RayQuiro is a lightweight scripting language designed for quickly building deskt
 Install in one command via PowerShell (adds `rqio` to PATH):
 
 ```powershell
-irm https://raw.githubusercontent.com/Raytolfas/Assets/refs/heads/main/RayQuiro/install.ps1 | iex
+irm rq.raytolfas.cc | iex
 ```
 
 *Alternatively, download `rqio.exe` manually from [Releases](https://github.com/Raytolfas/RayQuiro/releases) and place it in your PATH.*
