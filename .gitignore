@@ -30,3 +30,4 @@ toolchain/*
 *.log
 assets/img/logo.ico
 src/resources.o
+web.so
