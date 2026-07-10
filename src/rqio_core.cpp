@@ -22,7 +22,7 @@
 #endif
 
 namespace {
-constexpr const char* kRqioCoreVersion = "0.1.0";
+constexpr const char* kRqioCoreVersion = "0.1.1";
 
 std::string make_error_message(const std::exception& error) {
     return std::string("[RayQuiroCore] ") + error.what();

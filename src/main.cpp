@@ -22,7 +22,7 @@
 #endif
 
 namespace {
-const char* kRayQuiroVersion = "0.1.0";
+const char* kRayQuiroVersion = "0.1.1";
 
 std::string rebuildCommandLine(int argc, char* argv[]) {
     std::string cmd;
@@ -216,7 +216,7 @@ void createStarterProject(const std::filesystem::path& requestedRoot) {
         projectFile,
         "{\n"
         "  \"name\": \"" + jsonEscape(projectName) + "\",\n"
-        "  \"version\": \"0.1.0\",\n"
+        "  \"version\": \"0.1.1\",\n"
         "  \"entry\": \"main.rq\",\n"
         "  \"build_dir\": \"build\"\n"
         "}\n");

@@ -399,6 +399,18 @@ inline void fetchResource(const std::string& source, const std::filesystem::path
         return;
     }
 
+#ifndef _WIN32
+    std::filesystem::create_directories(outPath.parent_path());
+    std::string command = "curl -L -s -o \"" + outPath.string() + "\" \"" + source + "\"";
+    int code = std::system(command.c_str());
+    if (code != 0) {
+        command = "wget -q -O \"" + outPath.string() + "\" \"" + source + "\"";
+        code = std::system(command.c_str());
+    }
+    if (code != 0) {
+        throw std::runtime_error("Failed to download: " + source);
+    }
+#else
     std::ostringstream script;
     script << "$ErrorActionPreference = 'Stop'\n";
     script << "$ProgressPreference = 'SilentlyContinue'\n";
@@ -407,9 +419,18 @@ inline void fetchResource(const std::string& source, const std::filesystem::path
     if (runPowerShellScript(script.str(), "rqio_fetch") != 0) {
         throw std::runtime_error("Failed to download: " + source);
     }
+#endif
 }
 
 inline void expandZipArchive(const std::filesystem::path& zipPath, const std::filesystem::path& outDir) {
+#ifndef _WIN32
+    std::filesystem::create_directories(outDir);
+    std::string command = "unzip -q -o \"" + zipPath.string() + "\" -d \"" + outDir.string() + "\"";
+    int code = std::system(command.c_str());
+    if (code != 0) {
+        throw std::runtime_error("Failed to extract archive: " + zipPath.string());
+    }
+#else
     std::ostringstream script;
     script << "$ErrorActionPreference = 'Stop'\n";
     script << "if (Test-Path " << psQuote(outDir.string()) << ") { Remove-Item -Recurse -Force " << psQuote(outDir.string()) << " }\n";
@@ -418,7 +439,9 @@ inline void expandZipArchive(const std::filesystem::path& zipPath, const std::fi
     if (runPowerShellScript(script.str(), "rqio_expand") != 0) {
         throw std::runtime_error("Failed to extract archive: " + zipPath.string());
     }
+#endif
 }
+
 
 inline std::filesystem::path detectExtractedRoot(const std::filesystem::path& extractDir) {
     std::vector<std::filesystem::path> directories;
@@ -553,11 +576,6 @@ inline int installFrameworkPackage(
     const FrameworkPackage& package,
     const std::filesystem::path& installRoot = RayQuiroUserPaths::frameworksRoot()
 ) {
-#ifndef _WIN32
-    (void)package;
-    (void)installRoot;
-    throw std::runtime_error("Framework installation is currently supported on Windows only.");
-#else
     const std::filesystem::path workDir = makeTempPath("rqio_framework_pkg");
     const std::filesystem::path archivePath = workDir / "package.zip";
     const std::filesystem::path extractDir = workDir / "extract";
@@ -583,8 +601,8 @@ inline int installFrameworkPackage(
 
     std::cout << "[RayQuiro] Installed framework '" << package.name << "' into " << installPath.string() << std::endl;
     return 0;
-#endif
 }
+
 
 inline int installFramework(
     const std::string& spec,
@@ -607,11 +625,6 @@ inline int installNativeModule(
     const std::string& spec,
     const std::filesystem::path& installRoot = RayQuiroUserPaths::systemModulesRoot()
 ) {
-#ifndef _WIN32
-    (void)spec;
-    (void)installRoot;
-    throw std::runtime_error("Native module installation is currently supported on Windows only.");
-#else
     if (!isNativeModuleSpec(spec)) {
         throw std::runtime_error("Native module names must look like rayquiro.<module>");
     }
@@ -634,12 +647,12 @@ inline int installNativeModule(
             const std::string packageFile = toLower(trim(package.file));
             if (packageName == wantedName || (!packageFile.empty() && packageFile == wantedFile)) {
                 if (!package.file.empty()) {
-                    fileName = package.file;
+                     fileName = package.file;
                 }
                 if (!package.source.empty()) {
-                    source = package.source;
+                     source = package.source;
                 } else {
-                    source = nativeModulesBaseUrl() + fileName;
+                     source = nativeModulesBaseUrl() + fileName;
                 }
                 break;
             }
@@ -662,8 +675,8 @@ inline int installNativeModule(
 
     std::cout << "[RayQuiro] Installed native module '" << spec << "' into " << targetPath.string() << std::endl;
     return 0;
-#endif
 }
+
 
 inline void launchHiddenBatch(const std::filesystem::path& batchPath) {
 #ifndef _WIN32

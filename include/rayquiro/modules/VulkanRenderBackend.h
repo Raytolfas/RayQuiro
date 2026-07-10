@@ -4359,6 +4359,15 @@ inline int sync_ready() { return 0; }
 inline int frame_path_ready() { return 0; }
 inline int frame_acquired() { return 0; }
 inline int presented_frame_count() { return 0; }
+inline void attach_host_window(void* parent_window, int x, int y, int width, int height, const char* title) {
+    (void)parent_window; (void)x; (void)y; (void)width; (void)height; (void)title;
+}
+inline void resize_host_window(int x, int y, int width, int height) {
+    (void)x; (void)y; (void)width; (void)height;
+}
+inline void upload_scene_texture_rgba(int width, int height, const unsigned char* pixels) {
+    (void)width; (void)height; (void)pixels;
+}
 inline void draw_grid(int slices, float spacing) { (void)slices; (void)spacing; }
 inline void draw_cube(RTVec3 position, RTVec3 size, RTColor color) { (void)position; (void)size; (void)color; }
 inline void draw_plane(RTVec3 position, RTVec2 size, RTColor color) { (void)position; (void)size; (void)color; }
@@ -4366,5 +4375,6 @@ inline void draw_sphere(RTVec3 position, float radius, RTColor color) { (void)po
 inline void draw_text(const char* text, int x, int y, int size, RTColor color) { (void)text; (void)x; (void)y; (void)size; (void)color; }
 inline void draw_fps(int x, int y) { (void)x; (void)y; }
 }
+
 
 #endif

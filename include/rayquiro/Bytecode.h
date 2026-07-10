@@ -2,13 +2,14 @@
 
 #include <cstdint>
 #include <string>
-#include <unordered_map>
+#include <map>
 #include <variant>
 #include <vector>
 
 struct VMValue {
     using Array = std::vector<VMValue>;
-    using Object = std::unordered_map<std::string, VMValue>;
+    using Object = std::map<std::string, VMValue>;
+
 
     std::variant<std::monostate, double, std::string, bool, Array, Object> data;
 

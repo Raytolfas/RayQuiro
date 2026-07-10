@@ -2,6 +2,7 @@
 .rq_cache/
 .rq_modules/
 build/
+build-linux/
 release/
 tmp_init_demo/
 togithub/

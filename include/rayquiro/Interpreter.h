@@ -57,10 +57,13 @@ extern "C" int connect(SOCKET s, const struct sockaddr* name, int namelen);
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#ifndef RAYQUIRO_SOCKET_DEFINED
+#define RAYQUIRO_SOCKET_DEFINED
 using SOCKET = int;
 static constexpr SOCKET INVALID_SOCKET = -1;
 static constexpr int SOCKET_ERROR = -1;
 inline int closesocket(SOCKET socket) { return ::close(socket); }
+#endif
 #endif
 
 class Interpreter {
