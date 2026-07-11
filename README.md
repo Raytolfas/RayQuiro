@@ -17,7 +17,7 @@ irm rq.raytolfas.cc | iex
 
 ### Linux / macOS (Bash)
 ```bash
-curl -s rq.raytolfas.cc | bash
+curl -s rq.raytolfas.cc/linux | bash
 ```
 
 *Alternatively, manually download `rqio` from [Releases](https://github.com/Raytolfas/RayQuiro/releases).*

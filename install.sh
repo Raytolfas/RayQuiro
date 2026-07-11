@@ -48,13 +48,14 @@ fi
 step "Downloading update manifest"
 download "$MANIFEST_URL" "$MANIFEST_PATH"
 
-DOWNLOAD_URL="$(grep -oP '"downloadUrl"\s*:\s*"\K[^"]+' "$MANIFEST_PATH" || true)"
+DOWNLOAD_URL="$(grep -oP '"linux_url"\s*:\s*"\K[^"]+' "$MANIFEST_PATH" || true)"
+if [ -z "$DOWNLOAD_URL" ]; then
+    DOWNLOAD_URL="$(grep -oP '"downloadUrl"\s*:\s*"\K[^"]+' "$MANIFEST_PATH" || true)"
+fi
 if [ -z "$DOWNLOAD_URL" ]; then
     DOWNLOAD_URL="$(grep -oP '"download_url"\s*:\s*"\K[^"]+' "$MANIFEST_PATH" || true)"
 fi
-if [ -z "$DOWNLOAD_URL" ]; then
-    DOWNLOAD_URL="$(grep -oP '"linux_url"\s*:\s*"\K[^"]+' "$MANIFEST_PATH" || true)"
-fi
+
 
 if [ -z "$DOWNLOAD_URL" ]; then
     echo "Error: update.json does not contain a download URL for Linux." >&2
