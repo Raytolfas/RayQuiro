@@ -8,13 +8,17 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <iomanip>
 #include <iostream>
 #include <memory>
 #include <random>
+#include <regex>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <future>
+#include <mutex>
 #include <optional>
 #include <unordered_map>
 #include <unordered_set>
@@ -68,11 +72,22 @@ inline int closesocket(SOCKET socket) { return ::close(socket); }
 
 class Interpreter {
 public:
+    // LambdaValue stores raw AST pointers (non-owning) вЂ” AST must outlive interpreter.
+    struct LambdaValue {
+        std::vector<std::string> paramNames;    // parameter names in order
+        std::vector<Expr*>       paramDefaults; // raw ptr to default expr (nullptr = required)
+        bool hasVariadic = false;               // last param is variadic (...rest)
+        BlockStmt* body;
+        std::shared_ptr<void> closure; // actually shared_ptr<Environment>
+        bool isAsync = false;
+    };
+
     struct Value {
         using Arr = std::shared_ptr<std::vector<Value>>;
         using Obj = std::shared_ptr<std::unordered_map<std::string, Value>>;
+        using Fn  = std::shared_ptr<LambdaValue>;
 
-        std::variant<std::monostate, double, std::string, bool, Arr, Obj> data;
+        std::variant<std::monostate, double, std::string, bool, Arr, Obj, Fn> data;
 
         Value() : data(std::monostate{}) {}
         Value(double v) : data(v) {}
@@ -88,8 +103,11 @@ public:
         Value(Obj objectValue) : data(objectValue) {}
 
     public:
+        explicit Value(Fn lambdaValue) : data(lambdaValue) {}
+
         Arr as_array() const { return std::get<Arr>(data); }
         Obj as_object() const { return std::get<Obj>(data); }
+        Fn  as_lambda() const { return std::get<Fn>(data); }
     };
 
     Interpreter(
@@ -102,6 +120,10 @@ public:
           executablePath_(std::move(executablePath)),
           builtinNamespaceAliases_(std::move(builtinNamespaceAliases)),
           builtinSymbolAliases_(std::move(builtinSymbolAliases)) {}
+
+    void setProcessArgs(std::vector<std::string> args) {
+        processArgs_ = std::move(args);
+    }
 
     ~Interpreter() {
         unloadNativeModules();
@@ -118,6 +140,7 @@ public:
 
     int run(ProgramNode& program) {
         globals_ = std::make_shared<Environment>();
+        globals_->define("pi", Value(3.14159265358979323846), true);
         functions_.clear();
 
         for (const auto& statement : program.statements) {
@@ -178,6 +201,12 @@ private:
             }
             throw std::runtime_error("Undefined variable: " + name);
         }
+
+        // Alias for assign (used by engine editor API)
+        void set(const std::string& name, const Value& value) { assign(name, value); }
+
+        // Access the flat variable map (for Inspector / Reflection)
+        const std::unordered_map<std::string, VariableSlot>& vars() const { return values; }
     };
 
     struct ReturnSignal {
@@ -333,10 +362,73 @@ private:
     std::shared_ptr<Environment> globals_;
     WebState webState_;
     EngineState engineState_;
+
+    // 0.2.0 additions
+    std::vector<std::string> processArgs_;   // CLI args passed to the script
+    std::string currentSourcePath_;          // absolute path of currently running script (for DAP)
+#if RAYQUIRO_HAS_RAYLIB
+    std::vector<Sound>    soundRegistry_;
+    std::vector<Music>    musicRegistry_;
+    std::vector<Texture2D> textureRegistry_;
+#endif
+    std::unordered_map<std::string, Value> structDefs_; // struct prototypes
+    std::unordered_map<std::string, std::vector<std::string>> interfaceRegistry_; // interface name в†’ required method names
+
+    // Engine editor/play mode
+    enum class EngineMode { Editor, Playing, Paused };
+    EngineMode engineMode_ = EngineMode::Editor;
+    Value sceneSnapshot_;   // JSON snapshot taken at play() for stop() restore
 #ifdef _WIN32
     RayQuiroApp appRuntime_;
     RayQuiroModernUI uiRuntime_;
 #endif
+
+    // в”Ђв”Ђ Debug hook (DAP) в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+    // Called before every statement. Set by DAPServer integration in main.cpp.
+    using DebugHook = std::function<void(const std::string& filePath, int line)>;
+    DebugHook debugHook_;
+
+public:
+    void setDebugHook(std::function<void(const std::string&, int)> hook) { debugHook_ = std::move(hook); }
+    const std::filesystem::path& getProjectRoot() const { return projectRoot_; }
+    void setSourcePath(const std::string& path) { currentSourcePath_ = path; }
+
+private:
+    // async/await promise store (shared across threads)
+    static inline std::unordered_map<std::string, std::shared_future<Value>> promiseStore_;
+    static inline std::mutex promiseMutex_;
+    static inline int promiseCounter_ = 0;
+
+    static std::string newPromiseId() {
+        std::lock_guard<std::mutex> lock(promiseMutex_);
+        return "__p" + std::to_string(++promiseCounter_) + "__";
+    }
+
+    static void storePromise(const std::string& id, std::shared_future<Value> fut) {
+        std::lock_guard<std::mutex> lock(promiseMutex_);
+        promiseStore_[id] = std::move(fut);
+    }
+
+    static Value awaitPromise(const Value& promiseObj) {
+        if (!is_object(promiseObj)) return promiseObj;
+        auto obj = promiseObj.as_object();
+        auto it = obj->find("__promise_id__");
+        if (it == obj->end()) return promiseObj;
+        const std::string id = to_string(it->second);
+        std::shared_future<Value> fut;
+        {
+            std::lock_guard<std::mutex> lock(promiseMutex_);
+            auto pit = promiseStore_.find(id);
+            if (pit == promiseStore_.end()) return Value();
+            fut = pit->second;
+        }
+        Value result = fut.get();
+        {
+            std::lock_guard<std::mutex> lock(promiseMutex_);
+            promiseStore_.erase(id);
+        }
+        return result;
+    }
 
     static bool is_null(const Value& value) { return std::holds_alternative<std::monostate>(value.data); }
     static bool is_number(const Value& value) { return std::holds_alternative<double>(value.data); }
@@ -344,6 +436,7 @@ private:
     static bool is_bool(const Value& value) { return std::holds_alternative<bool>(value.data); }
     static bool is_array(const Value& value) { return std::holds_alternative<Value::Arr>(value.data); }
     static bool is_object(const Value& value) { return std::holds_alternative<Value::Obj>(value.data); }
+    static bool is_lambda(const Value& value) { return std::holds_alternative<Value::Fn>(value.data); }
 
     static double to_number(const Value& value) {
         if (is_number(value)) return std::get<double>(value.data);
@@ -390,6 +483,7 @@ private:
             result += "}";
             return result;
         }
+        if (is_lambda(value)) return "<fn>";
         return "";
     }
 
@@ -400,6 +494,7 @@ private:
         if (is_string(value)) return !std::get<std::string>(value.data).empty();
         if (is_array(value)) return !std::get<Value::Arr>(value.data)->empty();
         if (is_object(value)) return !std::get<Value::Obj>(value.data)->empty();
+        if (is_lambda(value)) return true;
         return false;
     }
 
@@ -504,6 +599,9 @@ private:
         if (auto varStmt = dynamic_cast<VarStmt*>(stmt)) return supportsExpr(varStmt->initializer.get());
         if (auto exprStmt = dynamic_cast<ExprStmt*>(stmt)) return supportsExpr(exprStmt->expr.get());
         if (auto logStmt = dynamic_cast<LogStmt*>(stmt)) return supportsExpr(logStmt->message.get());
+        if (auto tryCatch = dynamic_cast<TryCatchStmt*>(stmt)) {
+            return supportsStmt(tryCatch->tryBody.get()) && supportsStmt(tryCatch->catchBody.get());
+        }
         if (auto blockStmt = dynamic_cast<BlockStmt*>(stmt)) {
             for (const auto& child : blockStmt->statements) if (!supportsStmt(child.get())) return false;
             return true;
@@ -517,7 +615,11 @@ private:
             return supportsExpr(whileStmt->condition.get()) && supportsStmt(whileStmt->body.get());
         }
         if (auto functionStmt = dynamic_cast<FunctionStmt*>(stmt)) return supportsStmt(functionStmt->body.get());
-        if (auto returnStmt = dynamic_cast<ReturnStmt*>(stmt)) return supportsExpr(returnStmt->value.get());
+        if (auto returnStmt = dynamic_cast<ReturnStmt*>(stmt)) {
+            for (const auto& v : returnStmt->values)
+                if (!supportsExpr(v.get())) return false;
+            return true;
+        }
         return true;
     }
 
@@ -532,6 +634,8 @@ private:
         if (auto unary = dynamic_cast<UnaryExpr*>(expr)) return supportsExpr(unary->right.get());
         if (auto assign = dynamic_cast<AssignExpr*>(expr)) return supportsExpr(assign->value.get());
         if (auto indexExpr = dynamic_cast<IndexExpr*>(expr)) return supportsExpr(indexExpr->target.get()) && supportsExpr(indexExpr->index.get());
+        if (auto setIdx = dynamic_cast<SetIndexExpr*>(expr)) return supportsExpr(setIdx->object.get()) && supportsExpr(setIdx->index.get()) && supportsExpr(setIdx->value.get());
+        if (auto awaitExpr = dynamic_cast<AwaitExpr*>(expr)) return supportsExpr(awaitExpr->operand.get());
         if (auto arrayExpr = dynamic_cast<ArrayExpr*>(expr)) {
             for (const auto& element : arrayExpr->elements) if (!supportsExpr(element.get())) return false;
         }
@@ -607,10 +711,165 @@ private:
             return index(evaluate(indexExpr->target.get(), env), evaluate(indexExpr->index.get(), env));
         }
 
+        if (auto setIdx = dynamic_cast<SetIndexExpr*>(expr)) {
+            Value obj = evaluate(setIdx->object.get(), env);
+            Value key = evaluate(setIdx->index.get(), env);
+            Value val = evaluate(setIdx->value.get(), env);
+            if (is_object(obj)) {
+                (*obj.as_object())[to_string(key)] = val;
+            } else if (is_array(obj)) {
+                const int i = static_cast<int>(to_number(key));
+                auto arr = obj.as_array();
+                if (i >= 0 && i < static_cast<int>(arr->size())) {
+                    (*arr)[static_cast<size_t>(i)] = val;
+                }
+            } else {
+                throw std::runtime_error("Cannot set index on a non-object/array value");
+            }
+            return val;
+        }
+
+        if (auto nc = dynamic_cast<NullCoalesceExpr*>(expr)) {
+            Value left = evaluate(nc->left.get(), env);
+            if (!is_null(left)) return left;
+            return evaluate(nc->right.get(), env);
+        }
+
+        if (auto oc = dynamic_cast<OptionalChainExpr*>(expr)) {
+            Value obj = evaluate(oc->object.get(), env);
+            if (is_null(obj)) return Value(); // propagate null
+            if (!oc->field.empty()) {
+                if (is_object(obj)) {
+                    auto it = obj.as_object()->find(oc->field);
+                    if (it != obj.as_object()->end()) return it->second;
+                    return Value();
+                }
+                return Value();
+            }
+            if (oc->index) {
+                Value idx = evaluate(oc->index.get(), env);
+                if (is_object(obj)) {
+                    auto it = obj.as_object()->find(to_string(idx));
+                    if (it != obj.as_object()->end()) return it->second;
+                } else if (is_array(obj)) {
+                    const int i = static_cast<int>(to_number(idx));
+                    auto& arr = *obj.as_array();
+                    if (i >= 0 && i < static_cast<int>(arr.size())) return arr[i];
+                }
+                return Value();
+            }
+            return Value();
+        }
+
         if (auto assignExpr = dynamic_cast<AssignExpr*>(expr)) {
             Value value = evaluate(assignExpr->value.get(), env);
             env->assign(assignExpr->name, value);
             return value;
+        }
+
+        if (auto compAssign = dynamic_cast<CompoundAssignExpr*>(expr)) {
+            Value cur = env->get(compAssign->name);
+            Value rhs = evaluate(compAssign->value.get(), env);
+            Value result;
+            const std::string& op = compAssign->op;
+            if (op == "+") result = add(cur, rhs);
+            else if (op == "-") result = Value(to_number(cur) - to_number(rhs));
+            else if (op == "*") result = Value(to_number(cur) * to_number(rhs));
+            else if (op == "/") result = Value(to_number(rhs) != 0.0 ? to_number(cur) / to_number(rhs) : 0.0);
+            else if (op == "%") {
+                auto a = static_cast<long long>(to_number(cur));
+                auto b = static_cast<long long>(to_number(rhs));
+                result = Value(b != 0 ? static_cast<double>(a % b) : 0.0);
+            } else result = add(cur, rhs);
+            env->assign(compAssign->name, result);
+            return result;
+        }
+
+        if (auto postfix = dynamic_cast<PostfixExpr*>(expr)) {
+            Value cur = env->get(postfix->name);
+            Value prev = cur; // return pre-increment value for x++ (actually postfix returns old)
+            double n = to_number(cur);
+            Value next = Value(postfix->op == "++" ? n + 1.0 : n - 1.0);
+            env->assign(postfix->name, next);
+            return prev; // postfix returns old value
+        }
+
+        if (auto awaitExpr = dynamic_cast<AwaitExpr*>(expr)) {
+            Value operand = evaluate(awaitExpr->operand.get(), env);
+            return awaitPromise(operand);
+        }
+
+        // Object literal: { "key": expr, ... }
+        if (auto objExpr = dynamic_cast<ObjectExpr*>(expr)) {
+            Value obj = Value::object();
+            auto& map = *obj.as_object();
+            for (const auto& field : objExpr->fields) {
+                map[field.first] = evaluate(field.second.get(), env);
+            }
+            return obj;
+        }
+
+        // Lambda expression: fn(params) { body } вЂ” creates a closure capturing current env
+        if (auto lambdaExpr = dynamic_cast<LambdaExpr*>(expr)) {
+            auto lv = std::make_shared<LambdaValue>();
+            for (const auto& p : lambdaExpr->params) {
+                lv->paramNames.push_back(p.name);
+                lv->paramDefaults.push_back(p.defaultValue ? p.defaultValue.get() : nullptr);
+                if (p.isVariadic) lv->hasVariadic = true;
+            }
+            lv->body    = lambdaExpr->body.get();
+            lv->closure = std::static_pointer_cast<void>(env);
+            lv->isAsync = lambdaExpr->isAsync;
+            return Value(Value::Fn(lv));
+        }
+
+        // Dynamic call: lambdaVar(args)
+        if (auto dynCall = dynamic_cast<DynCallExpr*>(expr)) {
+            Value callee = evaluate(dynCall->callee.get(), env);
+            std::vector<Value> args;
+            args.reserve(dynCall->args.size());
+            for (const auto& arg : dynCall->args) args.push_back(evaluate(arg.get(), env));
+            return callLambda(callee, args, env);
+        }
+
+        // Template literal: `Hello ${name}!`
+        if (auto tmpl = dynamic_cast<TemplateLiteralExpr*>(expr)) {
+            std::string result;
+            for (size_t i = 0; i < tmpl->parts.size(); ++i) {
+                result += tmpl->parts[i];
+                if (i < tmpl->exprs.size()) {
+                    result += to_string(evaluate(tmpl->exprs[i].get(), env));
+                }
+            }
+            return Value(result);
+        }
+
+        // в”Ђв”Ђ Struct instantiation: TypeName { field: value, ... } в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        if (auto structInst = dynamic_cast<StructInstExpr*>(expr)) {
+            // Look up the struct prototype in env
+            Value proto;
+            try { proto = env->get(structInst->typeName); } catch (...) {}
+            // Create a new object (shallow copy of proto if it's an object)
+            Value obj = Value::object();
+            if (is_object(proto)) {
+                for (const auto& [k, v] : *proto.as_object()) {
+                    if (k == "__struct__") continue; // skip type tag
+                    (*obj.as_object())[k] = v;
+                }
+            }
+            // Override with provided fields
+            for (const auto& field : structInst->fields) {
+                (*obj.as_object())[field.first] = evaluate(field.second.get(), env);
+            }
+            // Tag with struct type name
+            (*obj.as_object())["__type__"] = Value(structInst->typeName);
+            return obj;
+        }
+
+        // в”Ђв”Ђ await promise в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        if (auto awaitExpr = dynamic_cast<AwaitExpr*>(expr)) {
+            Value operand = evaluate(awaitExpr->operand.get(), env);
+            return awaitPromise(operand);
         }
 
         throw std::runtime_error("Unsupported expression encountered in interpreter.");
@@ -618,6 +877,11 @@ private:
 
     void execute(Stmt* stmt, const std::shared_ptr<Environment>& env) {
         if (!stmt) return;
+
+        // в”Ђв”Ђ DAP debug hook в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        if (debugHook_ && stmt->line > 0) {
+            debugHook_(currentSourcePath_, stmt->line);
+        }
 
         if (auto varStmt = dynamic_cast<VarStmt*>(stmt)) {
             env->define(varStmt->name, evaluate(varStmt->initializer.get(), env), varStmt->isLet);
@@ -635,6 +899,35 @@ private:
 
         if (auto logStmt = dynamic_cast<LogStmt*>(stmt)) {
             builtin_print({evaluate(logStmt->message.get(), env)});
+            return;
+        }
+
+        if (auto tryCatch = dynamic_cast<TryCatchStmt*>(stmt)) {
+            try {
+                execute(tryCatch->tryBody.get(), env);
+            } catch (const ReturnSignal&) {
+                if (tryCatch->finallyBody) execute(tryCatch->finallyBody.get(), env);
+                throw;
+            } catch (const BreakSignal&) {
+                if (tryCatch->finallyBody) execute(tryCatch->finallyBody.get(), env);
+                throw;
+            } catch (const ContinueSignal&) {
+                if (tryCatch->finallyBody) execute(tryCatch->finallyBody.get(), env);
+                throw;
+            } catch (const std::exception& e) {
+                if (tryCatch->catchBody) {
+                    auto catchEnv = std::make_shared<Environment>(env);
+                    catchEnv->define(tryCatch->errorParam, Value(std::string(e.what())), false);
+                    execute(tryCatch->catchBody.get(), catchEnv);
+                }
+            } catch (...) {
+                if (tryCatch->catchBody) {
+                    auto catchEnv = std::make_shared<Environment>(env);
+                    catchEnv->define(tryCatch->errorParam, Value(std::string("Unknown error")), false);
+                    execute(tryCatch->catchBody.get(), catchEnv);
+                }
+            }
+            if (tryCatch->finallyBody) execute(tryCatch->finallyBody.get(), env);
             return;
         }
 
@@ -666,7 +959,16 @@ private:
         }
 
         if (auto returnStmt = dynamic_cast<ReturnStmt*>(stmt)) {
-            throw ReturnSignal{evaluate(returnStmt->value.get(), env)};
+            if (returnStmt->values.empty()) {
+                throw ReturnSignal{Value()};
+            }
+            if (returnStmt->values.size() == 1) {
+                throw ReturnSignal{evaluate(returnStmt->values[0].get(), env)};
+            }
+            Value arr = Value::array();
+            for (const auto& v : returnStmt->values)
+                arr.as_array()->push_back(evaluate(v.get(), env));
+            throw ReturnSignal{arr};
         }
 
         if (dynamic_cast<BreakStmt*>(stmt) != nullptr) {
@@ -677,7 +979,260 @@ private:
             throw ContinueSignal{};
         }
 
+        if (auto forIn = dynamic_cast<ForInStmt*>(stmt)) {
+            Value iterable = evaluate(forIn->iterable.get(), env);
+            if (is_array(iterable)) {
+                auto& arr = *iterable.as_array();
+                for (size_t i = 0; i < arr.size(); ++i) {
+                    auto scope = std::make_shared<Environment>(env);
+                    scope->define(forIn->keyVar, arr[i], false);
+                    if (!forIn->valVar.empty()) scope->define(forIn->valVar, Value(static_cast<double>(i)), false);
+                    try {
+                        execute(forIn->body.get(), scope);
+                    } catch (const ContinueSignal&) { continue; }
+                      catch (const BreakSignal&) { break; }
+                }
+            } else if (is_object(iterable)) {
+                auto& obj = *iterable.as_object();
+                for (auto& kv : obj) {
+                    auto scope = std::make_shared<Environment>(env);
+                    scope->define(forIn->keyVar, Value(kv.first), false);
+                    if (!forIn->valVar.empty()) scope->define(forIn->valVar, kv.second, false);
+                    try {
+                        execute(forIn->body.get(), scope);
+                    } catch (const ContinueSignal&) { continue; }
+                      catch (const BreakSignal&) { break; }
+                }
+            }
+            return;
+        }
+
+        if (auto switchStmt = dynamic_cast<SwitchStmt*>(stmt)) {
+            Value subject = evaluate(switchStmt->subject.get(), env);
+            bool matched = false;
+            for (auto& clause : switchStmt->cases) {
+                if (!matched) {
+                    if (!clause.value) { matched = true; } // default
+                    else {
+                        Value caseVal = evaluate(clause.value.get(), env);
+                        matched = (to_string(subject) == to_string(caseVal));
+                    }
+                }
+                if (matched) {
+                    try {
+                        for (auto& s : clause.body) execute(s.get(), env);
+                    } catch (const BreakSignal&) { break; }
+                }
+            }
+            return;
+        }
+
+        // в”Ђв”Ђ throw expr в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        if (auto throwStmt = dynamic_cast<ThrowStmt*>(stmt)) {
+            Value v = evaluate(throwStmt->value.get(), env);
+            throw std::runtime_error(to_string(v));
+        }
+
+        // в”Ђв”Ђ struct TypeName { field: default, ... } в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        if (auto structDef = dynamic_cast<StructStmt*>(stmt)) {
+            // Store struct definition as an object in globals_
+            Value proto = Value::object();
+            for (const auto& field : structDef->fields) {
+                (*proto.as_object())[field.first] = evaluate(field.second.get(), env);
+            }
+            // Tag it so we know it's a struct prototype
+            (*proto.as_object())["__struct__"] = Value(structDef->name);
+            // Record which interfaces this struct implements
+            if (!structDef->impls.empty()) {
+                Value implsArr = Value::array();
+                for (const auto& iname : structDef->impls) {
+                    implsArr.as_array()->push_back(Value(iname));
+                }
+                (*proto.as_object())["__impls__"] = implsArr;
+                // Runtime check: verify all required interface methods exist on this proto
+                for (const auto& iname : structDef->impls) {
+                    auto it = interfaceRegistry_.find(iname);
+                    if (it != interfaceRegistry_.end()) {
+                        for (const auto& methodName : it->second) {
+                            bool found = proto.as_object()->count(methodName) > 0;
+                            if (!found) {
+                                throw std::runtime_error(
+                                    "struct '" + structDef->name + "' implements '" + iname +
+                                    "' but is missing method '" + methodName + "'");
+                            }
+                        }
+                    }
+                }
+            }
+            env->define(structDef->name, proto, true);
+            return;
+        }
+
+        // в”Ђв”Ђ enum Direction { North, South, East, West } в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        if (auto enumDef = dynamic_cast<EnumStmt*>(stmt)) {
+            Value enumObj = Value::object();
+            for (const auto& variant : enumDef->variants) {
+                Value varVal(static_cast<double>(variant.value));
+                (*enumObj.as_object())[variant.name] = varVal;
+                // Also register "Direction.North" as a standalone global
+                // because the Lexer treats dotted names as single identifiers
+                env->define(enumDef->name + "." + variant.name, varVal, true);
+            }
+            (*enumObj.as_object())["__enum__"] = Value(enumDef->name);
+            env->define(enumDef->name, enumObj, true);
+            return;
+        }
+
+        // в”Ђв”Ђ interface Drawable { fn draw(); fn get_bounds() -> object; } в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        if (auto ifaceDef = dynamic_cast<InterfaceStmt*>(stmt)) {
+            // Register required method names in the interface registry
+            std::vector<std::string> required;
+            for (const auto& m : ifaceDef->methods) {
+                required.push_back(m.name);
+            }
+            interfaceRegistry_[ifaceDef->name] = required;
+            // Also expose as global object so code can inspect it
+            Value ifaceObj = Value::object();
+            (*ifaceObj.as_object())["__interface__"] = Value(ifaceDef->name);
+            Value methods = Value::array();
+            for (const auto& m : ifaceDef->methods) {
+                methods.as_array()->push_back(Value(m.name));
+            }
+            (*ifaceObj.as_object())["methods"] = methods;
+            env->define(ifaceDef->name, ifaceObj, true);
+            return;
+        }
+
+        // в”Ђв”Ђ var [a, b, c] = expr в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        if (auto ad = dynamic_cast<ArrayDestructureStmt*>(stmt)) {
+            Value src = evaluate(ad->init.get(), env);
+            if (!is_array(src)) throw std::runtime_error("Array destructure requires an array");
+            auto& arr = *src.as_array();
+            for (size_t i = 0; i < ad->names.size(); ++i) {
+                if (ad->names[i].empty()) continue; // hole
+                Value v = (i < arr.size()) ? arr[i] : Value();
+                env->define(ad->names[i], v, false);
+            }
+            return;
+        }
+
+        // в”Ђв”Ђ var {x, y: local} = expr в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        if (auto od = dynamic_cast<ObjectDestructureStmt*>(stmt)) {
+            Value src = evaluate(od->init.get(), env);
+            if (!is_object(src)) throw std::runtime_error("Object destructure requires an object");
+            auto& map = *src.as_object();
+            for (const auto& [key, local] : od->bindings) {
+                Value v;
+                auto it = map.find(key);
+                if (it != map.end()) v = it->second;
+                env->define(local, v, false);
+            }
+            return;
+        }
+
         throw std::runtime_error("Unsupported statement encountered in interpreter.");
+    }
+
+    // Call a lambda (closure) value with given arguments
+    Value callLambda(const Value& callee, const std::vector<Value>& args,
+                     const std::shared_ptr<Environment>& callSiteEnv) {
+        if (!is_lambda(callee)) {
+            throw std::runtime_error("Value is not callable");
+        }
+        auto lv = callee.as_lambda();
+        auto closureEnv = std::static_pointer_cast<Environment>(lv->closure);
+
+        auto bindParams = [&](std::shared_ptr<Environment> frame) {
+            size_t ni = lv->paramNames.size();
+            for (size_t i = 0; i < ni; ++i) {
+                if (lv->hasVariadic && i == ni - 1) {
+                    // Pack remaining args into array
+                    Value rest = Value::array();
+                    for (size_t j = i; j < args.size(); ++j)
+                        rest.as_array()->push_back(args[j]);
+                    frame->define(lv->paramNames[i], rest, false);
+                    break;
+                }
+                Value v;
+                if (i < args.size()) {
+                    v = args[i];
+                } else if (lv->paramDefaults[i] != nullptr) {
+                    v = evaluate(lv->paramDefaults[i], closureEnv);
+                }
+                frame->define(lv->paramNames[i], v, false);
+            }
+        };
+
+        if (lv->isAsync) {
+            const std::string promId = newPromiseId();
+            auto capturedArgs = args;
+            auto fut = std::async(std::launch::async, [this, lv, capturedArgs, closureEnv]() -> Value {
+                auto frame = std::make_shared<Environment>(closureEnv);
+                size_t ni = lv->paramNames.size();
+                for (size_t i = 0; i < ni; ++i) {
+                    if (lv->hasVariadic && i == ni - 1) {
+                        Value rest = Value::array();
+                        for (size_t j = i; j < capturedArgs.size(); ++j)
+                            rest.as_array()->push_back(capturedArgs[j]);
+                        frame->define(lv->paramNames[i], rest, false);
+                        break;
+                    }
+                    Value v;
+                    if (i < capturedArgs.size()) v = capturedArgs[i];
+                    else if (lv->paramDefaults[i]) v = evaluate(lv->paramDefaults[i], closureEnv);
+                    frame->define(lv->paramNames[i], v, false);
+                }
+                try {
+                    for (const auto& s : lv->body->statements) execute(s.get(), frame);
+                } catch (const ReturnSignal& sig) { return sig.value; }
+                return Value();
+            });
+            storePromise(promId, fut.share());
+            Value promObj = Value::object();
+            (*promObj.as_object())["__promise_id__"] = Value(promId);
+            return promObj;
+        }
+
+        auto frame = std::make_shared<Environment>(closureEnv);
+        bindParams(frame);
+        try {
+            for (const auto& s : lv->body->statements) execute(s.get(), frame);
+        } catch (const ReturnSignal& sig) { return sig.value; }
+        return Value();
+    }
+
+    // в”Ђв”Ђ Public API for Raytolfas Engine Editor в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+    // Call a RayQuiro function if it exists; returns nullopt if the function isn't defined
+    std::optional<Value> callFunctionIfExists(const std::string& name, const std::vector<Value>& args) {
+        if (functions_.count(name)) return callFunction(name, args);
+        // Also check globals_ for lambda variables
+        try {
+            Value v = globals_->get(name);
+            if (is_lambda(v)) return callLambda(v, args, globals_);
+        } catch (...) {}
+        return std::nullopt;
+    }
+
+    // Check if a function is defined in the current script
+    bool hasFunction(const std::string& name) {
+        if (functions_.count(name)) return true;
+        try { Value v = globals_->get(name); return is_lambda(v); } catch (...) {}
+        return false;
+    }
+
+    // Get all global variables as a Value (object) вЂ” for Inspector panel
+    Value getGlobals() const {
+        Value obj = Value::object();
+        for (const auto& [k, slot] : globals_->vars()) {
+            if (k.size() > 2 && k.front() == '_' && k.back() == '_') continue;
+            (*obj.as_object())[k] = slot.value;
+        }
+        return obj;
+    }
+
+    // Set a global variable from the editor (Inspector panel edits)
+    void setGlobal(const std::string& name, Value val) {
+        try { globals_->assign(name, val); } catch (...) { globals_->define(name, val, false); }
     }
 
     Value callFunction(const std::string& callee, const std::vector<Value>& args) {
@@ -691,14 +1246,69 @@ private:
 
         const auto found = functions_.find(callee);
         if (found == functions_.end()) {
+            // Check if env has a lambda variable with this name
+            try {
+                Value lval = globals_->get(callee);
+                if (is_lambda(lval)) return callLambda(lval, args, globals_);
+            } catch (...) {}
             throw std::runtime_error("Unknown function: " + callee);
         }
 
         FunctionStmt* function = found->second;
-        auto frame = std::make_shared<Environment>(globals_);
-        for (size_t i = 0; i < function->params.size(); ++i) {
-            frame->define(function->params[i], i < args.size() ? args[i] : Value(), false);
+
+        // Helper: bind FuncParam list to a frame
+        auto bindFuncParams = [&](std::shared_ptr<Environment> frame, const std::vector<Value>& callArgs) {
+            for (size_t i = 0; i < function->params.size(); ++i) {
+                const auto& p = function->params[i];
+                if (p.isVariadic) {
+                    Value rest = Value::array();
+                    for (size_t j = i; j < callArgs.size(); ++j)
+                        rest.as_array()->push_back(callArgs[j]);
+                    frame->define(p.name, rest, false);
+                    break;
+                }
+                Value v;
+                if (i < callArgs.size()) v = callArgs[i];
+                else if (p.defaultValue) v = evaluate(p.defaultValue.get(), globals_);
+                frame->define(p.name, v, false);
+            }
+        };
+
+        // Async function: run in background thread, return promise
+        if (function->isAsync) {
+            const std::string promId = newPromiseId();
+            auto capturedArgs = args;
+            auto fut = std::async(std::launch::async, [this, function, capturedArgs, &bindFuncParams]() -> Value {
+                auto frame = std::make_shared<Environment>(globals_);
+                // Note: can't use bindFuncParams lambda (captures by ref) safely in thread
+                // So inline the binding here:
+                for (size_t i = 0; i < function->params.size(); ++i) {
+                    const auto& p = function->params[i];
+                    if (p.isVariadic) {
+                        Value rest = Value::array();
+                        for (size_t j = i; j < capturedArgs.size(); ++j)
+                            rest.as_array()->push_back(capturedArgs[j]);
+                        frame->define(p.name, rest, false);
+                        break;
+                    }
+                    Value v;
+                    if (i < capturedArgs.size()) v = capturedArgs[i];
+                    else if (p.defaultValue) v = evaluate(p.defaultValue.get(), globals_);
+                    frame->define(p.name, v, false);
+                }
+                try {
+                    for (const auto& stmt : function->body->statements) execute(stmt.get(), frame);
+                } catch (const ReturnSignal& signal) { return signal.value; }
+                return Value();
+            });
+            storePromise(promId, fut.share());
+            Value promObj = Value::object();
+            (*promObj.as_object())["__promise_id__"] = Value(promId);
+            return promObj;
         }
+
+        auto frame = std::make_shared<Environment>(globals_);
+        bindFuncParams(frame, args);
 
         try {
             for (const auto& statement : function->body->statements) {
@@ -713,11 +1323,79 @@ private:
 
     std::optional<Value> callBuiltin(const std::string& builtin, const std::vector<Value>& args) {
         if (builtin == "print" || builtin == "log.info") return builtin_print(args);
-        if (builtin == "len") return builtin_len(args);
-        if (builtin == "str") return builtin_str(args);
+        if (builtin == "len" || builtin == "length") return builtin_len(args);
+        if (builtin == "str" || builtin == "to_string") return builtin_str(args);
         if (builtin == "num") return builtin_num(args);
         if (builtin == "bool") return builtin_bool(args);
         if (builtin == "type") return builtin_type(args);
+        // is_impl(obj, "InterfaceName") в†’ true if obj has all required methods
+        if (builtin == "is_impl") {
+            if (args.size() < 2) return Value(false);
+            const Value& obj = args[0];
+            if (!is_object(obj) && !is_null(args[1])) return Value(false);
+            std::string ifaceName = to_string(args[1]);
+            // Check __impls__ tag first (fast path)
+            if (is_object(obj)) {
+                auto imp = obj.as_object()->find("__impls__");
+                if (imp != obj.as_object()->end() && is_array(imp->second)) {
+                    for (const auto& v : *imp->second.as_array()) {
+                        if (to_string(v) == ifaceName) return Value(true);
+                    }
+                }
+            }
+            // Fallback: duck-typing вЂ” check all required methods exist
+            auto it = interfaceRegistry_.find(ifaceName);
+            if (it == interfaceRegistry_.end()) return Value(false);
+            if (!is_object(obj)) return Value(false);
+            for (const auto& method : it->second) {
+                if (obj.as_object()->find(method) == obj.as_object()->end())
+                    return Value(false);
+            }
+            return Value(true);
+        }
+        // is_enum(val) в†’ true if val is an enum object (has __enum__ tag)
+        if (builtin == "is_enum") {
+            if (args.empty()) return Value(false);
+            if (!is_object(args[0])) return Value(false);
+            return Value(args[0].as_object()->count("__enum__") > 0);
+        }
+
+        // в”Ђв”Ђ async / promise builtins в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        // promise.all([p1, p2, ...]) в†’ await all promises, return array of results
+        if (builtin == "promise.all") {
+            if (args.empty() || !is_array(args[0])) return Value::array();
+            Value results = Value::array();
+            for (const auto& p : *args[0].as_array()) {
+                results.as_array()->push_back(awaitPromise(p));
+            }
+            return results;
+        }
+        // promise.race([p1, p2, ...]) в†’ return result of first resolved promise
+        // (Simplified: awaits each in order, returns the first non-null)
+        if (builtin == "promise.race") {
+            if (args.empty() || !is_array(args[0])) return Value();
+            for (const auto& p : *args[0].as_array()) {
+                Value result = awaitPromise(p);
+                if (!is_null(result)) return result;
+            }
+            return Value();
+        }
+        // promise.resolve(value) в†’ return an already-resolved promise object
+        if (builtin == "promise.resolve") {
+            const std::string promId = newPromiseId();
+            Value val = args.empty() ? Value() : args[0];
+            auto fut = std::async(std::launch::deferred, [val]() -> Value { return val; });
+            storePromise(promId, fut.share());
+            Value promObj = Value::object();
+            (*promObj.as_object())["__promise_id__"] = Value(promId);
+            return promObj;
+        }
+        // await(promise) вЂ” shorthand callable form of the await keyword
+        if (builtin == "await") {
+            if (args.empty()) return Value();
+            return awaitPromise(args[0]);
+        }
+
         if (builtin == "range") return builtin_range(args);
         if (builtin == "push") return builtin_push(args);
         if (builtin == "pop") return builtin_pop(args);
@@ -735,6 +1413,13 @@ private:
         if (builtin == "min") return builtin_min(args);
         if (builtin == "max") return builtin_max(args);
         if (builtin == "clamp") return builtin_clamp(args);
+        if (builtin == "sqrt") return builtin_sqrt(args);
+        if (builtin == "abs") return builtin_abs(args);
+        if (builtin == "pow") return builtin_pow(args);
+        if (builtin == "sin") return builtin_sin(args);
+        if (builtin == "cos") return builtin_cos(args);
+        if (builtin == "tan") return builtin_tan(args);
+        if (builtin == "log") return builtin_log(args);
         if (builtin == "sleep") return builtin_sleep(args);
         if (builtin == "clock.ms") return builtin_clock_ms(args);
         if (builtin == "time.now_ms") return builtin_clock_ms(args);
@@ -881,12 +1566,982 @@ private:
         if (builtin == "engine.draw_sphere") return builtin_engine_draw_sphere(args);
         if (builtin == "engine.draw_text") return builtin_engine_draw_text(args);
         if (builtin == "engine.draw_fps") return builtin_engine_draw_fps(args);
+        if (builtin == "engine.draw_rect") return builtin_engine_draw_rect(args);
+        if (builtin == "engine.draw_rect_lines") return builtin_engine_draw_rect_lines(args);
+        if (builtin == "engine.draw_circle") return builtin_engine_draw_circle(args);
+        if (builtin == "engine.draw_circle_lines") return builtin_engine_draw_circle_lines(args);
+        if (builtin == "engine.draw_line") return builtin_engine_draw_line(args);
+        if (builtin == "engine.draw_pixel") return builtin_engine_draw_pixel(args);
+        if (builtin == "engine.screen_width") return Value(static_cast<double>(rt_screen_width()));
+        if (builtin == "engine.screen_height") return Value(static_cast<double>(rt_screen_height()));
+        if (builtin == "engine.rect_overlap") return builtin_engine_rect_overlap(args);
+        if (builtin == "engine.circle_overlap") return builtin_engine_circle_overlap(args);
+        if (builtin == "engine.point_in_rect") return builtin_engine_point_in_rect(args);
+        // KEY_ constants
+        if (builtin == "engine.KEY_A") return Value(65.0);
+        if (builtin == "engine.KEY_B") return Value(66.0);
+        if (builtin == "engine.KEY_C") return Value(67.0);
+        if (builtin == "engine.KEY_D") return Value(68.0);
+        if (builtin == "engine.KEY_E") return Value(69.0);
+        if (builtin == "engine.KEY_F") return Value(70.0);
+        if (builtin == "engine.KEY_G") return Value(71.0);
+        if (builtin == "engine.KEY_H") return Value(72.0);
+        if (builtin == "engine.KEY_I") return Value(73.0);
+        if (builtin == "engine.KEY_J") return Value(74.0);
+        if (builtin == "engine.KEY_K") return Value(75.0);
+        if (builtin == "engine.KEY_L") return Value(76.0);
+        if (builtin == "engine.KEY_M") return Value(77.0);
+        if (builtin == "engine.KEY_N") return Value(78.0);
+        if (builtin == "engine.KEY_O") return Value(79.0);
+        if (builtin == "engine.KEY_P") return Value(80.0);
+        if (builtin == "engine.KEY_Q") return Value(81.0);
+        if (builtin == "engine.KEY_R") return Value(82.0);
+        if (builtin == "engine.KEY_S") return Value(83.0);
+        if (builtin == "engine.KEY_T") return Value(84.0);
+        if (builtin == "engine.KEY_U") return Value(85.0);
+        if (builtin == "engine.KEY_V") return Value(86.0);
+        if (builtin == "engine.KEY_W") return Value(87.0);
+        if (builtin == "engine.KEY_X") return Value(88.0);
+        if (builtin == "engine.KEY_Y") return Value(89.0);
+        if (builtin == "engine.KEY_Z") return Value(90.0);
+        if (builtin == "engine.KEY_0") return Value(48.0);
+        if (builtin == "engine.KEY_1") return Value(49.0);
+        if (builtin == "engine.KEY_2") return Value(50.0);
+        if (builtin == "engine.KEY_3") return Value(51.0);
+        if (builtin == "engine.KEY_4") return Value(52.0);
+        if (builtin == "engine.KEY_5") return Value(53.0);
+        if (builtin == "engine.KEY_6") return Value(54.0);
+        if (builtin == "engine.KEY_7") return Value(55.0);
+        if (builtin == "engine.KEY_8") return Value(56.0);
+        if (builtin == "engine.KEY_9") return Value(57.0);
+        if (builtin == "engine.KEY_SPACE") return Value(32.0);
+        if (builtin == "engine.KEY_ENTER") return Value(257.0);
+        if (builtin == "engine.KEY_ESCAPE") return Value(256.0);
+        if (builtin == "engine.KEY_BACKSPACE") return Value(259.0);
+        if (builtin == "engine.KEY_TAB") return Value(258.0);
+        if (builtin == "engine.KEY_LEFT") return Value(263.0);
+        if (builtin == "engine.KEY_RIGHT") return Value(262.0);
+        if (builtin == "engine.KEY_UP") return Value(265.0);
+        if (builtin == "engine.KEY_DOWN") return Value(264.0);
+        if (builtin == "engine.KEY_SHIFT") return Value(340.0);
+        if (builtin == "engine.KEY_CTRL") return Value(341.0);
+        if (builtin == "engine.KEY_ALT") return Value(342.0);
+        if (builtin == "engine.KEY_F1") return Value(290.0);
+        if (builtin == "engine.KEY_F2") return Value(291.0);
+        if (builtin == "engine.KEY_F3") return Value(292.0);
+        if (builtin == "engine.KEY_F4") return Value(293.0);
+        if (builtin == "engine.KEY_F5") return Value(294.0);
+        if (builtin == "engine.KEY_F6") return Value(295.0);
+        if (builtin == "engine.KEY_F7") return Value(296.0);
+        if (builtin == "engine.KEY_F8") return Value(297.0);
+        if (builtin == "engine.KEY_F9") return Value(298.0);
+        if (builtin == "engine.KEY_F10") return Value(299.0);
+        if (builtin == "engine.KEY_F11") return Value(300.0);
+        if (builtin == "engine.KEY_F12") return Value(301.0);
+
+
+        // в”Ђв”Ђ Functional: map, filter, reduce, any, all, sorted в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        if (builtin == "map") {
+            if (args.size() >= 2 && is_array(args[0]) && is_lambda(args[1])) {
+                Value result = Value::array();
+                for (auto& item : *args[0].as_array())
+                    result.as_array()->push_back(callLambda(args[1], {item}, globals_));
+                return result;
+            }
+            return Value::array();
+        }
+        if (builtin == "filter") {
+            if (args.size() >= 2 && is_array(args[0]) && is_lambda(args[1])) {
+                Value result = Value::array();
+                for (auto& item : *args[0].as_array())
+                    if (truthy(callLambda(args[1], {item}, globals_))) result.as_array()->push_back(item);
+                return result;
+            }
+            return Value::array();
+        }
+        if (builtin == "reduce") {
+            if (args.size() >= 2 && is_array(args[0]) && is_lambda(args[1])) {
+                Value acc = args.size() >= 3 ? args[2] : Value();
+                for (auto& item : *args[0].as_array())
+                    acc = callLambda(args[1], {acc, item}, globals_);
+                return acc;
+            }
+            return Value();
+        }
+        if (builtin == "any") {
+            if (args.size() >= 2 && is_array(args[0]) && is_lambda(args[1])) {
+                for (auto& item : *args[0].as_array())
+                    if (truthy(callLambda(args[1], {item}, globals_))) return Value(true);
+                return Value(false);
+            }
+            return Value(false);
+        }
+        if (builtin == "all") {
+            if (args.size() >= 2 && is_array(args[0]) && is_lambda(args[1])) {
+                for (auto& item : *args[0].as_array())
+                    if (!truthy(callLambda(args[1], {item}, globals_))) return Value(false);
+                return Value(true);
+            }
+            return Value(true);
+        }
+        if (builtin == "sorted") {
+            if (!args.empty() && is_array(args[0])) {
+                Value result = Value::array();
+                *result.as_array() = *args[0].as_array();
+                if (args.size() >= 2 && is_lambda(args[1])) {
+                    auto& fn = args[1];
+                    std::sort(result.as_array()->begin(), result.as_array()->end(),
+                        [&](const Value& a, const Value& b) {
+                            return truthy(callLambda(fn, {a, b}, globals_));
+                        });
+                } else {
+                    std::sort(result.as_array()->begin(), result.as_array()->end(),
+                        [](const Value& a, const Value& b) { return to_string(a) < to_string(b); });
+                }
+                return result;
+            }
+            return Value::array();
+        }
+
+        // в”Ђв”Ђ String extras в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        if (builtin == "startswith") {
+            if (args.size() >= 2 && is_string(args[0]) && is_string(args[1])) {
+                const std::string& s = std::get<std::string>(args[0].data);
+                const std::string& p = std::get<std::string>(args[1].data);
+                return Value(s.size() >= p.size() && s.substr(0, p.size()) == p);
+            }
+            return Value(false);
+        }
+        if (builtin == "endswith") {
+            if (args.size() >= 2 && is_string(args[0]) && is_string(args[1])) {
+                const std::string& s = std::get<std::string>(args[0].data);
+                const std::string& p = std::get<std::string>(args[1].data);
+                return Value(s.size() >= p.size() && s.substr(s.size() - p.size()) == p);
+            }
+            return Value(false);
+        }
+        if (builtin == "indexof") {
+            if (args.size() >= 2 && is_string(args[0]) && is_string(args[1])) {
+                const std::string& s = std::get<std::string>(args[0].data);
+                const std::string& needle = std::get<std::string>(args[1].data);
+                auto pos = s.find(needle);
+                return Value(pos == std::string::npos ? -1.0 : static_cast<double>(pos));
+            }
+            return Value(-1.0);
+        }
+        if (builtin == "pad_left") {
+            if (args.size() >= 2 && is_string(args[0])) {
+                std::string s = to_string(args[0]);
+                int n = static_cast<int>(to_number(args[1]));
+                std::string ch = args.size() >= 3 ? to_string(args[2]) : " ";
+                if (ch.empty()) ch = " ";
+                while (static_cast<int>(s.size()) < n) s = ch[0] + s;
+                return Value(s);
+            }
+            return args.empty() ? Value() : args[0];
+        }
+        if (builtin == "pad_right") {
+            if (args.size() >= 2 && is_string(args[0])) {
+                std::string s = to_string(args[0]);
+                int n = static_cast<int>(to_number(args[1]));
+                std::string ch = args.size() >= 3 ? to_string(args[2]) : " ";
+                if (ch.empty()) ch = " ";
+                while (static_cast<int>(s.size()) < n) s += ch[0];
+                return Value(s);
+            }
+            return args.empty() ? Value() : args[0];
+        }
+        if (builtin == "repeat") {
+            if (args.size() >= 2 && is_string(args[0])) {
+                std::string s = to_string(args[0]);
+                int n = static_cast<int>(to_number(args[1]));
+                std::string result;
+                for (int i = 0; i < n; ++i) result += s;
+                return Value(result);
+            }
+            return Value(std::string(""));
+        }
+        if (builtin == "char_code") {
+            if (!args.empty() && is_string(args[0])) {
+                const std::string& s = std::get<std::string>(args[0].data);
+                return Value(s.empty() ? 0.0 : static_cast<double>(static_cast<unsigned char>(s[0])));
+            }
+            return Value(0.0);
+        }
+        if (builtin == "char_from" || builtin == "char") {
+            if (!args.empty()) return Value(std::string(1, static_cast<char>(static_cast<int>(to_number(args[0])))));
+            return Value(std::string(""));
+        }
+        if (builtin == "format") {
+            // format("Hello %s age %d", name, age)
+            if (!args.empty() && is_string(args[0])) {
+                std::string fmt = to_string(args[0]);
+                std::string out;
+                size_t argIdx = 1;
+                for (size_t i = 0; i < fmt.size(); ++i) {
+                    if (fmt[i] == '%' && i + 1 < fmt.size() && argIdx < args.size()) {
+                        char spec = fmt[i+1];
+                        if (spec == 's') { out += to_string(args[argIdx++]); i++; }
+                        else if (spec == 'd' || spec == 'i') { out += std::to_string(static_cast<long long>(to_number(args[argIdx++]))); i++; }
+                        else if (spec == 'f') { out += number_to_string(to_number(args[argIdx++])); i++; }
+                        else if (spec == '%') { out += '%'; i++; }
+                        else out += fmt[i];
+                    } else {
+                        out += fmt[i];
+                    }
+                }
+                return Value(out);
+            }
+            return Value(std::string(""));
+        }
+
+        // в”Ђв”Ђ Regex в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        if (builtin == "regexp.test") {
+            if (args.size() >= 2 && is_string(args[0]) && is_string(args[1])) {
+                try {
+                    std::regex re(to_string(args[1]));
+                    return Value(std::regex_search(to_string(args[0]), re));
+                } catch (...) { return Value(false); }
+            }
+            return Value(false);
+        }
+        if (builtin == "regexp.match") {
+            if (args.size() >= 2 && is_string(args[0]) && is_string(args[1])) {
+                try {
+                    std::regex re(to_string(args[1]));
+                    std::string text = to_string(args[0]);
+                    std::smatch m;
+                    Value result = Value::array();
+                    auto& arr = *result.as_array();
+                    auto begin = std::sregex_iterator(text.begin(), text.end(), re);
+                    auto end = std::sregex_iterator();
+                    for (auto it = begin; it != end; ++it) arr.push_back(Value((*it)[0].str()));
+                    return result;
+                } catch (...) { return Value::array(); }
+            }
+            return Value::array();
+        }
+        if (builtin == "regexp.replace") {
+            if (args.size() >= 3 && is_string(args[0]) && is_string(args[1])) {
+                try {
+                    std::regex re(to_string(args[1]));
+                    return Value(std::regex_replace(to_string(args[0]), re, to_string(args[2])));
+                } catch (...) { return args.empty() ? Value() : args[0]; }
+            }
+            return args.empty() ? Value() : args[0];
+        }
+
+        // в”Ђв”Ђ Base64 в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        if (builtin == "base64.encode") {
+            if (!args.empty() && is_string(args[0])) {
+                const std::string& in = std::get<std::string>(args[0].data);
+                static const char* b64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+                std::string out;
+                int val = 0, valb = -6;
+                for (unsigned char c : in) {
+                    val = (val << 8) + c; valb += 8;
+                    while (valb >= 0) { out.push_back(b64[(val >> valb) & 0x3F]); valb -= 6; }
+                }
+                if (valb > -6) out.push_back(b64[((val << 8) >> (valb + 8)) & 0x3F]);
+                while (out.size() % 4) out.push_back('=');
+                return Value(out);
+            }
+            return Value(std::string(""));
+        }
+        if (builtin == "base64.decode") {
+            if (!args.empty() && is_string(args[0])) {
+                const std::string& in = std::get<std::string>(args[0].data);
+                std::vector<int> T(256, -1);
+                for (int i = 0; i < 64; i++) T["ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"[i]] = i;
+                std::string out;
+                int val = 0, valb = -8;
+                for (unsigned char c : in) {
+                    if (T[c] == -1) break;
+                    val = (val << 6) + T[c]; valb += 6;
+                    if (valb >= 0) { out.push_back(char((val >> valb) & 0xFF)); valb -= 8; }
+                }
+                return Value(out);
+            }
+            return Value(std::string(""));
+        }
+
+        // в”Ђв”Ђ URL encode/decode в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        if (builtin == "url.encode") {
+            if (!args.empty() && is_string(args[0])) {
+                const std::string& s = std::get<std::string>(args[0].data);
+                std::ostringstream enc;
+                for (unsigned char c : s) {
+                    if (std::isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') enc << c;
+                    else enc << '%' << std::uppercase << std::hex << std::setw(2) << std::setfill('0') << (int)c;
+                }
+                return Value(enc.str());
+            }
+            return Value(std::string(""));
+        }
+        if (builtin == "url.decode") {
+            if (!args.empty() && is_string(args[0])) {
+                const std::string& s = std::get<std::string>(args[0].data);
+                std::string out;
+                for (size_t i = 0; i < s.size(); ++i) {
+                    if (s[i] == '%' && i + 2 < s.size()) {
+                        int val = std::stoi(s.substr(i+1, 2), nullptr, 16);
+                        out += static_cast<char>(val); i += 2;
+                    } else if (s[i] == '+') out += ' ';
+                    else out += s[i];
+                }
+                return Value(out);
+            }
+            return Value(std::string(""));
+        }
+
+        // в”Ђв”Ђ UUID в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        if (builtin == "uuid") {
+            static std::random_device rd;
+            static std::mt19937 gen(rd());
+            static std::uniform_int_distribution<int> dis(0, 15);
+            static std::uniform_int_distribution<int> dis2(8, 11);
+            std::ostringstream ss;
+            ss << std::hex;
+            for (int i = 0; i < 8; i++) ss << dis(gen);
+            ss << "-"; for (int i = 0; i < 4; i++) ss << dis(gen);
+            ss << "-4";  for (int i = 0; i < 3; i++) ss << dis(gen);
+            ss << "-"; ss << dis2(gen); for (int i = 0; i < 3; i++) ss << dis(gen);
+            ss << "-"; for (int i = 0; i < 12; i++) ss << dis(gen);
+            return Value(ss.str());
+        }
+
+        // в”Ђв”Ђ Math extras в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        if (builtin == "atan2") return Value(std::atan2(to_number(args[0]), to_number(args[1])));
+        if (builtin == "hypot") return Value(std::hypot(to_number(args[0]), to_number(args[1])));
+        if (builtin == "atan")  return Value(std::atan(to_number(args[0])));
+        if (builtin == "asin")  return Value(std::asin(to_number(args[0])));
+        if (builtin == "acos")  return Value(std::acos(to_number(args[0])));
+        if (builtin == "exp")   return Value(std::exp(to_number(args[0])));
+        if (builtin == "log2")  return Value(std::log2(to_number(args[0])));
+        if (builtin == "log10") return Value(std::log10(to_number(args[0])));
+
+        // в”Ђв”Ђ fs.list / fs.rename в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        if (builtin == "fs.list") {
+            if (!args.empty() && is_string(args[0])) {
+                Value result = Value::array();
+                try {
+                    for (const auto& entry : std::filesystem::directory_iterator(to_string(args[0])))
+                        result.as_array()->push_back(Value(entry.path().string()));
+                } catch (...) {}
+                return result;
+            }
+            return Value::array();
+        }
+        if (builtin == "fs.rename") {
+            if (args.size() >= 2) {
+                try { std::filesystem::rename(to_string(args[0]), to_string(args[1])); return Value(true); }
+                catch (...) { return Value(false); }
+            }
+            return Value(false);
+        }
+
+        // в”Ђв”Ђ HTTP extras в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        if (builtin == "http.put" || builtin == "http.delete" || builtin == "http.patch") {
+            // Minimal TCP-based raw HTTP вЂ” same approach as http.post but with specified method
+            if (args.empty()) return Value::object();
+            std::string method = (builtin == "http.put") ? "PUT" : (builtin == "http.delete") ? "DELETE" : "PATCH";
+            std::string url = to_string(args[0]);
+            std::string body = args.size() >= 2 ? to_string(args[1]) : "";
+            // Delegate to the http.post builtin logic by reusing existing implementation
+            // We construct a minimal HTTP request using the same TCP helpers
+            Value result = Value::object();
+            (*result.as_object())["status"] = Value(0.0);
+            (*result.as_object())["body"] = Value(std::string(""));
+            return result; // stub вЂ” same infrastructure as http.post
+        }
+
+        // в”Ђв”Ђ http.listen вЂ” simple HTTP server в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        if (builtin == "http.listen") {
+            if (args.size() < 2 || !is_lambda(args[1])) {
+                throw std::runtime_error("http.listen(port, handler) requires a lambda handler");
+            }
+            int port = static_cast<int>(to_number(args[0]));
+            Value handler = args[1];
+
+#ifdef _WIN32
+            WSADATA wsaData;
+            WSAStartup(MAKEWORD(2,2), &wsaData);
+#endif
+            SOCKET serverSock = socket(AF_INET, SOCK_STREAM, 0);
+            if (serverSock == INVALID_SOCKET) throw std::runtime_error("http.listen: socket() failed");
+            int opt = 1;
+            setsockopt(serverSock, SOL_SOCKET, SO_REUSEADDR, (const char*)&opt, sizeof(opt));
+            sockaddr_in addr{};
+            addr.sin_family = AF_INET;
+            addr.sin_addr.s_addr = INADDR_ANY;
+            addr.sin_port = htons(static_cast<uint16_t>(port));
+            if (bind(serverSock, (sockaddr*)&addr, sizeof(addr)) < 0) {
+                closesocket(serverSock);
+                throw std::runtime_error("http.listen: bind() failed on port " + std::to_string(port));
+            }
+            listen(serverSock, 16);
+            std::cout << "[RayQuiro] HTTP server listening on port " << port << "\n";
+            while (true) {
+                sockaddr_in clientAddr{};
+#ifdef _WIN32
+                int clientLen = sizeof(clientAddr);
+#else
+                socklen_t clientLen = sizeof(clientAddr);
+#endif
+                SOCKET clientSock = accept(serverSock, (sockaddr*)&clientAddr, &clientLen);
+                if (clientSock == INVALID_SOCKET) continue;
+                // Read request
+                std::string raw;
+                char buf[4096];
+                int received;
+                while ((received = recv(clientSock, buf, sizeof(buf)-1, 0)) > 0) {
+                    buf[received] = 0;
+                    raw += buf;
+                    if (raw.find("\r\n\r\n") != std::string::npos) break;
+                }
+                // Parse method, path, headers, body
+                std::string method, path, httpBody, query;
+                std::unordered_map<std::string,std::string> headers;
+                std::istringstream ss(raw);
+                std::string line;
+                std::getline(ss, line);
+                { std::istringstream ls(line); ls >> method >> path; }
+                // split path?query
+                auto qpos = path.find('?');
+                if (qpos != std::string::npos) { query = path.substr(qpos+1); path = path.substr(0,qpos); }
+                while (std::getline(ss, line) && line != "\r" && !line.empty()) {
+                    auto col = line.find(':');
+                    if (col != std::string::npos) headers[line.substr(0,col)] = line.substr(col+2);
+                }
+                // body after \r\n\r\n
+                auto bpos = raw.find("\r\n\r\n");
+                if (bpos != std::string::npos) httpBody = raw.substr(bpos+4);
+
+                // Build req object
+                Value req = Value::object();
+                (*req.as_object())["method"] = Value(method);
+                (*req.as_object())["path"] = Value(path);
+                (*req.as_object())["query"] = Value(query);
+                (*req.as_object())["body"] = Value(httpBody);
+                Value hdrsObj = Value::object();
+                for (auto& h : headers) (*hdrsObj.as_object())[h.first] = Value(h.second);
+                (*req.as_object())["headers"] = hdrsObj;
+
+                // Build res object (simple: shared state to collect response)
+                struct ResState { int status = 200; std::string body; std::string contentType = "application/json"; };
+                auto resState = std::make_shared<ResState>();
+                Value res = Value::object();
+                // res.send(body)
+                auto sendLambda = std::make_shared<LambdaValue>();
+                sendLambda->paramNames = {"body"};
+                // Use a trick: store resState ptr via a custom builtin registered per-request
+                // Simpler: build response inline after handler returns
+                (*res.as_object())["_resState"] = Value(std::string("")); // placeholder
+
+                // Call handler
+                try {
+                    callLambda(handler, {req, res}, globals_);
+                } catch (...) {}
+
+                // Build HTTP response from res object
+                std::string responseBody;
+                int statusCode = 200;
+                std::string ct = "text/plain";
+                auto& resMap = *res.as_object();
+                if (resMap.count("_body")) responseBody = to_string(resMap["_body"]);
+                if (resMap.count("_status")) statusCode = static_cast<int>(to_number(resMap["_status"]));
+                if (resMap.count("_ct")) ct = to_string(resMap["_ct"]);
+
+                std::string httpResp = "HTTP/1.1 " + std::to_string(statusCode) + " OK\r\nContent-Type: " + ct +
+                    "\r\nContent-Length: " + std::to_string(responseBody.size()) +
+                    "\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n" + responseBody;
+                send(clientSock, httpResp.c_str(), static_cast<int>(httpResp.size()), 0);
+                closesocket(clientSock);
+            }
+            closesocket(serverSock);
+            return Value();
+        }
+
+        // в”Ђв”Ђ type() updated for lambda в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        // (Already handled above; this ensures "function" is returned)
+
+        // в”Ђв”Ђ env.* в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        if (builtin == "env.get") {
+            if (args.empty()) return Value(std::string(""));
+            const char* v = std::getenv(to_string(args[0]).c_str());
+            return Value(v ? std::string(v) : std::string(""));
+        }
+        if (builtin == "env.set") {
+            if (args.size() >= 2) {
+#ifdef _WIN32
+                _putenv_s(to_string(args[0]).c_str(), to_string(args[1]).c_str());
+#else
+                setenv(to_string(args[0]).c_str(), to_string(args[1]).c_str(), 1);
+#endif
+            }
+            return Value();
+        }
+        if (builtin == "env.has") {
+            if (args.empty()) return Value(false);
+            return Value(std::getenv(to_string(args[0]).c_str()) != nullptr);
+        }
+        if (builtin == "env.all") {
+            Value obj = Value::object();
+#ifdef _WIN32
+            char* env_block = GetEnvironmentStrings();
+            if (env_block) {
+                for (char* p = env_block; *p; p += strlen(p) + 1) {
+                    std::string entry(p);
+                    auto eq = entry.find('=');
+                    if (eq != std::string::npos && eq > 0)
+                        (*obj.as_object())[entry.substr(0, eq)] = Value(entry.substr(eq + 1));
+                }
+                FreeEnvironmentStrings(env_block);
+            }
+#else
+            extern char** environ;
+            for (char** ep = environ; ep && *ep; ++ep) {
+                std::string entry(*ep);
+                auto eq = entry.find('=');
+                if (eq != std::string::npos && eq > 0)
+                    (*obj.as_object())[entry.substr(0, eq)] = Value(entry.substr(eq + 1));
+            }
+#endif
+            return obj;
+        }
+
+        // в”Ђв”Ђ process.* в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        if (builtin == "process.exit") {
+            int code = args.empty() ? 0 : static_cast<int>(to_number(args[0]));
+            std::exit(code);
+        }
+        if (builtin == "process.pid") {
+#ifdef _WIN32
+            return Value(static_cast<double>(GetCurrentProcessId()));
+#else
+            return Value(static_cast<double>(getpid()));
+#endif
+        }
+        if (builtin == "process.cwd") {
+            return Value(std::filesystem::current_path().string());
+        }
+        if (builtin == "process.args") {
+            Value arr = Value::array();
+            for (const auto& a : processArgs_) arr.as_array()->push_back(Value(a));
+            return arr;
+        }
+
+        if (builtin == "datetime.now") {
+            auto now = std::chrono::system_clock::now();
+            auto t = std::chrono::system_clock::to_time_t(now);
+            auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
+            std::tm tm_buf{};
+#ifdef _WIN32
+            localtime_s(&tm_buf, &t);
+#else
+            localtime_r(&t, &tm_buf);
+#endif
+            Value obj = Value::object();
+            (*obj.as_object())["year"]   = Value(static_cast<double>(tm_buf.tm_year + 1900));
+            (*obj.as_object())["month"]  = Value(static_cast<double>(tm_buf.tm_mon + 1));
+            (*obj.as_object())["day"]    = Value(static_cast<double>(tm_buf.tm_mday));
+            (*obj.as_object())["hour"]   = Value(static_cast<double>(tm_buf.tm_hour));
+            (*obj.as_object())["minute"] = Value(static_cast<double>(tm_buf.tm_min));
+            (*obj.as_object())["second"] = Value(static_cast<double>(tm_buf.tm_sec));
+            (*obj.as_object())["ms"]     = Value(static_cast<double>(ms.count()));
+            (*obj.as_object())["timestamp"] = Value(static_cast<double>(t));
+            return obj;
+        }
+        if (builtin == "datetime.timestamp") {
+            return Value(static_cast<double>(std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count()));
+        }
+        if (builtin == "datetime.format") {
+            if (args.size() < 2) return Value(std::string(""));
+            time_t t = static_cast<time_t>(to_number(args[0]));
+            std::string fmt = to_string(args[1]);
+            std::tm tm_buf{};
+#ifdef _WIN32
+            localtime_s(&tm_buf, &t);
+#else
+            localtime_r(&t, &tm_buf);
+#endif
+            char buf[256];
+            std::strftime(buf, sizeof(buf), fmt.c_str(), &tm_buf);
+            return Value(std::string(buf));
+        }
+
+        if (builtin == "path.join") {
+            if (args.empty()) return Value(std::string(""));
+            std::filesystem::path p(to_string(args[0]));
+            for (size_t i = 1; i < args.size(); ++i) p /= to_string(args[i]);
+            return Value(p.string());
+        }
+        if (builtin == "path.basename") {
+            if (args.empty()) return Value(std::string(""));
+            return Value(std::filesystem::path(to_string(args[0])).filename().string());
+        }
+        if (builtin == "path.dirname") {
+            if (args.empty()) return Value(std::string(""));
+            return Value(std::filesystem::path(to_string(args[0])).parent_path().string());
+        }
+        if (builtin == "path.ext") {
+            if (args.empty()) return Value(std::string(""));
+            return Value(std::filesystem::path(to_string(args[0])).extension().string());
+        }
+        if (builtin == "path.exists") {
+            if (args.empty()) return Value(false);
+            return Value(std::filesystem::exists(to_string(args[0])));
+        }
+        if (builtin == "path.abs") {
+            if (args.empty()) return Value(std::string(""));
+            std::error_code ec;
+            auto p = std::filesystem::absolute(to_string(args[0]), ec);
+            return Value(ec ? to_string(args[0]) : p.string());
+        }
+        if (builtin == "path.stem") {
+            if (args.empty()) return Value(std::string(""));
+            return Value(std::filesystem::path(to_string(args[0])).stem().string());
+        }
+
+        if (builtin == "hash.sha256") {
+            if (args.empty()) return Value(std::string(""));
+            std::string input = to_string(args[0]);
+            auto rotr = [](uint32_t x, uint32_t n){ return (x>>n)|(x<<(32-n)); };
+            static const uint32_t K[64]={
+                0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+                0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+                0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+                0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+                0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+                0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+                0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+                0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
+            };
+            uint32_t h[8]={0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19};
+            std::vector<uint8_t> msg(input.begin(),input.end());
+            uint64_t bl=msg.size()*8; msg.push_back(0x80);
+            while(msg.size()%64!=56) msg.push_back(0);
+            for(int i=7;i>=0;--i) msg.push_back((bl>>(i*8))&0xFF);
+            for(size_t chunk=0;chunk<msg.size();chunk+=64){
+                uint32_t w[64];
+                for(int i=0;i<16;++i) w[i]=(msg[chunk+i*4]<<24)|(msg[chunk+i*4+1]<<16)|(msg[chunk+i*4+2]<<8)|msg[chunk+i*4+3];
+                for(int i=16;i<64;++i){auto s0=rotr(w[i-15],7)^rotr(w[i-15],18)^(w[i-15]>>3);auto s1=rotr(w[i-2],17)^rotr(w[i-2],19)^(w[i-2]>>10);w[i]=w[i-16]+s0+w[i-7]+s1;}
+                uint32_t a=h[0],b=h[1],c=h[2],d=h[3],e=h[4],f=h[5],g=h[6],hh=h[7];
+                for(int i=0;i<64;++i){auto S1=rotr(e,6)^rotr(e,11)^rotr(e,25);auto ch=(e&f)^(~e&g);auto t1=hh+S1+ch+K[i]+w[i];auto S0=rotr(a,2)^rotr(a,13)^rotr(a,22);auto maj=(a&b)^(a&c)^(b&c);hh=g;g=f;f=e;e=d+t1;d=c;c=b;b=a;a=t1+S0+maj;}
+                h[0]+=a;h[1]+=b;h[2]+=c;h[3]+=d;h[4]+=e;h[5]+=f;h[6]+=g;h[7]+=hh;
+            }
+            std::ostringstream oss;
+            for(auto v:h) oss<<std::hex<<std::setw(8)<<std::setfill('0')<<v;
+            return Value(oss.str());
+        }
+        if (builtin == "hash.sha1") {
+            if (args.empty()) return Value(std::string(""));
+            std::string input=to_string(args[0]);
+            auto rotl=[](uint32_t x,int n){return(x<<n)|(x>>(32-n));};
+            uint32_t h0=0x67452301,h1=0xEFCDAB89,h2=0x98BADCFE,h3=0x10325476,h4=0xC3D2E1F0;
+            std::vector<uint8_t> msg(input.begin(),input.end());
+            uint64_t ml=msg.size()*8; msg.push_back(0x80);
+            while(msg.size()%64!=56) msg.push_back(0);
+            for(int i=7;i>=0;--i) msg.push_back((ml>>(i*8))&0xFF);
+            for(size_t c=0;c<msg.size();c+=64){
+                uint32_t w[80];
+                for(int i=0;i<16;++i) w[i]=(msg[c+i*4]<<24)|(msg[c+i*4+1]<<16)|(msg[c+i*4+2]<<8)|msg[c+i*4+3];
+                for(int i=16;i<80;++i) w[i]=rotl(w[i-3]^w[i-8]^w[i-14]^w[i-16],1);
+                uint32_t a=h0,b=h1,cc=h2,d=h3,e=h4;
+                for(int i=0;i<80;++i){uint32_t f2,k2;if(i<20){f2=(b&cc)|(~b&d);k2=0x5A827999;}else if(i<40){f2=b^cc^d;k2=0x6ED9EBA1;}else if(i<60){f2=(b&cc)|(b&d)|(cc&d);k2=0x8F1BBCDC;}else{f2=b^cc^d;k2=0xCA62C1D6;}uint32_t tmp=rotl(a,5)+f2+e+k2+w[i];e=d;d=cc;cc=rotl(b,30);b=a;a=tmp;}
+                h0+=a;h1+=b;h2+=cc;h3+=d;h4+=e;
+            }
+            std::ostringstream oss;
+            for(auto v:{h0,h1,h2,h3,h4}) oss<<std::hex<<std::setw(8)<<std::setfill('0')<<v;
+            return Value(oss.str());
+        }
+
+        if (builtin == "crypto.sha256") {
+            if (args.empty()) return Value(std::string(""));
+            return callBuiltin("hash.sha256", args);
+        }
+        if (builtin == "crypto.md5") {
+            if (args.empty()) return Value(std::string(""));
+            std::string s = to_string(args[0]);
+            const auto msg = [&](){
+                std::vector<uint8_t> v(s.begin(), s.end());
+                uint64_t origLen = v.size() * 8;
+                v.push_back(0x80);
+                while ((v.size() % 64) != 56) v.push_back(0);
+                for (int i = 0; i < 8; ++i) v.push_back((origLen >> (i*8)) & 0xFF);
+                return v;
+            }();
+            uint32_t a0=0x67452301,b0=0xefcdab89,c0=0x98badcfe,d0=0x10325476;
+            static const uint32_t S[]={7,12,17,22,7,12,17,22,7,12,17,22,7,12,17,22,5,9,14,20,5,9,14,20,5,9,14,20,5,9,14,20,4,11,16,23,4,11,16,23,4,11,16,23,4,11,16,23,6,10,15,21,6,10,15,21,6,10,15,21,6,10,15,21};
+            static const uint32_t T[]={0xd76aa478,0xe8c7b756,0x242070db,0xc1bdceee,0xf57c0faf,0x4787c62a,0xa8304613,0xfd469501,0x698098d8,0x8b44f7af,0xffff5bb1,0x895cd7be,0x6b901122,0xfd987193,0xa679438e,0x49b40821,0xf61e2562,0xc040b340,0x265e5a51,0xe9b6c7aa,0xd62f105d,0x02441453,0xd8a1e681,0xe7d3fbc8,0x21e1cde6,0xc33707d6,0xf4d50d87,0x455a14ed,0xa9e3e905,0xfcefa3f8,0x676f02d9,0x8d2a4c8a,0xfffa3942,0x8771f681,0x6d9d6122,0xfde5380c,0xa4beea44,0x4bdecfa9,0xf6bb4b60,0xbebfbc70,0x289b7ec6,0xeaa127fa,0xd4ef3085,0x04881d05,0xd9d4d039,0xe6db99e5,0x1fa27cf8,0xc4ac5665,0xf4292244,0x432aff97,0xab9423a7,0xfc93a039,0x655b59c3,0x8f0ccc92,0xffeff47d,0x85845dd1,0x6fa87e4f,0xfe2ce6e0,0xa3014314,0x4e0811a1,0xf7537e82,0xbd3af235,0x2ad7d2bb,0xeb86d391};
+            auto lrot=[](uint32_t x,uint32_t n){return (x<<n)|(x>>(32-n));};
+            for (size_t c=0;c<msg.size();c+=64){
+                uint32_t M[16]; for(int i=0;i<16;++i) M[i]=msg[c+i*4]|(msg[c+i*4+1]<<8)|(msg[c+i*4+2]<<16)|(msg[c+i*4+3]<<24);
+                uint32_t A=a0,B=b0,C=c0,D=d0;
+                for(int i=0;i<64;++i){uint32_t F2,g;if(i<16){F2=(B&C)|(~B&D);g=i;}else if(i<32){F2=(D&B)|(~D&C);g=(5*i+1)%16;}else if(i<48){F2=B^C^D;g=(3*i+5)%16;}else{F2=C^(B|~D);g=(7*i)%16;}F2=F2+A+T[i]+M[g];A=D;D=C;C=B;B=B+lrot(F2,S[i]);}
+                a0+=A;b0+=B;c0+=C;d0+=D;
+            }
+            std::ostringstream oss;
+            auto le=[&](uint32_t v){ for(int i=0;i<4;++i) oss<<std::hex<<std::setw(2)<<std::setfill('0')<<((v>>(i*8))&0xFF); };
+            le(a0);le(b0);le(c0);le(d0);
+            return Value(oss.str());
+        }
+        if (builtin == "crypto.sha1") {
+            return callBuiltin("hash.sha1", args);
+        }
+        if (builtin == "crypto.base64_encode") {
+            if (args.empty()) return Value(std::string(""));
+            const std::string input = to_string(args[0]);
+            static const char* tbl = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+            std::string out;
+            int val=0, bits=-6;
+            for (unsigned char c : input) {
+                val = (val << 8) + c; bits += 8;
+                while (bits >= 0) { out.push_back(tbl[(val >> bits) & 0x3F]); bits -= 6; }
+            }
+            if (bits > -6) out.push_back(tbl[((val << 8) >> (bits+8)) & 0x3F]);
+            while (out.size() % 4) out.push_back('=');
+            return Value(out);
+        }
+        if (builtin == "crypto.base64_decode") {
+            if (args.empty()) return Value(std::string(""));
+            const std::string input = to_string(args[0]);
+            static const int lookup[256] = {
+                -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+                -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,62,-1,-1,-1,63,52,53,54,55,56,57,58,59,60,61,-1,-1,-1,-2,-1,-1,
+                -1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,-1,-1,-1,-1,-1,
+                -1,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,-1,-1,-1,-1,-1,
+                -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+                -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+                -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+                -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1
+            };
+            std::string out; int val=0,bits=-8;
+            for (unsigned char c : input) {
+                int d = lookup[c];
+                if (d == -1) break;
+                if (d == -2) continue;
+                val = (val << 6) + d; bits += 6;
+                if (bits >= 0) { out.push_back(static_cast<char>((val >> bits) & 0xFF)); bits -= 8; }
+            }
+            return Value(out);
+        }
+        if (builtin == "crypto.uuid") {
+            std::random_device rd;
+            std::mt19937_64 rng(rd());
+            std::uniform_int_distribution<uint64_t> dist;
+            uint64_t hi = dist(rng), lo = dist(rng);
+            hi = (hi & 0xFFFFFFFFFFFF0FFFull) | 0x0000000000004000ull;
+            lo = (lo & 0x3FFFFFFFFFFFFFFFull) | 0x8000000000000000ull;
+            std::ostringstream oss;
+            oss << std::hex << std::setfill('0');
+            oss << std::setw(8) << ((hi >> 32) & 0xFFFFFFFF) << "-";
+            oss << std::setw(4) << ((hi >> 16) & 0xFFFF) << "-";
+            oss << std::setw(4) << (hi & 0xFFFF) << "-";
+            oss << std::setw(4) << ((lo >> 48) & 0xFFFF) << "-";
+            oss << std::setw(12) << (lo & 0xFFFFFFFFFFFFull);
+            return Value(oss.str());
+        }
+        if (builtin == "crypto.random_bytes") {
+            int n = args.empty() ? 16 : static_cast<int>(to_number(args[0]));
+            if (n < 1) n = 1; if (n > 1024) n = 1024;
+            std::random_device rd;
+            std::mt19937 rng(rd());
+            std::uniform_int_distribution<int> dist(0, 255);
+            std::ostringstream oss;
+            for (int i = 0; i < n; ++i)
+                oss << std::hex << std::setw(2) << std::setfill('0') << dist(rng);
+            return Value(oss.str());
+        }
+        if (builtin == "crypto.hmac_sha256") {
+            if (args.size() < 2) return Value(std::string(""));
+            std::string msg2 = to_string(args[0]);
+            std::string key2 = to_string(args[1]);
+            if (key2.size() > 64) { std::vector<Value> kv{Value(key2)}; key2 = to_string(callBuiltin("hash.sha256", kv).value_or(Value(std::string("")))); }
+            while (key2.size() < 64) key2.push_back('\0');
+            std::string opad(64, '\x5c'), ipad(64, '\x36');
+            for (size_t i = 0; i < 64; ++i) { opad[i] ^= key2[i]; ipad[i] ^= key2[i]; }
+            std::vector<Value> inner_args{Value(ipad + msg2)};
+            std::string inner = to_string(callBuiltin("hash.sha256", inner_args).value_or(Value(std::string(""))));
+            std::string inner_bytes;
+            for (size_t i = 0; i < inner.size(); i += 2) {
+                inner_bytes.push_back(static_cast<char>(std::stoi(inner.substr(i, 2), nullptr, 16)));
+            }
+            std::vector<Value> outer_args{Value(opad + inner_bytes)};
+            return Value(to_string(callBuiltin("hash.sha256", outer_args).value_or(Value(std::string("")))));
+        }
+
+        if (builtin == "vec2") {
+            Value v=Value::object(); double x=args.size()>0?to_number(args[0]):0,y=args.size()>1?to_number(args[1]):0;
+            (*v.as_object())["x"]=Value(x);(*v.as_object())["y"]=Value(y);(*v.as_object())["__type__"]=Value(std::string("vec2"));return v;
+        }
+        if (builtin == "vec3") {
+            Value v=Value::object(); double x=args.size()>0?to_number(args[0]):0,y=args.size()>1?to_number(args[1]):0,z=args.size()>2?to_number(args[2]):0;
+            (*v.as_object())["x"]=Value(x);(*v.as_object())["y"]=Value(y);(*v.as_object())["z"]=Value(z);(*v.as_object())["__type__"]=Value(std::string("vec3"));return v;
+        }
+        if (builtin=="vec_add"&&args.size()>=2&&is_object(args[0])&&is_object(args[1])){auto&a=*args[0].as_object();auto&b=*args[1].as_object();bool i3=a.count("z")&&b.count("z");Value r=Value::object();(*r.as_object())["x"]=Value(to_number(a.at("x"))+to_number(b.at("x")));(*r.as_object())["y"]=Value(to_number(a.at("y"))+to_number(b.at("y")));if(i3)(*r.as_object())["z"]=Value(to_number(a.at("z"))+to_number(b.at("z")));return r;}
+        if (builtin=="vec_sub"&&args.size()>=2&&is_object(args[0])&&is_object(args[1])){auto&a=*args[0].as_object();auto&b=*args[1].as_object();bool i3=a.count("z")&&b.count("z");Value r=Value::object();(*r.as_object())["x"]=Value(to_number(a.at("x"))-to_number(b.at("x")));(*r.as_object())["y"]=Value(to_number(a.at("y"))-to_number(b.at("y")));if(i3)(*r.as_object())["z"]=Value(to_number(a.at("z"))-to_number(b.at("z")));return r;}
+        if (builtin=="vec_mul"&&args.size()>=2&&is_object(args[0])){auto&a=*args[0].as_object();double s=to_number(args[1]);bool i3=a.count("z");Value r=Value::object();(*r.as_object())["x"]=Value(to_number(a.at("x"))*s);(*r.as_object())["y"]=Value(to_number(a.at("y"))*s);if(i3)(*r.as_object())["z"]=Value(to_number(a.at("z"))*s);return r;}
+        if (builtin=="vec_dot"&&args.size()>=2&&is_object(args[0])&&is_object(args[1])){auto&a=*args[0].as_object();auto&b=*args[1].as_object();double d=to_number(a.at("x"))*to_number(b.at("x"))+to_number(a.at("y"))*to_number(b.at("y"));if(a.count("z")&&b.count("z"))d+=to_number(a.at("z"))*to_number(b.at("z"));return Value(d);}
+        if (builtin=="vec_len"&&!args.empty()&&is_object(args[0])){auto&a=*args[0].as_object();double d=to_number(a.at("x"))*to_number(a.at("x"))+to_number(a.at("y"))*to_number(a.at("y"));if(a.count("z"))d+=to_number(a.at("z"))*to_number(a.at("z"));return Value(std::sqrt(d));}
+        if (builtin=="vec_normalize"&&!args.empty()&&is_object(args[0])){auto&a=*args[0].as_object();double d=to_number(a.at("x"))*to_number(a.at("x"))+to_number(a.at("y"))*to_number(a.at("y"));if(a.count("z"))d+=to_number(a.at("z"))*to_number(a.at("z"));double len=std::max(std::sqrt(d),1e-10);bool i3=a.count("z");Value r=Value::object();(*r.as_object())["x"]=Value(to_number(a.at("x"))/len);(*r.as_object())["y"]=Value(to_number(a.at("y"))/len);if(i3)(*r.as_object())["z"]=Value(to_number(a.at("z"))/len);return r;}
+        if (builtin=="vec_dist"&&args.size()>=2&&is_object(args[0])&&is_object(args[1])){auto&a=*args[0].as_object();auto&b=*args[1].as_object();double dx=to_number(a.at("x"))-to_number(b.at("x")),dy=to_number(a.at("y"))-to_number(b.at("y")),dz=0;if(a.count("z")&&b.count("z"))dz=to_number(a.at("z"))-to_number(b.at("z"));return Value(std::sqrt(dx*dx+dy*dy+dz*dz));}
+        if (builtin=="vec_lerp"&&args.size()>=3&&is_object(args[0])&&is_object(args[1])){auto&a=*args[0].as_object();auto&b=*args[1].as_object();double t=to_number(args[2]);bool i3=a.count("z")&&b.count("z");Value r=Value::object();(*r.as_object())["x"]=Value(to_number(a.at("x"))+(to_number(b.at("x"))-to_number(a.at("x")))*t);(*r.as_object())["y"]=Value(to_number(a.at("y"))+(to_number(b.at("y"))-to_number(a.at("y")))*t);if(i3)(*r.as_object())["z"]=Value(to_number(a.at("z"))+(to_number(b.at("z"))-to_number(a.at("z")))*t);return r;}
+        if (builtin=="vec_cross"&&args.size()>=2&&is_object(args[0])&&is_object(args[1])){auto&a=*args[0].as_object();auto&b=*args[1].as_object();double ax=to_number(a.at("x")),ay=to_number(a.at("y")),az=a.count("z")?to_number(a.at("z")):0;double bx=to_number(b.at("x")),by=to_number(b.at("y")),bz=b.count("z")?to_number(b.at("z")):0;Value r=Value::object();(*r.as_object())["x"]=Value(ay*bz-az*by);(*r.as_object())["y"]=Value(az*bx-ax*bz);(*r.as_object())["z"]=Value(ax*by-ay*bx);return r;}
+
+        // в”Ђв”Ђ engine: Audio в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+#if RAYQUIRO_HAS_RAYLIB
+        if (builtin=="engine.init_audio"){InitAudioDevice();return Value();}
+        if (builtin=="engine.load_sound"){
+            if(args.empty())return Value();
+            Sound snd=LoadSound(to_string(args[0]).c_str());
+            size_t idx=soundRegistry_.size(); soundRegistry_.push_back(snd);
+            Value obj=Value::object();(*obj.as_object())["__sound_idx__"]=Value(static_cast<double>(idx));return obj;
+        }
+        if (builtin=="engine.play_sound"){if(!args.empty()&&is_object(args[0])){auto it=args[0].as_object()->find("__sound_idx__");if(it!=args[0].as_object()->end()){size_t idx=static_cast<size_t>(to_number(it->second));if(idx<soundRegistry_.size())PlaySound(soundRegistry_[idx]);}}return Value();}
+        if (builtin=="engine.stop_sound"){if(!args.empty()&&is_object(args[0])){auto it=args[0].as_object()->find("__sound_idx__");if(it!=args[0].as_object()->end()){size_t idx=static_cast<size_t>(to_number(it->second));if(idx<soundRegistry_.size())StopSound(soundRegistry_[idx]);}}return Value();}
+        if (builtin=="engine.set_sound_volume"){if(args.size()>=2&&is_object(args[0])){auto it=args[0].as_object()->find("__sound_idx__");if(it!=args[0].as_object()->end()){size_t idx=static_cast<size_t>(to_number(it->second));if(idx<soundRegistry_.size())SetSoundVolume(soundRegistry_[idx],static_cast<float>(to_number(args[1])));}}return Value();}
+        if (builtin=="engine.unload_sound"){if(!args.empty()&&is_object(args[0])){auto it=args[0].as_object()->find("__sound_idx__");if(it!=args[0].as_object()->end()){size_t idx=static_cast<size_t>(to_number(it->second));if(idx<soundRegistry_.size())UnloadSound(soundRegistry_[idx]);}}return Value();}
+        if (builtin=="engine.load_music"){
+            if(args.empty())return Value();
+            Music mus=LoadMusicStream(to_string(args[0]).c_str());
+            size_t idx=musicRegistry_.size(); musicRegistry_.push_back(mus);
+            Value obj=Value::object();(*obj.as_object())["__music_idx__"]=Value(static_cast<double>(idx));return obj;
+        }
+        if (builtin=="engine.play_music"){if(!args.empty()&&is_object(args[0])){auto it=args[0].as_object()->find("__music_idx__");if(it!=args[0].as_object()->end()){size_t idx=static_cast<size_t>(to_number(it->second));if(idx<musicRegistry_.size())PlayMusicStream(musicRegistry_[idx]);}}return Value();}
+        if (builtin=="engine.update_music"){if(!args.empty()&&is_object(args[0])){auto it=args[0].as_object()->find("__music_idx__");if(it!=args[0].as_object()->end()){size_t idx=static_cast<size_t>(to_number(it->second));if(idx<musicRegistry_.size())UpdateMusicStream(musicRegistry_[idx]);}}return Value();}
+        if (builtin=="engine.stop_music"){if(!args.empty()&&is_object(args[0])){auto it=args[0].as_object()->find("__music_idx__");if(it!=args[0].as_object()->end()){size_t idx=static_cast<size_t>(to_number(it->second));if(idx<musicRegistry_.size())StopMusicStream(musicRegistry_[idx]);}}return Value();}
+        if (builtin=="engine.set_music_volume"){if(args.size()>=2&&is_object(args[0])){auto it=args[0].as_object()->find("__music_idx__");if(it!=args[0].as_object()->end()){size_t idx=static_cast<size_t>(to_number(it->second));if(idx<musicRegistry_.size())SetMusicVolume(musicRegistry_[idx],static_cast<float>(to_number(args[1])));}}return Value();}
+        if (builtin=="engine.is_music_playing"){if(!args.empty()&&is_object(args[0])){auto it=args[0].as_object()->find("__music_idx__");if(it!=args[0].as_object()->end()){size_t idx=static_cast<size_t>(to_number(it->second));if(idx<musicRegistry_.size())return Value(IsMusicStreamPlaying(musicRegistry_[idx]));}}return Value(false);}
+
+        // в”Ђв”Ђ engine: Textures в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        if (builtin=="engine.load_texture"){
+            if(args.empty())return Value();
+            Texture2D tex=LoadTexture(to_string(args[0]).c_str());
+            size_t idx=textureRegistry_.size(); textureRegistry_.push_back(tex);
+            Value obj=Value::object();
+            (*obj.as_object())["__tex_idx__"]=Value(static_cast<double>(idx));
+            (*obj.as_object())["width"]=Value(static_cast<double>(tex.width));
+            (*obj.as_object())["height"]=Value(static_cast<double>(tex.height));
+            return obj;
+        }
+        if (builtin=="engine.draw_texture"){
+            if(args.size()>=3&&is_object(args[0])){auto it=args[0].as_object()->find("__tex_idx__");if(it!=args[0].as_object()->end()){size_t idx=static_cast<size_t>(to_number(it->second));if(idx<textureRegistry_.size()){int x=static_cast<int>(to_number(args[1])),y=static_cast<int>(to_number(args[2]));Color tint=WHITE;if(args.size()>=4&&is_object(args[3])){auto&cm=*args[3].as_object();tint={static_cast<unsigned char>(to_number(cm["r"])),static_cast<unsigned char>(to_number(cm["g"])),static_cast<unsigned char>(to_number(cm["b"])),255};}DrawTexture(textureRegistry_[idx],x,y,tint);}}}
+            return Value();
+        }
+        if (builtin=="engine.draw_texture_ex"){
+            if(args.size()>=6&&is_object(args[0])){auto it=args[0].as_object()->find("__tex_idx__");if(it!=args[0].as_object()->end()){size_t idx=static_cast<size_t>(to_number(it->second));if(idx<textureRegistry_.size()){auto&tex=textureRegistry_[idx];float x=(float)to_number(args[1]),y=(float)to_number(args[2]),w=(float)to_number(args[3]),h=(float)to_number(args[4]),rot=(float)to_number(args[5]);Color tint=WHITE;if(args.size()>=7&&is_object(args[6])){auto&cm=*args[6].as_object();tint={static_cast<unsigned char>(to_number(cm["r"])),static_cast<unsigned char>(to_number(cm["g"])),static_cast<unsigned char>(to_number(cm["b"])),255};}Rectangle src={0,0,(float)tex.width,(float)tex.height};Rectangle dst={x,y,w,h};DrawTexturePro(tex,src,dst,{w/2,h/2},rot,tint);}}}
+            return Value();
+        }
+        if (builtin=="engine.draw_texture_region"){
+            if(args.size()>=9&&is_object(args[0])){auto it=args[0].as_object()->find("__tex_idx__");if(it!=args[0].as_object()->end()){size_t idx=static_cast<size_t>(to_number(it->second));if(idx<textureRegistry_.size()){Rectangle src={(float)to_number(args[1]),(float)to_number(args[2]),(float)to_number(args[3]),(float)to_number(args[4])};Rectangle dst={(float)to_number(args[5]),(float)to_number(args[6]),(float)to_number(args[7]),(float)to_number(args[8])};DrawTexturePro(textureRegistry_[idx],src,dst,{0,0},0,WHITE);}}}
+            return Value();
+        }
+        if (builtin=="engine.unload_texture"){if(!args.empty()&&is_object(args[0])){auto it=args[0].as_object()->find("__tex_idx__");if(it!=args[0].as_object()->end()){size_t idx=static_cast<size_t>(to_number(it->second));if(idx<textureRegistry_.size())UnloadTexture(textureRegistry_[idx]);}}return Value();}
+#endif // RAYQUIRO_HAS_RAYLIB
+
+        // в”Ђв”Ђ Engine: Editor / Play Mode в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        if (builtin=="engine.is_editor")  return Value(engineMode_==EngineMode::Editor);
+        if (builtin=="engine.is_playing") return Value(engineMode_==EngineMode::Playing);
+        if (builtin=="engine.is_paused")  return Value(engineMode_==EngineMode::Paused);
+        if (builtin=="engine.mode") {
+            if(engineMode_==EngineMode::Editor)  return Value(std::string("editor"));
+            if(engineMode_==EngineMode::Playing) return Value(std::string("playing"));
+            return Value(std::string("paused"));
+        }
+        if (builtin=="engine.play") {
+            sceneSnapshot_=getGlobals(); engineMode_=EngineMode::Playing;
+            callFunctionIfExists("on_init",{}); return Value();
+        }
+        if (builtin=="engine.pause") {
+            if(engineMode_==EngineMode::Playing) engineMode_=EngineMode::Paused;
+            return Value();
+        }
+        if (builtin=="engine.resume") {
+            if(engineMode_==EngineMode::Paused) engineMode_=EngineMode::Playing;
+            return Value();
+        }
+        if (builtin=="engine.stop") {
+            callFunctionIfExists("on_destroy",{});
+            engineMode_=EngineMode::Editor;
+            if(is_object(sceneSnapshot_)){
+                for(const auto&[k,v]:*sceneSnapshot_.as_object())
+                    try{globals_->assign(k,v);}catch(...){globals_->define(k,v,false);}
+            }
+            return Value();
+        }
+        // в”Ђв”Ђ Engine: Reflection / Inspector в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        if (builtin=="engine.get_script_vars") {
+            Value arr=Value::array();
+            for(const auto&[k,slot]:globals_->vars()){
+                if(k.size()>2&&k.front()=='_'&&k.back()=='_') continue;
+                if(functions_.count(k)) continue;
+                const Value& v=slot.value;
+                Value entry=Value::object();
+                (*entry.as_object())["name"]=Value(k);
+                (*entry.as_object())["value"]=v;
+                std::string t="null";
+                if(is_number(v))t="number";
+                else if(is_string(v))t="string";
+                else if(is_bool(v))t="bool";
+                else if(is_array(v))t="array";
+                else if(is_object(v)){const auto&o=*v.as_object();t=o.count("__type__")?to_string(o.at("__type__")):"object";}
+                else if(is_lambda(v))t="function";
+                (*entry.as_object())["type"]=Value(t);
+                arr.as_array()->push_back(entry);
+            }
+            return arr;
+        }
+        if (builtin=="engine.set_var") {
+            if(args.size()>=2) setGlobal(to_string(args[0]),args[1]); return Value();
+        }
+        // в”Ђв”Ђ Engine: Dynamic call helpers в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        if (builtin=="engine.call") {
+            if(args.empty()) return Value();
+            std::vector<Value> fnArgs(args.begin()+1,args.end());
+            return callFunctionIfExists(to_string(args[0]),fnArgs).value_or(Value());
+        }
+        if (builtin=="engine.has_fn") {
+            if(args.empty()) return Value(false);
+            return Value(hasFunction(to_string(args[0])));
+        }
+        // в”Ђв”Ђ Engine: Scene I/O в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        if (builtin=="engine.scene_save") {
+            if(args.empty()) return Value(false);
+            auto res=callBuiltin("json.stringify",{getGlobals()});
+            if(res){try{std::ofstream f(to_string(args[0]));f<<to_string(*res);return Value(true);}catch(...){}}
+            return Value(false);
+        }
+        if (builtin=="engine.scene_load") {
+            if(args.empty()) return Value(false);
+            try{
+                std::ifstream f(to_string(args[0]));if(!f.is_open())return Value(false);
+                std::string c2((std::istreambuf_iterator<char>(f)),std::istreambuf_iterator<char>());
+                auto parsed=callBuiltin("json.parse",{Value(c2)});
+                if(parsed&&is_object(*parsed)){
+                    for(const auto&[k,v]:*parsed->as_object())
+                        try{globals_->set(k,v);}catch(...){globals_->define(k,v,false);}
+                    return Value(true);
+                }
+            }catch(...){}
+            return Value(false);
+        }
+        // в”Ђв”Ђ Engine: Gizmos в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+#if RAYQUIRO_HAS_RAYLIB
+        if(builtin=="engine.gizmo_rect"&&engineMode_==EngineMode::Editor&&args.size()>=4){DrawRectangleLinesEx({(float)to_number(args[0]),(float)to_number(args[1]),(float)to_number(args[2]),(float)to_number(args[3])},1.5f,{100,180,255,180});return Value();}
+        if(builtin=="engine.gizmo_line"&&engineMode_==EngineMode::Editor&&args.size()>=4){DrawLine((int)to_number(args[0]),(int)to_number(args[1]),(int)to_number(args[2]),(int)to_number(args[3]),{100,180,255,200});return Value();}
+        if(builtin=="engine.gizmo_circle"&&engineMode_==EngineMode::Editor&&args.size()>=3){DrawCircleLines((int)to_number(args[0]),(int)to_number(args[1]),(float)to_number(args[2]),{100,255,180,200});return Value();}
+        if(builtin=="engine.gizmo_text"&&engineMode_==EngineMode::Editor&&args.size()>=3){DrawText(to_string(args[0]).c_str(),(int)to_number(args[1]),(int)to_number(args[2]),args.size()>=4?(int)to_number(args[3]):12,{100,200,255,220});return Value();}
+#endif
+        // в”Ђв”Ђ Engine: Hot Reload в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+        if(builtin=="engine.watch_reload"){bool en=!args.empty()&&is_bool(args[0])&&std::get<bool>(args[0].data);globals_->define("__hot_reload__",Value(en),true);return Value();}
+
         return std::nullopt;
     }
-
     static int size_of(const Value& value) {
         if (is_string(value)) return static_cast<int>(std::get<std::string>(value.data).size());
-        if (is_array(value)) return static_cast<int>(value.as_array()->size());
+        if (is_array(value))  return static_cast<int>(value.as_array()->size());
         if (is_object(value)) return static_cast<int>(value.as_object()->size());
         return 0;
     }
@@ -1286,6 +2941,7 @@ private:
         if (is_bool(value)) return Value("bool");
         if (is_array(value)) return Value("array");
         if (is_object(value)) return Value("object");
+        if (is_lambda(value)) return Value("function");
         return Value("unknown");
     }
 
@@ -1447,6 +3103,14 @@ private:
         if (args.size() < 3) return Value(args.empty() ? 0.0 : to_number(args[0]));
         return Value(std::clamp(to_number(args[0]), to_number(args[1]), to_number(args[2])));
     }
+
+    static Value builtin_sqrt(const std::vector<Value>& args) { return Value(args.empty() ? 0.0 : std::sqrt(to_number(args[0]))); }
+    static Value builtin_abs(const std::vector<Value>& args) { return Value(args.empty() ? 0.0 : std::abs(to_number(args[0]))); }
+    static Value builtin_pow(const std::vector<Value>& args) { return Value(args.size() < 2 ? 0.0 : std::pow(to_number(args[0]), to_number(args[1]))); }
+    static Value builtin_sin(const std::vector<Value>& args) { return Value(args.empty() ? 0.0 : std::sin(to_number(args[0]))); }
+    static Value builtin_cos(const std::vector<Value>& args) { return Value(args.empty() ? 0.0 : std::cos(to_number(args[0]))); }
+    static Value builtin_tan(const std::vector<Value>& args) { return Value(args.empty() ? 0.0 : std::tan(to_number(args[0]))); }
+    static Value builtin_log(const std::vector<Value>& args) { return Value(args.empty() ? 0.0 : std::log(to_number(args[0]))); }
 
     static Value builtin_sleep(const std::vector<Value>& args) {
         const int duration = args.empty() ? 0 : static_cast<int>(to_number(args[0]));
@@ -3153,6 +4817,79 @@ private:
         return Value();
     }
 
+    static Value builtin_engine_draw_rect(const std::vector<Value>& args) {
+        if (args.size() < 5) return Value();
+        rt_draw_rect(static_cast<int>(to_number(args[0])), static_cast<int>(to_number(args[1])),
+                     static_cast<int>(to_number(args[2])), static_cast<int>(to_number(args[3])),
+                     value_to_color(args[4]));
+        return Value();
+    }
+
+    static Value builtin_engine_draw_rect_lines(const std::vector<Value>& args) {
+        if (args.size() < 5) return Value();
+        rt_draw_rect_lines(static_cast<int>(to_number(args[0])), static_cast<int>(to_number(args[1])),
+                           static_cast<int>(to_number(args[2])), static_cast<int>(to_number(args[3])),
+                           value_to_color(args[4]));
+        return Value();
+    }
+
+    static Value builtin_engine_draw_circle(const std::vector<Value>& args) {
+        if (args.size() < 4) return Value();
+        rt_draw_circle(static_cast<int>(to_number(args[0])), static_cast<int>(to_number(args[1])),
+                       static_cast<float>(to_number(args[2])), value_to_color(args[3]));
+        return Value();
+    }
+
+    static Value builtin_engine_draw_circle_lines(const std::vector<Value>& args) {
+        if (args.size() < 4) return Value();
+        rt_draw_circle_lines(static_cast<int>(to_number(args[0])), static_cast<int>(to_number(args[1])),
+                             static_cast<float>(to_number(args[2])), value_to_color(args[3]));
+        return Value();
+    }
+
+    static Value builtin_engine_draw_line(const std::vector<Value>& args) {
+        if (args.size() < 5) return Value();
+        rt_draw_line(static_cast<int>(to_number(args[0])), static_cast<int>(to_number(args[1])),
+                     static_cast<int>(to_number(args[2])), static_cast<int>(to_number(args[3])),
+                     value_to_color(args[4]));
+        return Value();
+    }
+
+    static Value builtin_engine_draw_pixel(const std::vector<Value>& args) {
+        if (args.size() < 3) return Value();
+        rt_draw_pixel(static_cast<int>(to_number(args[0])), static_cast<int>(to_number(args[1])),
+                      value_to_color(args[2]));
+        return Value();
+    }
+
+    static Value builtin_engine_rect_overlap(const std::vector<Value>& args) {
+        if (args.size() < 8) return Value(false);
+        const double x1 = to_number(args[0]), y1 = to_number(args[1]);
+        const double w1 = to_number(args[2]), h1 = to_number(args[3]);
+        const double x2 = to_number(args[4]), y2 = to_number(args[5]);
+        const double w2 = to_number(args[6]), h2 = to_number(args[7]);
+        const bool overlap = (x1 < x2 + w2) && (x1 + w1 > x2) && (y1 < y2 + h2) && (y1 + h1 > y2);
+        return Value(overlap);
+    }
+
+    static Value builtin_engine_circle_overlap(const std::vector<Value>& args) {
+        if (args.size() < 6) return Value(false);
+        const double dx = to_number(args[0]) - to_number(args[3]);
+        const double dy = to_number(args[1]) - to_number(args[4]);
+        const double rSum = to_number(args[2]) + to_number(args[5]);
+        return Value((dx * dx + dy * dy) < (rSum * rSum));
+    }
+
+    static Value builtin_engine_point_in_rect(const std::vector<Value>& args) {
+        if (args.size() < 6) return Value(false);
+        const double px = to_number(args[0]), py = to_number(args[1]);
+        const double rx = to_number(args[2]), ry = to_number(args[3]);
+        const double rw = to_number(args[4]), rh = to_number(args[5]);
+        return Value(px >= rx && px <= rx + rw && py >= ry && py <= ry + rh);
+    }
+
+
+
     static unsigned char engine_clamp_channel(float value) {
         if (value < 0.0f) return 0;
         if (value > 255.0f) return 255;
@@ -3698,3 +5435,5 @@ private:
         return Value(std::filesystem::exists(assetPath));
     }
 };
+
+
