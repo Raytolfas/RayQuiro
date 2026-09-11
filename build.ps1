@@ -189,8 +189,18 @@ if (Get-Command windres -ErrorAction SilentlyContinue) {
     Write-Host "Compiled Win32 resource file: $resourceObject"
 }
 
+$moduleSources = @(
+    "src/modules/web_module.cpp",
+    "src/modules/app_module.cpp",
+    "src/modules/ui_module.cpp",
+    "src/modules/engine_module.cpp"
+)
+
 $linkArgs = @(
-    "src/main.cpp",
+    "src/main.cpp"
+)
+$linkArgs += $moduleSources
+$linkArgs += @(
     "-Iinclude/rayquiro",
     "-Ithird_party/raylib/src",
     "-std=c++17"
@@ -229,7 +239,10 @@ try {
 
 $coreOutput = "rqio_core.dll"
 $coreArgs = @(
-    "src/rqio_core.cpp",
+    "src/rqio_core.cpp"
+)
+$coreArgs += $moduleSources
+$coreArgs += @(
     "-Iinclude/rayquiro",
     "-Ithird_party/raylib/src",
     "-std=c++17",
@@ -259,7 +272,7 @@ Invoke-OptionalStrip $coreOutput
 
 Write-Host "Built $coreOutput"
 
-if (Test-Path "native_modules") {
+if ($false -and (Test-Path "native_modules")) {
     $modulesDir = "modules"
     New-Item -ItemType Directory -Force -Path $modulesDir | Out-Null
 

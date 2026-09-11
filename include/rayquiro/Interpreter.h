@@ -28,6 +28,7 @@
 #include "AST.h"
 #include "UserPaths.h"
 #include "rte_api.h"
+#include "BuiltinModules.h"
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -2795,6 +2796,9 @@ private:
     }
 
     bool hasNativeModule(const std::string& name) const {
+        if (name == "web" || name == "app" || name == "ui" || name == "engine" || name == "raytolfas.engine") {
+            return true;
+        }
         for (const auto& candidate : native_module_candidates(name)) {
             if (std::filesystem::exists(candidate) && std::filesystem::is_regular_file(candidate)) {
                 return true;
@@ -2807,6 +2811,18 @@ private:
         const auto cached = nativeModules_.find(moduleName);
         if (cached != nativeModules_.end()) {
             return cached->second;
+        }
+
+        if (moduleName == "web" || moduleName == "app" || moduleName == "ui" || moduleName == "engine" || moduleName == "raytolfas.engine") {
+            NativeModule module;
+            module.handle = nullptr;
+            if (moduleName == "web") module.invoke = rqm_builtin_web_invoke;
+            else if (moduleName == "app") module.invoke = rqm_builtin_app_invoke;
+            else if (moduleName == "ui") module.invoke = rqm_builtin_ui_invoke;
+            else if (moduleName == "engine" || moduleName == "raytolfas.engine") module.invoke = rqm_builtin_engine_invoke;
+            module.freeMemory = rqm_builtin_free;
+            nativeModules_[moduleName] = module;
+            return nativeModules_[moduleName];
         }
 
         NativeModule module;

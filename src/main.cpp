@@ -17,6 +17,7 @@
 #include "Formatter.h"
 #include "VM.h"
 #include "CEmitter.h"
+#include "Log.h"
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -277,8 +278,8 @@ void createStarterProject(const std::filesystem::path& requestedRoot) {
         "*.exe\n"
         "*.html\n");
 
-    std::cout << "[RayQuiro] Project created at " << projectRoot.string() << std::endl;
-    std::cout << "[RayQuiro] Next: cd " << projectRoot.filename().string() << " && rqio" << std::endl;
+    Log::status("Created", "project at " + projectRoot.string());
+    Log::info("next: cd " + projectRoot.filename().string() + " && rqio");
 }
 
 ProjectConfig loadProjectConfig(const std::filesystem::path& startPath) {
@@ -703,7 +704,7 @@ void buildVmBundle(
         "This bundle contains obfuscated RayQuiro bytecode in `" + appName + ".rqb`.\r\n"
         "The original `.rq` source file is not required to run this app.\r\n");
 
-    std::cout << "[RayQuiro] Bundled " << bundleDir.string() << std::endl;
+    Log::status("Bundled", bundleDir.string());
 }
 
 int runExecutable(const std::filesystem::path& exePath, const std::filesystem::path& workingDir) {
@@ -749,10 +750,12 @@ int runExecutable(const std::filesystem::path& exePath, const std::filesystem::p
 }
 
 int main(int argc, char* argv[]) {
+    Log::init();
+    CliOptions cliOptions;
     try {
         const std::filesystem::path exePath = std::filesystem::absolute(std::filesystem::path(argv[0]));
         const std::filesystem::path exeRoot = exePath.parent_path();
-        CliOptions cliOptions = parseArguments(argc, argv);
+        cliOptions = parseArguments(argc, argv);
         if (argc < 2 && cliOptions.inputPath.empty()) {
             if (const auto siblingBundle = resolveSiblingBundlePath(exePath)) {
                 cliOptions.mode = CliMode::Run;
@@ -834,7 +837,7 @@ int main(int argc, char* argv[]) {
             if (RayQuiroCliServices::shouldCheckForUpdates()) {
                 const auto updateRes = RayQuiroCliServices::checkForUpdatesQuietly(kRayQuiroVersion);
                 if (updateRes.hasUpdate) {
-                    std::cout << "[RayQuiro] A new version is available: " << kRayQuiroVersion << " -> " << updateRes.remoteVersion << std::endl;
+                    Log::info(std::string("A new version is available: ") + kRayQuiroVersion + " -> " + updateRes.remoteVersion);
                     std::cout << "Would you like to install the update now? [y/N]: ";
                     std::string response;
                     if (std::getline(std::cin, response)) {
@@ -842,11 +845,11 @@ int main(int argc, char* argv[]) {
                         response.erase(0, response.find_first_not_of(" \t\r\n"));
                         response.erase(response.find_last_not_of(" \t\r\n") + 1);
                         if (response == "y" || response == "Y") {
-                            std::cout << "[RayQuiro] Downloading update..." << std::endl;
+                            Log::status("Updating", "downloading update...");
                             const std::string relaunchCmd = rebuildCommandLine(argc, argv);
                             int code = RayQuiroCliServices::selfUpdate(exePath, kRayQuiroVersion, false, relaunchCmd);
                             if (code == 0) {
-                                std::cout << "[RayQuiro] Update scheduled. Restarting..." << std::endl;
+                                Log::status("Updating", "update scheduled. Restarting...");
                                 return 0;
                             }
                         }
@@ -876,7 +879,7 @@ int main(int argc, char* argv[]) {
         }
         if (cliOptions.mode == CliMode::Format) {
             Formatter::formatFile(cliOptions.inputPath);
-            std::cout << "[RayQuiro] Formatted " << cliOptions.inputPath.string() << std::endl;
+            Log::status("Formatted", cliOptions.inputPath.string());
             return 0;
         }
 
@@ -960,12 +963,12 @@ int main(int argc, char* argv[]) {
                 + " \"" + cFilePath + "\""
                 + " -o \"" + outBinPath + "\"";
 
-            std::cout << "[RayQuiro] build: " << cmd << std::endl;
+            Log::status("Compiling", cliOptions.inputPath.filename().string() + " (" + (cliOptions.releaseMode ? "release" : cliOptions.debugBuild ? "debug" : "optimized") + ")");
             int ret = std::system(cmd.c_str());
             if (ret != 0) {
-                throw std::runtime_error("rqio build: compiler exited with code " + std::to_string(ret));
+                throw std::runtime_error("C compiler exited with code " + std::to_string(ret));
             }
-            std::cout << "[RayQuiro] Built " << outBin.string() << std::endl;
+            Log::status("Finished", outBin.string());
             // Cleanup temp
             std::filesystem::remove(cFile);
             return 0;
@@ -990,7 +993,7 @@ int main(int argc, char* argv[]) {
                 resolved.builtinSymbolAliases);
             const std::filesystem::path bundlePath = makeBundlePath(cliOptions, projectConfig);
             BytecodePackage::writeToFile(program, bundlePath);
-            std::cout << "[RayQuiro] Packed " << bundlePath.string() << std::endl;
+            Log::status("Packed", bundlePath.string());
             return 0;
         }
 
@@ -1018,8 +1021,7 @@ int main(int argc, char* argv[]) {
                     return runVmProgram(program);
                 } catch (const std::exception& vmErr) {
                     // VM compilation failed, fall through to tree-walk
-                    std::cerr << "[RayQuiro] VM: " << vmErr.what()
-                              << " — falling back to interpreter" << std::endl;
+                    Log::warn(std::string("VM: ") + vmErr.what() + " - falling back to interpreter");
                 }
             }
 
@@ -1113,13 +1115,13 @@ int main(int argc, char* argv[]) {
         const int buildCode = compiler.buildExecutable(result);
         if (buildCode != 0) {
             cleanupGeneratedCpp();
-            std::cerr << "[RayQuiro] Compile failed with code " << buildCode << std::endl;
+            Log::error("Compile failed with code " + std::to_string(buildCode));
             return 1;
         }
 
         cleanupGeneratedCpp();
 
-        std::cout << "[RayQuiro] Built " << result.outputExePath.string() << " from " << cliOptions.inputPath.string() << std::endl;
+        Log::status("Finished", result.outputExePath.string());
 
         if (cliOptions.mode == CliMode::Run) {
             return runExecutable(result.outputExePath, projectConfig.projectRoot);
@@ -1127,7 +1129,7 @@ int main(int argc, char* argv[]) {
 
         return 0;
     } catch (const std::exception& e) {
-        std::cerr << "[RayQuiro] Error: " << e.what() << std::endl;
+        Log::reportException(e, cliOptions.inputPath);
         return 1;
     }
 }

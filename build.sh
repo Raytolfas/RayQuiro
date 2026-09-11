@@ -1,39 +1,12 @@
 #!/usr/bin/env bash
-set -euo pipefail
-
-# 1. Сборка основного бинарника rqio через CMake
-echo "[Build] Creating build directory..."
-mkdir -p build-linux
-cd build-linux
-
-echo "[Build] Running CMake..."
-cmake .. -DRAYQUIRO_ENABLE_ENGINE=OFF -DCMAKE_BUILD_TYPE=Release
-
-echo "[Build] Compiling rqio..."
-make -j$(nproc)
-
-echo "[Build] rqio compiled successfully."
-./rqio --version
-
-# 2. Сборка нативного модуля rayquiro.web (web.so)
-cd ..
-echo "[Build] Compiling native web module..."
-mkdir -p modules
-
-# Компиляция web_module.cpp в web.so
-g++ -O2 -DNDEBUG -fvisibility=hidden -ffunction-sections -fdata-sections -fstack-protector-strong -fno-ident \
-    -shared -fPIC \
-    native_modules/web_module.cpp \
-    -Iinclude/rayquiro \
-    -std=c++17 \
-    -o modules/web.so
-
-# Оптимизация размера (strip)
-if command -v strip &>/dev/null; then
-    strip --strip-all modules/web.so
-fi
-
-echo "[Build] Native modules compiled successfully."
-echo "Output files:"
-echo "  - build-linux/rqio (CLI binary)"
-echo "  - modules/web.so (Native web module)"
+set -e
+CXX=${CXX:-g++}
+SRC="src/main.cpp src/modules/web_module.cpp src/modules/app_module.cpp src/modules/ui_module.cpp src/modules/engine_module.cpp"
+OUT="rqio"
+INCLUDES="-Iinclude/rayquiro -Ithird_party/raylib/src"
+FLAGS="-std=c++17 -O2 -s"
+LIBS="-lGL -lm -lpthread -ldl -lrt -lX11"
+if [ ! -f "src/main.cpp" ]; then echo "Error: Run from the rayquiro project root"; exit 1; fi
+echo "Building RayQuiro..."
+$CXX $SRC $INCLUDES $FLAGS $LIBS -o $OUT
+if [ $? -eq 0 ]; then echo "Updated $OUT"; else echo "Build failed"; exit 1; fi
