@@ -16,6 +16,7 @@
 #include "DAPServer.h"
 #include "Formatter.h"
 #include "VM.h"
+#include "CEmitter.h"
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -876,6 +877,97 @@ int main(int argc, char* argv[]) {
         if (cliOptions.mode == CliMode::Format) {
             Formatter::formatFile(cliOptions.inputPath);
             std::cout << "[RayQuiro] Formatted " << cliOptions.inputPath.string() << std::endl;
+            return 0;
+        }
+
+        // ── Native build (C transpiler backend) ───────────────────────────────
+        if (cliOptions.mode == CliMode::Build) {
+            auto resolved = Compiler::resolveForExecution(cliOptions.inputPath);
+            if (!BytecodeCompiler::supports(
+                    *resolved.program,
+                    resolved.builtinNamespaceAliases,
+                    resolved.builtinSymbolAliases)) {
+                throw std::runtime_error(
+                    "rqio build: script uses import statements which are not yet "
+                    "supported by the native C backend (MVP). Use --legacy run for now.");
+            }
+            const BytecodeProgram program = BytecodeCompiler::compile(
+                *resolved.program,
+                resolved.builtinNamespaceAliases,
+                resolved.builtinSymbolAliases);
+
+            // Emit C code
+            std::string cSrc = CEmitter::emit(program);
+
+            // Write to temp file next to the rqio executable
+            std::filesystem::path tmpDir = std::filesystem::temp_directory_path();
+            std::filesystem::path cFile  = tmpDir / "_rqio_build_tmp.c";
+            std::filesystem::path rtFile = exePath.parent_path() / "rq_runtime.h";
+
+            {
+                std::ofstream f(cFile);
+                if (!f) throw std::runtime_error("rqio build: cannot write temp C file: " + cFile.string());
+                f << cSrc;
+            }
+
+            // Determine output binary name
+            std::filesystem::path outBin = cliOptions.outExePath;
+            if (outBin.empty()) {
+                outBin = cliOptions.inputPath.parent_path() /
+                         cliOptions.inputPath.stem();
+#ifdef _WIN32
+                outBin.replace_extension(".exe");
+#endif
+            }
+
+            // Build flags
+            std::string optFlags = cliOptions.releaseMode ? "-O2 -flto" :
+                                   cliOptions.debugBuild  ? "-O0 -g"    : "-O2";
+
+            // Pick compiler: on Windows prefer gcc (handles MinGW linking cleanly)
+            std::string cc;
+#ifdef _WIN32
+            // Try gcc first (MSYS2/MinGW), then clang
+            if (std::system("where gcc >nul 2>&1") == 0) cc = "gcc";
+            else if (std::system("where clang >nul 2>&1") == 0) cc = "clang";
+            else throw std::runtime_error("rqio build: no C compiler found (install gcc or clang via MSYS2)");
+#else
+            // Linux/macOS: prefer clang, fallback to gcc
+            if (std::system("which clang >/dev/null 2>&1") == 0) cc = "clang";
+            else cc = "gcc";
+#endif
+            // Runtime header: copy rq_runtime.h next to temp .c if not already there
+            std::filesystem::path rtInTmp = tmpDir / "rq_runtime.h";
+            if (std::filesystem::exists(rtFile) && !std::filesystem::exists(rtInTmp)) {
+                std::filesystem::copy_file(rtFile, rtInTmp,
+                    std::filesystem::copy_options::overwrite_existing);
+            }
+
+            // Compile command
+            std::string tmpInclude = tmpDir.string();
+            std::replace(tmpInclude.begin(), tmpInclude.end(), '\\', '/');
+            std::string cFilePath = cFile.string();
+            std::replace(cFilePath.begin(), cFilePath.end(), '\\', '/');
+            std::string outBinPath = outBin.string();
+            std::replace(outBinPath.begin(), outBinPath.end(), '\\', '/');
+
+            std::string platformFlags;
+#ifdef _WIN32
+            platformFlags = " -mconsole";
+#endif
+            std::string cmd = cc + " " + optFlags + platformFlags + " -lm"
+                + " -I\"" + tmpInclude + "\""
+                + " \"" + cFilePath + "\""
+                + " -o \"" + outBinPath + "\"";
+
+            std::cout << "[RayQuiro] build: " << cmd << std::endl;
+            int ret = std::system(cmd.c_str());
+            if (ret != 0) {
+                throw std::runtime_error("rqio build: compiler exited with code " + std::to_string(ret));
+            }
+            std::cout << "[RayQuiro] Built " << outBin.string() << std::endl;
+            // Cleanup temp
+            std::filesystem::remove(cFile);
             return 0;
         }
 
