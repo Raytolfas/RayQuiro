@@ -17,6 +17,8 @@
 #include "Formatter.h"
 #include "VM.h"
 #include "CEmitter.h"
+#include "LLVMEmitter.h"
+#include "LLVMToolchain.h"
 #include "Log.h"
 
 #ifdef _WIN32
@@ -76,8 +78,9 @@ struct CliOptions {
     bool globalOnly = false;
     bool preferVm = false;
     bool legacyMode = false;
-    bool releaseMode = false;   // --release: -O3 -flto
-    bool debugBuild  = false;   // --debug:   -O0 -g
+    bool releaseMode = false;
+    bool debugBuild  = false;
+    bool noLLVM      = false;
     int  dapPort = 4711;
     std::vector<std::string> scriptArgs;
     std::string packageSpec;
@@ -527,6 +530,10 @@ CliOptions parseArguments(int argc, char* argv[]) {
             options.debugBuild = true;
             continue;
         }
+        if (arg == "--no-llvm") {
+            options.noLLVM = true;
+            continue;
+        }
 
         // If script file already resolved, remaining non-flag args are script args
         if (!options.inputPath.empty() && arg.rfind("--", 0) != 0 && arg.rfind("-", 0) != 0) {
@@ -903,7 +910,6 @@ int main(int argc, char* argv[]) {
             return 0;
         }
 
-        // ── Native build (C transpiler backend) ───────────────────────────────
         if (cliOptions.mode == CliMode::Build) {
             auto resolved = Compiler::resolveForExecution(cliOptions.inputPath);
             if (!BytecodeCompiler::supports(
@@ -911,86 +917,99 @@ int main(int argc, char* argv[]) {
                     resolved.builtinNamespaceAliases,
                     resolved.builtinSymbolAliases)) {
                 throw std::runtime_error(
-                    "rqio build: script uses import statements which are not yet "
-                    "supported by the native C backend (MVP). Use --legacy run for now.");
+                    "rqio build: script uses import statements not yet supported by the native backend.");
             }
             const BytecodeProgram program = BytecodeCompiler::compile(
                 *resolved.program,
                 resolved.builtinNamespaceAliases,
                 resolved.builtinSymbolAliases);
 
-            // Emit C code
-            std::string cSrc = CEmitter::emit(program);
-
-            // Write to temp file next to the rqio executable
-            std::filesystem::path tmpDir = std::filesystem::temp_directory_path();
-            std::filesystem::path cFile  = tmpDir / "_rqio_build_tmp.c";
-            std::filesystem::path rtFile = exePath.parent_path() / "rq_runtime.h";
-
-            {
-                std::ofstream f(cFile);
-                if (!f) throw std::runtime_error("rqio build: cannot write temp C file: " + cFile.string());
-                f << cSrc;
-            }
-
-            // Determine output binary name
             std::filesystem::path outBin = cliOptions.outExePath;
             if (outBin.empty()) {
-                outBin = cliOptions.inputPath.parent_path() /
-                         cliOptions.inputPath.stem();
+                outBin = cliOptions.inputPath.parent_path() / cliOptions.inputPath.stem();
 #ifdef _WIN32
                 outBin.replace_extension(".exe");
 #endif
             }
 
-            // Build flags
-            std::string optFlags = cliOptions.releaseMode ? "-O2 -flto" :
-                                   cliOptions.debugBuild  ? "-O0 -g"    : "-O2";
+            std::string optFlags = cliOptions.releaseMode ? "-O3" :
+                                   cliOptions.debugBuild  ? "-O0 -g" : "-O2";
 
-            // Pick compiler: on Windows prefer gcc (handles MinGW linking cleanly)
-            std::string cc;
+            std::filesystem::path srcDir = std::filesystem::absolute(cliOptions.inputPath).parent_path();
+            std::filesystem::path rtFile = exePath.parent_path() / "rq_runtime.h";
+
 #ifdef _WIN32
-            // Try gcc first (MSYS2/MinGW), then clang
-            if (std::system("where gcc >nul 2>&1") == 0) cc = "gcc";
-            else if (std::system("where clang >nul 2>&1") == 0) cc = "clang";
-            else throw std::runtime_error("rqio build: no C compiler found (install gcc or clang via MSYS2)");
+            auto q = [](const std::filesystem::path& p) {
+                return "\"" + p.string() + "\"";
+            };
+            auto runCmd = [](const std::string& cmd) -> int {
+                return std::system(("cmd /C \"" + cmd + "\"").c_str());
+            };
 #else
-            // Linux/macOS: prefer clang, fallback to gcc
-            if (std::system("which clang >/dev/null 2>&1") == 0) cc = "clang";
-            else cc = "gcc";
+            auto q = [](const std::filesystem::path& p) {
+                std::string s = p.string();
+                std::string r = "\"";
+                for (char c : s) { if (c == '"') r += "\\\""; else r += c; }
+                return r + "\"";
+            };
+            auto runCmd = [](const std::string& cmd) -> int {
+                return std::system(cmd.c_str());
+            };
 #endif
-            // Runtime header: copy rq_runtime.h next to temp .c if not already there
-            std::filesystem::path rtInTmp = tmpDir / "rq_runtime.h";
-            if (std::filesystem::exists(rtFile) && !std::filesystem::exists(rtInTmp)) {
-                std::filesystem::copy_file(rtFile, rtInTmp,
-                    std::filesystem::copy_options::overwrite_existing);
+
+            std::string cc;
+            if (!cliOptions.noLLVM) {
+                cc = LLVMToolchain::resolveClang();
             }
-
-            // Compile command
-            std::string tmpInclude = tmpDir.string();
-            std::replace(tmpInclude.begin(), tmpInclude.end(), '\\', '/');
-            std::string cFilePath = cFile.string();
-            std::replace(cFilePath.begin(), cFilePath.end(), '\\', '/');
-            std::string outBinPath = outBin.string();
-            std::replace(outBinPath.begin(), outBinPath.end(), '\\', '/');
-
-            std::string platformFlags;
+            if (cc.empty()) {
 #ifdef _WIN32
-            platformFlags = " -mconsole";
+                if (std::system("where gcc >nul 2>&1") == 0) cc = "gcc";
+                else if (std::system("where clang >nul 2>&1") == 0) cc = "clang";
+                else throw std::runtime_error("rqio build: no compiler found. Install gcc or clang.");
+#else
+                if (std::system("which clang >/dev/null 2>&1") == 0) cc = "clang";
+                else if (std::system("which gcc >/dev/null 2>&1") == 0) cc = "gcc";
+                else throw std::runtime_error("rqio build: no compiler found. Install gcc or clang.");
 #endif
-            std::string cmd = cc + " " + optFlags + platformFlags + " -lm"
-                + " -I\"" + tmpInclude + "\""
-                + " \"" + cFilePath + "\""
-                + " -o \"" + outBinPath + "\"";
-
-            Log::status("Compiling", cliOptions.inputPath.filename().string() + " (" + (cliOptions.releaseMode ? "release" : cliOptions.debugBuild ? "debug" : "optimized") + ")");
-            int ret = std::system(cmd.c_str());
-            if (ret != 0) {
-                throw std::runtime_error("C compiler exited with code " + std::to_string(ret));
             }
-            Log::status("Finished", outBin.string());
-            // Cleanup temp
+
+            std::string cSrc = CEmitter::emit(program);
+            std::filesystem::path cFile = srcDir / "_rqio_tmp.c";
+            std::filesystem::path rtCopy = srcDir / "rq_runtime.h";
+            bool rtCopied = false;
+            {
+                std::ofstream f(cFile);
+                if (!f) throw std::runtime_error("rqio build: cannot write temp C file.");
+                f << cSrc;
+            }
+            if (std::filesystem::exists(rtFile) &&
+                std::filesystem::absolute(rtFile) != std::filesystem::absolute(rtCopy)) {
+                std::filesystem::copy_file(rtFile, rtCopy,
+                    std::filesystem::copy_options::overwrite_existing);
+                rtCopied = true;
+            }
+
+#ifdef _WIN32
+            std::string platformFlags = " -mconsole";
+#else
+            std::string platformFlags;
+#endif
+            std::string cmd = q(std::filesystem::path(cc))
+                + " " + optFlags + platformFlags
+                + " -lm -I" + q(srcDir)
+                + " " + q(cFile)
+                + " -o " + q(outBin);
+
+            bool isLLVM = (cc.find("clang") != std::string::npos);
+            Log::status("Compiling", cliOptions.inputPath.filename().string()
+                + " (" + (cliOptions.releaseMode ? "release" : cliOptions.debugBuild ? "debug" : "optimized")
+                + (isLLVM ? " via LLVM" : " via GCC") + ")");
+
+            int ret = runCmd(cmd);
             std::filesystem::remove(cFile);
+            if (rtCopied) std::filesystem::remove(rtCopy);
+            if (ret != 0) throw std::runtime_error("Compiler exited with code " + std::to_string(ret));
+            Log::status("Finished", outBin.string());
             return 0;
         }
 
