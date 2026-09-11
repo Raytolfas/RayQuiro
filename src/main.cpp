@@ -81,6 +81,7 @@ struct CliOptions {
     bool releaseMode = false;
     bool debugBuild  = false;
     bool noLLVM      = false;
+    std::string targetTriple;
     int  dapPort = 4711;
     std::vector<std::string> scriptArgs;
     std::string packageSpec;
@@ -98,9 +99,11 @@ void printHelp() {
     std::cout << "\033[1;36mRayQuiro\033[0m " << kRayQuiroVersion << " — modern, fast programming language\n";
     std::cout << "\n\033[1mUsage:\033[0m\n";
     std::cout << "  rqio run <script.rq> [--legacy]     Run script (Bytecode VM default)\n";
-    std::cout << "  rqio build <script.rq> [-o out]     Compile to standalone native binary\n";
-    std::cout << "  rqio build <script.rq> --release    Compile with -O2 optimization\n";
+    std::cout << "  rqio build <script.rq> [-o out]     Compile to standalone native binary via LLVM\n";
+    std::cout << "  rqio build <script.rq> --release    Compile with -O3 optimization\n";
     std::cout << "  rqio build <script.rq> --debug      Compile with -O0 -g debug symbols\n";
+    std::cout << "  rqio build <script.rq> --target <T> Target triple (linux-x64, win-x64, macos-arm64)\n";
+    std::cout << "  rqio build <script.rq> --no-llvm    Compile via GCC fallback\n";
     std::cout << "  rqio fmt <script.rq>                Format source file in place\n";
     std::cout << "  rqio debug <script.rq> [--port N]   Start DAP debug server (VS Code F5)\n";
     std::cout << "\n\033[1mPackage Manager:\033[0m\n";
@@ -534,8 +537,27 @@ CliOptions parseArguments(int argc, char* argv[]) {
             options.noLLVM = true;
             continue;
         }
+        if (arg == "--target" && i + 1 < argc) {
+            std::string t = argv[++i];
+            if (t == "linux-x64" || t == "linux64") options.targetTriple = "x86_64-unknown-linux-gnu";
+            else if (t == "linux-arm64" || t == "linux-aarch64") options.targetTriple = "aarch64-unknown-linux-gnu";
+            else if (t == "windows-x64" || t == "win-x64" || t == "win64") options.targetTriple = "x86_64-pc-windows-gnu";
+            else if (t == "macos-arm64" || t == "darwin-arm64") options.targetTriple = "arm64-apple-darwin";
+            else if (t == "macos-x64" || t == "darwin-x64") options.targetTriple = "x86_64-apple-darwin";
+            else options.targetTriple = t;
+            continue;
+        }
+        if (arg.rfind("--target=", 0) == 0) {
+            std::string t = arg.substr(9);
+            if (t == "linux-x64" || t == "linux64") options.targetTriple = "x86_64-unknown-linux-gnu";
+            else if (t == "linux-arm64" || t == "linux-aarch64") options.targetTriple = "aarch64-unknown-linux-gnu";
+            else if (t == "windows-x64" || t == "win-x64" || t == "win64") options.targetTriple = "x86_64-pc-windows-gnu";
+            else if (t == "macos-arm64" || t == "darwin-arm64") options.targetTriple = "arm64-apple-darwin";
+            else if (t == "macos-x64" || t == "darwin-x64") options.targetTriple = "x86_64-apple-darwin";
+            else options.targetTriple = t;
+            continue;
+        }
 
-        // If script file already resolved, remaining non-flag args are script args
         if (!options.inputPath.empty() && arg.rfind("--", 0) != 0 && arg.rfind("-", 0) != 0) {
             options.scriptArgs.push_back(arg);
             continue;
@@ -543,7 +565,6 @@ CliOptions parseArguments(int argc, char* argv[]) {
 
         const auto resolved = resolveScriptPath(arg);
         if (!resolved.has_value()) {
-            // Unknown flag after script — treat as script arg
             if (!options.inputPath.empty()) {
                 options.scriptArgs.push_back(arg);
                 continue;
@@ -925,11 +946,19 @@ int main(int argc, char* argv[]) {
                 resolved.builtinSymbolAliases);
 
             std::filesystem::path outBin = cliOptions.outExePath;
+            bool isTargetWindows = cliOptions.targetTriple.empty() ?
+#ifdef _WIN32
+                true
+#else
+                false
+#endif
+                : (cliOptions.targetTriple.find("windows") != std::string::npos || cliOptions.targetTriple.find("win32") != std::string::npos);
+
             if (outBin.empty()) {
                 outBin = cliOptions.inputPath.parent_path() / cliOptions.inputPath.stem();
-#ifdef _WIN32
-                outBin.replace_extension(".exe");
-#endif
+                if (isTargetWindows) {
+                    outBin.replace_extension(".exe");
+                }
             }
 
             std::string optFlags = cliOptions.releaseMode ? "-O3" :
@@ -989,21 +1018,24 @@ int main(int argc, char* argv[]) {
                 rtCopied = true;
             }
 
-#ifdef _WIN32
-            std::string platformFlags = " -mconsole";
-#else
             std::string platformFlags;
-#endif
+            if (isTargetWindows) {
+                platformFlags = " -mconsole";
+            }
+            std::string targetFlag = cliOptions.targetTriple.empty() ? "" : (" --target=" + cliOptions.targetTriple);
             std::string cmd = q(std::filesystem::path(cc))
-                + " " + optFlags + platformFlags
+                + " " + optFlags + platformFlags + targetFlag
                 + " -lm -I" + q(srcDir)
                 + " " + q(cFile)
                 + " -o " + q(outBin);
 
             bool isLLVM = (cc.find("clang") != std::string::npos);
+            std::string modeDesc = cliOptions.releaseMode ? "release" : cliOptions.debugBuild ? "debug" : "optimized";
+            if (!cliOptions.targetTriple.empty()) {
+                modeDesc += " -> " + cliOptions.targetTriple;
+            }
             Log::status("Compiling", cliOptions.inputPath.filename().string()
-                + " (" + (cliOptions.releaseMode ? "release" : cliOptions.debugBuild ? "debug" : "optimized")
-                + (isLLVM ? " via LLVM" : " via GCC") + ")");
+                + " (" + modeDesc + (isLLVM ? " via LLVM" : " via GCC") + ")");
 
             int ret = runCmd(cmd);
             std::filesystem::remove(cFile);
