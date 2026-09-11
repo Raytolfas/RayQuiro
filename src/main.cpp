@@ -73,6 +73,7 @@ struct CliOptions {
     bool approvedRegistryOnly = false;
     bool checkOnly = false;
     bool localInstall = false;
+    bool globalOnly = false;
     bool preferVm = false;
     bool legacyMode = false;
     bool releaseMode = false;   // --release: -O3 -flto
@@ -91,32 +92,32 @@ struct ProjectConfig {
 };
 
 void printHelp() {
-    std::cout << "RayQuiro " << kRayQuiroVersion << "\n";
-    std::cout << "\nUsage:\n";
-    std::cout << "  rqio run <script.rq> [--legacy]     Run a script (VM by default)\n";
-    std::cout << "  rqio build <script.rq> [-o out.exe] Compile to native binary\n";
-    std::cout << "  rqio build <script.rq> --release    Native binary with -O3 -flto\n";
-    std::cout << "  rqio build <script.rq> --debug      Native binary with -O0 -g\n";
-    std::cout << "  rqio fmt <script.rq>                Format source file\n";
-    std::cout << "  rqio debug <script.rq> [--port N]   Start DAP debug server\n";
-    std::cout << "\nPackages:\n";
-    std::cout << "  rqio init [folder]                  Initialize rqio.json\n";
-    std::cout << "  rqio add <name>                     Install package globally\n";
-    std::cout << "  rqio add <owner/repo[@branch]>      Install from GitHub globally\n";
-    std::cout << "  rqio add <name> --local             Install locally (.rqio/packages/)\n";
-    std::cout << "  rqio install                        Install all from rqio.json\n";
-    std::cout << "  rqio install <name>                 Alias for rqio add\n";
-    std::cout << "  rqio remove <name>                  Remove package\n";
-    std::cout << "  rqio list                           List installed packages\n";
-    std::cout << "\nOther:\n";
-    std::cout << "  rqio self-update [check]            Update rqio\n";
-    std::cout << "  rqio version                        Show version\n";
-    std::cout << "  rqio help                           Show this help\n";
-    std::cout << "\nLanguage features:\n";
-    std::cout << "  ??  null coalescing:    x ?? \"default\"\n";
-    std::cout << "  ?.  optional chaining:  obj?.[\"key\"]\n";
-    std::cout << "  Multiple return:        return a, b, c\n";
-    std::cout << "  Built-in modules:       json, process, datetime, path, fs, env, hash\n";
+    std::cout << "\033[1;36mRayQuiro\033[0m " << kRayQuiroVersion << " — modern, fast programming language\n";
+    std::cout << "\n\033[1mUsage:\033[0m\n";
+    std::cout << "  rqio run <script.rq> [--legacy]     Run script (Bytecode VM default)\n";
+    std::cout << "  rqio build <script.rq> [-o out]     Compile to standalone native binary\n";
+    std::cout << "  rqio build <script.rq> --release    Compile with -O2 optimization\n";
+    std::cout << "  rqio build <script.rq> --debug      Compile with -O0 -g debug symbols\n";
+    std::cout << "  rqio fmt <script.rq>                Format source file in place\n";
+    std::cout << "  rqio debug <script.rq> [--port N]   Start DAP debug server (VS Code F5)\n";
+    std::cout << "\n\033[1mPackage Manager:\033[0m\n";
+    std::cout << "  rqio init [folder]                  Initialize project with rqio.json\n";
+    std::cout << "  rqio add <name|owner/repo>          Install package globally\n";
+    std::cout << "  rqio add <name> --local             Install into project (.rqio/packages/)\n";
+    std::cout << "  rqio install                        Install all dependencies from rqio.json\n";
+    std::cout << "  rqio install <name> [--local]       Install specific package\n";
+    std::cout << "  rqio remove <name> [--local]        Remove package\n";
+    std::cout << "  rqio list [--global|--local]        List installed packages\n";
+    std::cout << "\n\033[1mBuilt-in Modules:\033[0m\n";
+    std::cout << "  web       rayquiro.web     (live server, reactive HTML/CSS DSL)\n";
+    std::cout << "  engine    rayquiro.engine  (2D/3D graphics, audio, physics, sprites)\n";
+    std::cout << "  app       rayquiro.app     (native window & application lifecycle)\n";
+    std::cout << "  ui        rayquiro.ui      (modern cross-platform desktop UI)\n";
+    std::cout << "  stdlib    json, datetime, path, fs, env, hash, crypto, regex, process\n";
+    std::cout << "\n\033[1mOther:\033[0m\n";
+    std::cout << "  rqio self-update [check]            Check or install CLI update\n";
+    std::cout << "  rqio version                        Show version number\n";
+    std::cout << "  rqio help                           Show this help menu\n";
 }
 
 std::optional<std::filesystem::path> resolveScriptPath(const std::string& rawValue) {
@@ -421,6 +422,11 @@ CliOptions parseArguments(int argc, char* argv[]) {
     }
     if (first == "list" || first == "ls") {
         options.mode = CliMode::PackageList;
+        for (int i = 2; i < argc; ++i) {
+            const std::string a = argv[i];
+            if (a == "--global") { options.globalOnly = true; continue; }
+            if (a == "--local") { options.localInstall = true; continue; }
+        }
         return options;
     }
     if (first == "run") {
@@ -447,9 +453,19 @@ CliOptions parseArguments(int argc, char* argv[]) {
         if (index < argc) {
             options.packageSpec = argv[index++];
         }
-    } else if (first == "install") {
+    } else if (first == "install" || first == "i") {
         options.mode = CliMode::PackageInstall;
         ++index;
+        for (; index < argc; ++index) {
+            const std::string a = argv[index];
+            if (a == "--local") { options.localInstall = true; continue; }
+            if (options.packageSpec.empty() && a.rfind("--", 0) != 0) {
+                options.packageSpec = a;
+                options.mode = CliMode::PackageAdd;
+                continue;
+            }
+        }
+        return options;
     } else if (first == "remove" || first == "rm") {
         options.mode = CliMode::PackageRemove;
         ++index;
@@ -825,7 +841,11 @@ int main(int argc, char* argv[]) {
             return 0;
         }
         if (cliOptions.mode == CliMode::PackageList) {
-            RayQuiroCliServices::listInstalledPackages(pkgRoot);
+            bool showGlobal = !cliOptions.localInstall || cliOptions.globalOnly;
+            bool showLocal  = !cliOptions.globalOnly  || cliOptions.localInstall;
+            if (cliOptions.globalOnly && !cliOptions.localInstall) showLocal = false;
+            if (cliOptions.localInstall && !cliOptions.globalOnly) showGlobal = false;
+            RayQuiroCliServices::listInstalledPackages(pkgRoot, showGlobal, showLocal);
             return 0;
         }
 

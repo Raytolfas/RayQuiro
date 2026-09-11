@@ -10,6 +10,7 @@
 #include <iostream>
 #include <optional>
 #include <random>
+#include <regex>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -1001,6 +1002,50 @@ public:
             for (size_t i=0;i<inner.size();i+=2) inner_bytes.push_back((char)std::stoi(inner.substr(i,2),nullptr,16));
             return VMValue(toString(*callDefaultBuiltin("crypto.sha256",{VMValue(opad+inner_bytes)})));
         }
+        if (name == "regex.test") {
+            if (args.size() < 2) return VMValue(false);
+            try {
+                std::regex re(toString(args[0]));
+                return VMValue(std::regex_search(toString(args[1]), re));
+            } catch (...) { return VMValue(false); }
+        }
+        if (name == "regex.match") {
+            if (args.size() < 2) return VMValue();
+            try {
+                std::regex re(toString(args[0]));
+                std::string target = toString(args[1]);
+                std::smatch m;
+                if (std::regex_search(target, m, re)) {
+                    VMValue::Array items;
+                    for (size_t i = 0; i < m.size(); ++i) items.push_back(VMValue(m[i].str()));
+                    return VMValue(items);
+                }
+                return VMValue();
+            } catch (...) { return VMValue(); }
+        }
+        if (name == "regex.replace") {
+            if (args.size() < 3) return args.size() > 1 ? args[1] : VMValue(std::string(""));
+            try {
+                std::regex re(toString(args[0]));
+                return VMValue(std::regex_replace(toString(args[1]), re, toString(args[2])));
+            } catch (...) { return args.size() > 1 ? args[1] : VMValue(std::string("")); }
+        }
+        if (name == "regex.split") {
+            if (args.size() < 2) return VMValue(VMValue::Array{});
+            try {
+                std::regex re(toString(args[0]));
+                std::string target = toString(args[1]);
+                std::sregex_token_iterator it(target.begin(), target.end(), re, -1);
+                std::sregex_token_iterator end;
+                VMValue::Array items;
+                for (; it != end; ++it) items.push_back(VMValue(it->str()));
+                return VMValue(items);
+            } catch (...) {
+                VMValue::Array items{args[1]};
+                return VMValue(items);
+            }
+        }
+
         if (name == "datetime.now") {
             auto now = std::chrono::system_clock::now();
             auto t = std::chrono::system_clock::to_time_t(now);

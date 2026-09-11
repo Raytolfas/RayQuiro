@@ -2373,6 +2373,54 @@ private:
             return Value(to_string(callBuiltin("hash.sha256", outer_args).value_or(Value(std::string("")))));
         }
 
+        if (builtin == "regex.test") {
+            if (args.size() < 2) return Value(false);
+            try {
+                std::regex re(to_string(args[0]));
+                return Value(std::regex_search(to_string(args[1]), re));
+            } catch (...) { return Value(false); }
+        }
+        if (builtin == "regex.match") {
+            if (args.size() < 2) return Value();
+            try {
+                std::regex re(to_string(args[0]));
+                std::string target = to_string(args[1]);
+                std::smatch m;
+                if (std::regex_search(target, m, re)) {
+                    Value arr = Value::array();
+                    for (size_t i = 0; i < m.size(); ++i) {
+                        arr.as_array()->push_back(Value(m[i].str()));
+                    }
+                    return arr;
+                }
+                return Value();
+            } catch (...) { return Value(); }
+        }
+        if (builtin == "regex.replace") {
+            if (args.size() < 3) return args.size() > 1 ? args[1] : Value(std::string(""));
+            try {
+                std::regex re(to_string(args[0]));
+                return Value(std::regex_replace(to_string(args[1]), re, to_string(args[2])));
+            } catch (...) { return args.size() > 1 ? args[1] : Value(std::string("")); }
+        }
+        if (builtin == "regex.split") {
+            Value arr = Value::array();
+            if (args.size() < 2) return arr;
+            try {
+                std::regex re(to_string(args[0]));
+                std::string target = to_string(args[1]);
+                std::sregex_token_iterator it(target.begin(), target.end(), re, -1);
+                std::sregex_token_iterator end;
+                for (; it != end; ++it) {
+                    arr.as_array()->push_back(Value(it->str()));
+                }
+                return arr;
+            } catch (...) {
+                arr.as_array()->push_back(args[1]);
+                return arr;
+            }
+        }
+
         if (builtin == "vec2") {
             Value v=Value::object(); double x=args.size()>0?to_number(args[0]):0,y=args.size()>1?to_number(args[1]):0;
             (*v.as_object())["x"]=Value(x);(*v.as_object())["y"]=Value(y);(*v.as_object())["__type__"]=Value(std::string("vec2"));return v;

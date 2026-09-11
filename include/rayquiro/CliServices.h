@@ -16,6 +16,8 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#else
+#include <unistd.h>
 #endif
 
 #include "UserPaths.h"
@@ -679,15 +681,17 @@ inline int installNativeModule(
 
 
 inline void launchHiddenBatch(const std::filesystem::path& batchPath) {
-#ifndef _WIN32
-    (void)batchPath;
-    throw std::runtime_error("Self-update is currently supported on Windows only.");
-#else
+#ifdef _WIN32
     std::ostringstream script;
     script << "$batch = " << psQuote(batchPath.string()) << "\n";
     script << "Start-Process -WindowStyle Hidden -FilePath 'cmd.exe' -ArgumentList '/c', $batch | Out-Null\n";
     if (runPowerShellScript(script.str(), "rqio_launch_update") != 0) {
         throw std::runtime_error("Failed to launch updater batch.");
+    }
+#else
+    const std::string cmd = "bash " + batchPath.string() + " &";
+    if (std::system(cmd.c_str()) != 0) {
+        throw std::runtime_error("Failed to launch updater shell script.");
     }
 #endif
 }
@@ -700,11 +704,14 @@ inline void createSelfUpdateScripts(
     const std::string& relaunchCmd = ""
 ) {
     const std::filesystem::path updatesRoot = RayQuiroUserPaths::updatesRoot();
-    const std::filesystem::path applyScriptPath = updatesRoot / "apply_update.ps1";
-    const std::filesystem::path batchPath = updatesRoot / "apply_update.bat";
     const std::filesystem::path extractDir = updatesRoot / "extract";
     const std::filesystem::path statePath = RayQuiroUserPaths::rqioHome() / "update.json";
     const std::filesystem::path targetDir = exePath.parent_path();
+    std::filesystem::create_directories(updatesRoot);
+
+#ifdef _WIN32
+    const std::filesystem::path applyScriptPath = updatesRoot / "apply_update.ps1";
+    const std::filesystem::path batchPath = updatesRoot / "apply_update.bat";
 
     std::ostringstream ps;
     ps << "$ErrorActionPreference = 'Stop'\n";
@@ -724,27 +731,16 @@ inline void createSelfUpdateScripts(
     ps << "} else {\n";
     ps << "  Copy-Item -Path $asset -Destination $targetExe -Force\n";
     ps << "}\n";
-    ps << "$state = @\"\n";
-    ps << "{\n";
+    ps << "$state = @\"\n{\n";
     ps << "  \"current_version\": \"" << jsonEscape(remoteVersion) << "\",\n";
-    ps << "  \"remote_version\": \"" << jsonEscape(remoteVersion) << "\",\n";
-    ps << "  \"last_check_utc\": \"" << jsonEscape(nowIsoUtc()) << "\",\n";
-    ps << "  \"status\": \"applied\",\n";
-    ps << "  \"manifest_url\": \"" << jsonEscape(updateManifestUrl()) << "\",\n";
-    ps << "  \"download_url\": \"" << jsonEscape(assetPath.string()) << "\"\n";
-    ps << "}\n";
-    ps << "\"@\n";
+    ps << "  \"status\": \"applied\"\n}\n\"@\n";
     ps << "Set-Content -Path $statePath -Value $state -Encoding UTF8\n";
     writeText(applyScriptPath, ps.str());
 
     std::ostringstream bat;
     bat << "@echo off\r\n";
     bat << "setlocal\r\n";
-#ifdef _WIN32
     bat << "set \"RQIO_PID=" << GetCurrentProcessId() << "\"\r\n";
-#else
-    bat << "set \"RQIO_PID=0\"\r\n";
-#endif
     bat << ":wait_loop\r\n";
     bat << "tasklist /FI \"PID eq %RQIO_PID%\" 2>NUL | find \"%RQIO_PID%\" >NUL\r\n";
     bat << "if not errorlevel 1 (\r\n";
@@ -758,9 +754,46 @@ inline void createSelfUpdateScripts(
     }
     bat << "del \"%~f0\"\r\n";
     writeText(batchPath, bat.str());
-
     writeUpdateState(currentVersion, remoteVersion, "scheduled", updateManifestUrl(), assetPath.string());
     launchHiddenBatch(batchPath);
+
+#else
+    const std::filesystem::path shPath = updatesRoot / "apply_update.sh";
+    const std::string exeStr = exePath.string();
+    const std::string assetStr = assetPath.string();
+    const std::string extDirStr = extractDir.string();
+    const std::string stateStr = statePath.string();
+    const pid_t selfPid = getpid();
+
+    std::ostringstream sh;
+    sh << "#!/usr/bin/env bash\n";
+    sh << "RQIO_PID=" << selfPid << "\n";
+    sh << "while kill -0 \"$RQIO_PID\" 2>/dev/null; do sleep 1; done\n";
+    sh << "mkdir -p \"" << extDirStr << "\"\n";
+    sh << "if [[ \"" << assetStr << "\" == *.zip ]]; then\n";
+    sh << "  unzip -q -o \"" << assetStr << "\" -d \"" << extDirStr << "\"\n";
+    sh << "  NEW_BIN=$(find \"" << extDirStr << "\" -name 'rqio' -type f | head -1)\n";
+    sh << "  [ -z \"$NEW_BIN\" ] && NEW_BIN=$(find \"" << extDirStr << "\" -name 'rqio.exe' -type f | head -1)\n";
+    sh << "  [ -n \"$NEW_BIN\" ] && cp \"$NEW_BIN\" \"" << exeStr << "\" && chmod +x \"" << exeStr << "\"\n";
+    sh << "elif [[ \"" << assetStr << "\" == *.tar.gz ]] || [[ \"" << assetStr << "\" == *.tgz ]]; then\n";
+    sh << "  tar xzf \"" << assetStr << "\" -C \"" << extDirStr << "\"\n";
+    sh << "  NEW_BIN=$(find \"" << extDirStr << "\" -name 'rqio' -type f | head -1)\n";
+    sh << "  [ -n \"$NEW_BIN\" ] && cp \"$NEW_BIN\" \"" << exeStr << "\" && chmod +x \"" << exeStr << "\"\n";
+    sh << "else\n";
+    sh << "  cp \"" << assetStr << "\" \"" << exeStr << "\" && chmod +x \"" << exeStr << "\"\n";
+    sh << "fi\n";
+    sh << "echo '{\"status\":\"applied\",\"current_version\":\"" << jsonEscape(remoteVersion) << "\"}' > \"" << stateStr << "\"\n";
+    if (!relaunchCmd.empty()) {
+        sh << "\"" << exeStr << "\" " << relaunchCmd << "\n";
+    }
+    sh << "rm -f \"$0\"\n";
+    writeText(shPath, sh.str());
+    std::filesystem::permissions(shPath,
+        std::filesystem::perms::owner_exec | std::filesystem::perms::owner_read | std::filesystem::perms::owner_write,
+        std::filesystem::perm_options::add);
+    writeUpdateState(currentVersion, remoteVersion, "scheduled", updateManifestUrl(), assetPath.string());
+    launchHiddenBatch(shPath);
+#endif
 }
 
 
@@ -889,4 +922,317 @@ inline int selfUpdate(
     return 0;
 #endif
 }
+
+
+// в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+// Package Manager (rqio add / install / remove / list / init)
+//
+// Global (default): ~/.rqio/packages/<name>/
+// Local  (--local): <project>/.rqio/packages/<name>/
+//
+// Spec formats:
+//   "telebot"           в†’ look up in approved registry в†’ GitHub ZIP
+//   "user/repo"         в†’ GitHub ZIP of branch main
+//   "user/repo@branch"  в†’ GitHub ZIP of that branch/tag
+//   "github:user/repo"  в†’ same as user/repo
+// в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+
+struct RqioManifest {
+    std::string name;
+    std::string version     = "1.0.0";
+    std::string description;
+    std::map<std::string, std::string> dependencies; // name -> spec
+};
+
+// в”Ђв”Ђ JSON helpers в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+
+inline std::map<std::string, std::string> findJsonObjectPairs(
+    const std::string& json, const std::string& key)
+{
+    std::map<std::string, std::string> result;
+    const std::string keyToken = "\"" + key + "\"";
+    const size_t keyPos = json.find(keyToken);
+    if (keyPos == std::string::npos) return result;
+    const size_t braceOpen = json.find('{', keyPos + keyToken.size());
+    if (braceOpen == std::string::npos) return result;
+
+    size_t i = braceOpen + 1;
+    while (i < json.size()) {
+        while (i < json.size() && std::isspace((unsigned char)json[i])) ++i;
+        if (i >= json.size() || json[i] == '}') break;
+        if (json[i] != '"') { ++i; continue; }
+        ++i;
+        std::string k;
+        while (i < json.size() && json[i] != '"') {
+            if (json[i] == '\\' && i + 1 < json.size()) ++i;
+            k += json[i++];
+        }
+        if (i < json.size()) ++i;
+        while (i < json.size() && (std::isspace((unsigned char)json[i]) || json[i] == ':')) ++i;
+        if (i < json.size() && json[i] == '"') {
+            ++i;
+            std::string v;
+            while (i < json.size() && json[i] != '"') {
+                if (json[i] == '\\' && i + 1 < json.size()) ++i;
+                v += json[i++];
+            }
+            if (i < json.size()) ++i;
+            result[k] = v;
+        }
+        while (i < json.size() && (std::isspace((unsigned char)json[i]) || json[i] == ',')) ++i;
+    }
+    return result;
 }
+
+inline RqioManifest readRqioManifest(const std::filesystem::path& projectRoot) {
+    const std::filesystem::path path = projectRoot / "rqio.json";
+    RqioManifest m;
+    if (!std::filesystem::exists(path)) return m;
+    const std::string content = readText(path);
+    m.name        = findJsonStringValue(content, "name").value_or("");
+    m.version     = findJsonStringValue(content, "version").value_or("1.0.0");
+    m.description = findJsonStringValue(content, "description").value_or("");
+    m.dependencies = findJsonObjectPairs(content, "dependencies");
+    return m;
+}
+
+inline void writeRqioManifest(const std::filesystem::path& projectRoot,
+                               const RqioManifest& m)
+{
+    std::ostringstream js;
+    js << "{\n";
+    js << "  \"name\": \""        << jsonEscape(m.name)        << "\",\n";
+    js << "  \"version\": \""     << jsonEscape(m.version)     << "\",\n";
+    js << "  \"description\": \"" << jsonEscape(m.description) << "\",\n";
+    js << "  \"dependencies\": {\n";
+    bool first = true;
+    for (const auto& [k, v] : m.dependencies) {
+        if (!first) js << ",\n";
+        first = false;
+        js << "    \"" << jsonEscape(k) << "\": \"" << jsonEscape(v) << "\"";
+    }
+    js << "\n  }\n}\n";
+    writeText(projectRoot / "rqio.json", js.str());
+}
+
+inline void writeRqioLock(const std::filesystem::path& projectRoot,
+                           const std::vector<FrameworkPackage>& packages)
+{
+    std::ostringstream js;
+    js << "{\n  \"lockVersion\": 1,\n  \"packages\": [\n";
+    for (size_t i = 0; i < packages.size(); ++i) {
+        const auto& p = packages[i];
+        js << "    {\"name\": \"" << jsonEscape(p.name)
+           << "\", \"repo\": \""  << jsonEscape(p.repo)
+           << "\", \"branch\": \"" << jsonEscape(p.branch)
+           << "\", \"installedAt\": \"" << jsonEscape(nowIsoUtc()) << "\"}";
+        if (i + 1 < packages.size()) js << ",";
+        js << "\n";
+    }
+    js << "  ]\n}\n";
+    writeText(projectRoot / "rqio.lock", js.str());
+}
+
+// в”Ђв”Ђ Install paths в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+
+// Global: ~/.rqio/packages/
+inline std::filesystem::path globalPackagesRoot() {
+    return RayQuiroUserPaths::packagesRoot();
+}
+
+// Local: <project>/.rqio/packages/
+inline std::filesystem::path localPackagesRoot(const std::filesystem::path& projectRoot) {
+    return projectRoot / ".rqio" / "packages";
+}
+
+// в”Ђв”Ђ Spec resolution в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+
+// Resolves a package spec to a FrameworkPackage.
+// "telebot"        в†’ approved registry lookup
+// "user/repo"      в†’ GitHub direct
+// "user/repo@tag"  в†’ GitHub direct, specific tag
+// "github:..."     в†’ strip prefix, then same as above
+inline FrameworkPackage resolvePackageSpec(const std::string& rawSpec) {
+    std::string spec = trim(rawSpec);
+    // strip "github:" prefix
+    if (spec.rfind("github:", 0) == 0) spec = spec.substr(7);
+
+    if (spec.find('/') != std::string::npos) {
+        // Direct GitHub spec: user/repo[@branch]
+        return parseRepoSpec(spec);
+    }
+
+    // No slash в†’ look up in approved registry
+    return findApprovedFramework(spec);
+}
+
+// в”Ђв”Ђ rqio init в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+
+inline void initProject(const std::filesystem::path& projectRoot) {
+    const std::filesystem::path manifest = projectRoot / "rqio.json";
+    if (std::filesystem::exists(manifest)) {
+        std::cout << "[rqio] rqio.json already exists.\n";
+        return;
+    }
+
+    RqioManifest m;
+    m.name = sanitizeName(std::filesystem::absolute(projectRoot).filename().string());
+    if (m.name.empty()) m.name = "my-project";
+    m.version = "1.0.0";
+    writeRqioManifest(projectRoot, m);
+
+    // add .rqio/ to .gitignore
+    const std::filesystem::path gitignore = projectRoot / ".gitignore";
+    std::string existing;
+    if (std::filesystem::exists(gitignore)) existing = readText(gitignore);
+    if (existing.find(".rqio/") == std::string::npos) {
+        std::ofstream f(gitignore, std::ios::app);
+        if (!existing.empty() && existing.back() != '\n') f << "\n";
+        f << "# rqio local packages\n.rqio/\n";
+    }
+
+    std::cout << "[rqio] Created rqio.json for project '" << m.name << "'\n";
+    std::cout << "[rqio] Local packages will go into .rqio/packages/ (gitignored)\n";
+}
+
+// в”Ђв”Ђ rqio add / install <spec> в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+
+inline void addPackage(const std::string& spec,
+                        const std::filesystem::path& projectRoot,
+                        bool localInstall = false)
+{
+    FrameworkPackage pkg = resolvePackageSpec(spec);
+
+    const std::filesystem::path installRoot = localInstall
+        ? localPackagesRoot(projectRoot)
+        : globalPackagesRoot();
+
+    std::filesystem::create_directories(installRoot);
+    installFrameworkPackage(pkg, installRoot);
+
+    // if local, also update rqio.json + rqio.lock
+    if (localInstall) {
+        RqioManifest m = readRqioManifest(projectRoot);
+        if (m.name.empty())
+            m.name = sanitizeName(std::filesystem::absolute(projectRoot).filename().string());
+        m.dependencies[pkg.name] = pkg.repo + "@" + pkg.branch;
+        writeRqioManifest(projectRoot, m);
+
+        std::vector<FrameworkPackage> locked;
+        for (const auto& [n, s] : m.dependencies) {
+            try { locked.push_back(resolvePackageSpec(s)); } catch (...) {}
+        }
+        writeRqioLock(projectRoot, locked);
+        std::cout << "[rqio] Added '" << pkg.name << "' to rqio.json\n";
+    } else {
+        std::cout << "[rqio] Installed '" << pkg.name
+                  << "' globally into " << installRoot.string() << "\n";
+    }
+}
+
+// в”Ђв”Ђ rqio install (from rqio.json) в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+
+inline void installAllPackages(const std::filesystem::path& projectRoot) {
+    const RqioManifest m = readRqioManifest(projectRoot);
+    if (m.dependencies.empty()) {
+        std::cout << "[rqio] No dependencies in rqio.json\n";
+        return;
+    }
+
+    const std::filesystem::path installRoot = localPackagesRoot(projectRoot);
+    std::filesystem::create_directories(installRoot);
+
+    std::vector<FrameworkPackage> installed;
+    for (const auto& [name, spec] : m.dependencies) {
+        std::cout << "[rqio] Installing " << name << " (" << spec << ")...\n";
+        try {
+            FrameworkPackage pkg = resolvePackageSpec(spec);
+            installFrameworkPackage(pkg, installRoot);
+            installed.push_back(pkg);
+        } catch (const std::exception& e) {
+            std::cerr << "[rqio] Failed: " << name << ": " << e.what() << "\n";
+        }
+    }
+
+    writeRqioLock(projectRoot, installed);
+    std::cout << "[rqio] Done. " << installed.size()
+              << " package(s) in " << installRoot.string() << "\n";
+}
+
+// в”Ђв”Ђ rqio remove в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+
+inline void removePackage(const std::string& name,
+                           const std::filesystem::path& projectRoot,
+                           bool localOnly = false)
+{
+    const std::string safeName = sanitizeName(name);
+    bool removed = false;
+    std::error_code ec;
+
+    if (!localOnly) {
+        // try global first
+        const std::filesystem::path global = globalPackagesRoot() / safeName;
+        if (std::filesystem::exists(global)) {
+            std::filesystem::remove_all(global, ec);
+            std::cout << "[rqio] Removed global package: " << global.string() << "\n";
+            removed = true;
+        }
+        // also check legacy frameworks dir
+        const std::filesystem::path legacy = RayQuiroUserPaths::frameworksRoot() / safeName;
+        if (std::filesystem::exists(legacy)) {
+            std::filesystem::remove_all(legacy, ec);
+            std::cout << "[rqio] Removed legacy framework: " << legacy.string() << "\n";
+            removed = true;
+        }
+    }
+
+    // local .rqio/packages/
+    const std::filesystem::path local = localPackagesRoot(projectRoot) / safeName;
+    if (std::filesystem::exists(local)) {
+        std::filesystem::remove_all(local, ec);
+        std::cout << "[rqio] Removed local package: " << local.string() << "\n";
+        removed = true;
+    }
+
+    if (!removed)
+        std::cout << "[rqio] Package '" << name << "' not found.\n";
+
+    // remove from rqio.json if present
+    RqioManifest m = readRqioManifest(projectRoot);
+    if (m.dependencies.erase(name) > 0) {
+        writeRqioManifest(projectRoot, m);
+        std::cout << "[rqio] Removed '" << name << "' from rqio.json\n";
+    }
+}
+
+// в”Ђв”Ђ rqio list в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+
+inline void listInstalledPackages(const std::filesystem::path& projectRoot, bool showGlobal = true, bool showLocal = true) {
+    const RqioManifest m = readRqioManifest(projectRoot);
+
+    auto printDir = [&](const std::filesystem::path& dir, const std::string& label) {
+        if (!std::filesystem::exists(dir)) return;
+        std::cout << label << " (" << dir.string() << "):\n";
+        bool any = false;
+        for (const auto& entry : std::filesystem::directory_iterator(dir)) {
+            if (!entry.is_directory()) continue;
+            any = true;
+            const std::string n = entry.path().filename().string();
+            const auto it = m.dependencies.find(n);
+            std::cout << "  " << n;
+            if (it != m.dependencies.end()) std::cout << "  (" << it->second << ")";
+            std::cout << "\n";
+        }
+        if (!any) std::cout << "  (none)\n";
+    };
+
+    if (showGlobal) {
+        printDir(globalPackagesRoot(),          "Global packages");
+        printDir(RayQuiroUserPaths::frameworksRoot(), "Legacy frameworks");
+    }
+    if (showLocal) {
+        printDir(localPackagesRoot(projectRoot), "Local packages");
+    }
+}
+
+} // namespace RayQuiroCliServices

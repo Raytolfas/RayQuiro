@@ -169,6 +169,10 @@ private:
             name == "crypto.uuid" ||
             name == "crypto.random_bytes" ||
             name == "crypto.hmac_sha256" ||
+            name == "regex.test" ||
+            name == "regex.match" ||
+            name == "regex.replace" ||
+            name == "regex.split" ||
             name == "__optional_get";
     }
 
@@ -182,7 +186,9 @@ private:
             name == "process" ||
             name == "datetime" ||
             name == "path" ||
-            name == "hash";
+            name == "hash" ||
+            name == "crypto" ||
+            name == "regex";
     }
 
     static bool usesUnsupportedFrameworkBuiltin(const std::string& name) {

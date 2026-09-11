@@ -23,6 +23,8 @@ struct BuildOptions {
     std::filesystem::path outputCppPath;
     std::filesystem::path outputExePath;
     std::filesystem::path runtimeIncludePath;
+    bool releaseMode = false;  // --release: -O3 -flto (max speed)
+    bool debugBuild  = false;  // --debug:   -O0 -g   (debug symbols)
 };
 
 struct BuildResult {
@@ -30,6 +32,8 @@ struct BuildResult {
     std::filesystem::path outputExePath;
     std::filesystem::path runtimeIncludePath;
     RuntimeFeatures features;
+    bool releaseMode = false;
+    bool debugBuild  = false;
 };
 
 struct ResolvedProgram {
@@ -70,6 +74,8 @@ public:
         result.outputExePath = options.outputExePath;
         result.runtimeIncludePath = options.runtimeIncludePath;
         result.features = features;
+        result.releaseMode = options.releaseMode;
+        result.debugBuild  = options.debugBuild;
         return result;
     }
 
@@ -87,7 +93,12 @@ public:
         }
 
         std::string command = quoteCommand(toolchain.cxx) + " \"" + result.outputCppPath.string() + "\"";
-        command += " -std=c++17 -O2 -s";
+        if (result.debugBuild)
+            command += " -std=c++17 -O0 -g";
+        else if (result.releaseMode)
+            command += " -std=c++17 -O3 -s -flto";
+        else
+            command += " -std=c++17 -O2 -s";
         command += " -I\"" + std::filesystem::absolute(result.runtimeIncludePath).string() + "\"";
         command += " -o \"" + result.outputExePath.string() + "\"";
 
@@ -405,7 +416,9 @@ private:
             moduleName == "rayquiro.time" ||
             moduleName == "rayquiro.fs" ||
             moduleName == "rayquiro.env" ||
-            moduleName == "rayquiro.process";
+            moduleName == "rayquiro.process" ||
+            moduleName == "rayquiro.crypto" ||
+            moduleName == "rayquiro.regex";
     }
 
     static bool isNativeRuntimeModule(const std::string& moduleName) {
@@ -425,6 +438,8 @@ private:
         if (moduleName == "rayquiro.fs") return "fs";
         if (moduleName == "rayquiro.env") return "env";
         if (moduleName == "rayquiro.process") return "process";
+        if (moduleName == "rayquiro.crypto") return "crypto";
+        if (moduleName == "rayquiro.regex") return "regex";
         if (isNativeRuntimeModule(moduleName)) {
             return moduleName.substr(std::string("rayquiro.").size());
         }
@@ -573,11 +588,13 @@ private:
         std::filesystem::path cursor = std::filesystem::absolute(importerDir).lexically_normal();
         while (!cursor.empty()) {
             addRoot(cursor / ".rq_modules");
+            addRoot(cursor / ".rqio" / "packages");  // local: ./.rqio/packages/
             if (cursor == cursor.root_path() || cursor.parent_path() == cursor) {
                 break;
             }
             cursor = cursor.parent_path();
         }
+        addRoot(RayQuiroUserPaths::packagesRoot());   // global: ~/.rqio/packages/
         addRoot(std::filesystem::current_path() / ".rq_modules");
 
         std::vector<std::filesystem::path> candidates;
@@ -585,6 +602,7 @@ private:
             std::filesystem::path frameworkRoot = root / parts.front();
             if (parts.size() == 1) {
                 candidates.push_back(frameworkRoot / "main.rq");
+                candidates.push_back(frameworkRoot / "index.rq");  // ← npm-style
                 candidates.push_back(frameworkRoot / (parts.front() + ".rq"));
                 continue;
             }
@@ -608,7 +626,10 @@ private:
             if (auto varStmt = dynamic_cast<VarStmt*>(statement.get())) {
                 exports[varStmt->name] = ModuleExport{false, varStmt->isLet, {}};
             } else if (auto functionStmt = dynamic_cast<FunctionStmt*>(statement.get())) {
-                exports[functionStmt->name] = ModuleExport{true, false, functionStmt->params};
+                // Extract param names from FuncParam (ModuleExport uses vector<string>)
+                std::vector<std::string> paramNames;
+                for (const auto& p : functionStmt->params) paramNames.push_back(p.name);
+                exports[functionStmt->name] = ModuleExport{true, false, paramNames};
             }
         }
         return exports;
@@ -650,7 +671,11 @@ private:
     ) {
         auto function = std::make_unique<FunctionStmt>();
         function->name = targetName;
-        function->params = params;
+        // Convert vector<string> params to vector<FuncParam>
+        for (const std::string& pname : params) {
+            FuncParam fp; fp.name = pname;
+            function->params.push_back(std::move(fp));
+        }
         function->body = std::make_unique<BlockStmt>();
 
         auto returnStmt = std::make_unique<ReturnStmt>();
@@ -661,7 +686,7 @@ private:
             identifier->name = param;
             call->args.push_back(std::move(identifier));
         }
-        returnStmt->value = std::move(call);
+        returnStmt->values.push_back(std::move(call));
         function->body->statements.push_back(std::move(returnStmt));
         return function;
     }
@@ -782,8 +807,8 @@ private:
             }
 
             scopes.push_back({});
-            for (const std::string& param : functionStmt->params) {
-                scopes.back().insert(param);
+            for (const auto& param : functionStmt->params) {
+                scopes.back().insert(param.name);
             }
             for (auto& bodyStmt : functionStmt->body->statements) {
                 namespaceStmt(bodyStmt.get(), alias, topLevelSymbols, scopes, false);
@@ -803,7 +828,8 @@ private:
         }
 
         if (auto returnStmt = dynamic_cast<ReturnStmt*>(stmt)) {
-            namespaceExpr(returnStmt->value.get(), alias, topLevelSymbols, scopes);
+            for (auto& v : returnStmt->values)
+                namespaceExpr(v.get(), alias, topLevelSymbols, scopes);
             return;
         }
 
