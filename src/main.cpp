@@ -965,7 +965,6 @@ int main(int argc, char* argv[]) {
                                    cliOptions.debugBuild  ? "-O0 -g" : "-O2";
 
             std::filesystem::path srcDir = std::filesystem::absolute(cliOptions.inputPath).parent_path();
-            std::filesystem::path rtFile = exePath.parent_path() / "rq_runtime.h";
 
 #ifdef _WIN32
             auto q = [](const std::filesystem::path& p) {
@@ -1004,18 +1003,10 @@ int main(int argc, char* argv[]) {
 
             std::string cSrc = CEmitter::emit(program);
             std::filesystem::path cFile = srcDir / "_rqio_tmp.c";
-            std::filesystem::path rtCopy = srcDir / "rq_runtime.h";
-            bool rtCopied = false;
             {
                 std::ofstream f(cFile);
                 if (!f) throw std::runtime_error("rqio build: cannot write temp C file.");
                 f << cSrc;
-            }
-            if (std::filesystem::exists(rtFile) &&
-                std::filesystem::absolute(rtFile) != std::filesystem::absolute(rtCopy)) {
-                std::filesystem::copy_file(rtFile, rtCopy,
-                    std::filesystem::copy_options::overwrite_existing);
-                rtCopied = true;
             }
 
             std::string platformFlags;
@@ -1025,7 +1016,7 @@ int main(int argc, char* argv[]) {
             std::string targetFlag = cliOptions.targetTriple.empty() ? "" : (" --target=" + cliOptions.targetTriple);
             std::string cmd = q(std::filesystem::path(cc))
                 + " " + optFlags + platformFlags + targetFlag
-                + " -lm -I" + q(srcDir)
+                + " -lm "
                 + " " + q(cFile)
                 + " -o " + q(outBin);
 
@@ -1039,7 +1030,6 @@ int main(int argc, char* argv[]) {
 
             int ret = runCmd(cmd);
             std::filesystem::remove(cFile);
-            if (rtCopied) std::filesystem::remove(rtCopy);
             if (ret != 0) throw std::runtime_error("Compiler exited with code " + std::to_string(ret));
             Log::status("Finished", outBin.string());
             return 0;
