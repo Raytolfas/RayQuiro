@@ -8,15 +8,44 @@ if (-not (Get-Command $cCompiler -ErrorAction SilentlyContinue)) {
     $cCompiler = "gcc"
 }
 
-$vulkanSdkBin = $null
-if ($env:VULKAN_SDK) {
-    $candidate = Join-Path $env:VULKAN_SDK "Bin"
-    if (Test-Path $candidate) {
-        $vulkanSdkBin = $candidate
-    }
+$isWindows = $IsWindows -or ($PSVersionTable.PSEdition -eq "Desktop") -or ([System.Environment]::OSVersion.Platform -eq "Win32NT")
+$isLinux   = $IsLinux
+$isMacOS   = $IsMacOS
+
+if ($isWindows) {
+    $platformName  = "windows"
+    $output        = "rqio-next.exe"
+    $coreOutput    = "rqio_core.dll"
+    $platformLibs  = @("-lopengl32", "-lgdi32", "-lwinmm", "-lws2_32", "-ladvapi32", "-luser32")
+    $sharedFlag    = "-shared"
+} elseif ($isLinux) {
+    $platformName  = "linux"
+    $output        = "rqio"
+    $coreOutput    = "rqio_core.so"
+    $platformLibs  = @("-lGL", "-lX11", "-lXrandr", "-lXinerama", "-lXi", "-lXcursor", "-lpthread", "-lm", "-ldl")
+    $sharedFlag    = "-shared"
+} elseif ($isMacOS) {
+    $platformName  = "macos"
+    $output        = "rqio"
+    $coreOutput    = "rqio_core.dylib"
+    $platformLibs  = @("-framework", "OpenGL", "-framework", "Cocoa", "-framework", "IOKit", "-framework", "CoreFoundation", "-framework", "CoreVideo", "-pthread", "-lm")
+    $sharedFlag    = "-shared"
+} else {
+    Write-Error "Unsupported platform."
+    exit 1
 }
-if (-not $vulkanSdkBin -and (Test-Path "G:\VulkanSDK\Bin")) {
-    $vulkanSdkBin = "G:\VulkanSDK\Bin"
+
+$vulkanSdkBin = $null
+if ($isWindows) {
+    if ($env:VULKAN_SDK) {
+        $candidate = Join-Path $env:VULKAN_SDK "Bin"
+        if (Test-Path $candidate) {
+            $vulkanSdkBin = $candidate
+        }
+    }
+    if (-not $vulkanSdkBin -and (Test-Path "G:\VulkanSDK\Bin")) {
+        $vulkanSdkBin = "G:\VulkanSDK\Bin"
+    }
 }
 
 $glslc = $null
@@ -33,31 +62,28 @@ if (-not $glslc) {
     }
 }
 
-$shaderSourceRoot = "assets/vulkan"
-$shaderOutputs = @(
-    @{ Source = (Join-Path $shaderSourceRoot "preview.vert"); Output = (Join-Path $shaderSourceRoot "preview.vert.spv"); Stage = "vertex" },
-    @{ Source = (Join-Path $shaderSourceRoot "preview.frag"); Output = (Join-Path $shaderSourceRoot "preview.frag.spv"); Stage = "fragment" }
-)
-
-if ($glslc) {
-    foreach ($shader in $shaderOutputs) {
-        & $glslc $shader.Source "-o" $shader.Output
-        if ($LASTEXITCODE -ne 0) {
-            exit $LASTEXITCODE
-        }
-    }
-    Write-Host "Compiled Vulkan preview shaders with $glslc"
-} else {
-    Write-Warning "glslc.exe was not found. Vulkan graphics pipeline will stay disabled until preview shaders are compiled."
-}
-
-$output = "rqio-next.exe"
-$raylibObjectRoot = Join-Path ".cache" ("rqio-raylib-" + [DateTime]::UtcNow.ToString("yyyyMMddHHmmssfff"))
-New-Item -ItemType Directory -Force -Path $raylibObjectRoot | Out-Null
-
 $supportsLto = $false
 if ($cxxCompiler -eq "g++" -or $cxxCompiler -like "*\\g++.exe" -or $cxxCompiler -like "*/g++") {
     $supportsLto = $true
+}
+
+
+$raylibObjectRoot = Join-Path ".cache" ("rqio-raylib-" + [DateTime]::UtcNow.ToString("yyyyMMddHHmmssfff"))
+New-Item -ItemType Directory -Force -Path $raylibObjectRoot | Out-Null
+
+if ($glslc) {
+    $shaderSourceRoot = "assets/vulkan"
+    $shaderOutputs = @(
+        @{ Source = (Join-Path $shaderSourceRoot "preview.vert"); Output = (Join-Path $shaderSourceRoot "preview.vert.spv") },
+        @{ Source = (Join-Path $shaderSourceRoot "preview.frag"); Output = (Join-Path $shaderSourceRoot "preview.frag.spv") }
+    )
+    foreach ($shader in $shaderOutputs) {
+        & $glslc $shader.Source "-o" $shader.Output
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    }
+    Write-Host "Compiled Vulkan preview shaders with $glslc"
+} else {
+    Write-Warning "glslc was not found. Vulkan graphics pipeline will stay disabled until preview shaders are compiled."
 }
 
 $commonNativeCompileFlags = @(
@@ -74,17 +100,23 @@ if ($supportsLto) {
     $commonNativeCompileFlags += "-flto"
 }
 
-$commonNativeLinkFlags = @(
-    "-s",
-    "-static",
-    "-static-libstdc++",
-    "-static-libgcc",
-    "-Wl,--gc-sections",
-    "-Wl,--strip-all",
-    "-Wl,--dynamicbase",
-    "-Wl,--nxcompat",
-    "-Wl,--high-entropy-va"
-)
+if ($isWindows) {
+    $commonNativeLinkFlags = @(
+        "-s",
+        "-static",
+        "-static-libstdc++",
+        "-static-libgcc",
+        "-Wl,--gc-sections",
+        "-Wl,--strip-all",
+        "-Wl,--dynamicbase",
+        "-Wl,--nxcompat",
+        "-Wl,--high-entropy-va"
+    )
+} elseif ($isMacOS) {
+    $commonNativeLinkFlags = @("-dead_strip")
+} else {
+    $commonNativeLinkFlags = @("-s", "-Wl,--gc-sections", "-Wl,--strip-all")
+}
 
 if ($supportsLto) {
     $commonNativeLinkFlags += "-flto"
@@ -214,14 +246,9 @@ if ($resourceObject) {
     $linkArgs += $resourceObject
 }
 $linkArgs += @(
-    "-o", $output,
-    "-lopengl32",
-    "-lgdi32",
-    "-lwinmm",
-    "-lws2_32",
-    "-ladvapi32",
-    "-luser32"
+    "-o", $output
 )
+$linkArgs += $platformLibs
 
 $exitCode = Invoke-Compiler $cxxCompiler $linkArgs
 if ($exitCode -ne 0) {
@@ -230,14 +257,17 @@ if ($exitCode -ne 0) {
 
 Invoke-OptionalStrip $output
 
-try {
-    Copy-Item $output "rqio.exe" -Force
-    Write-Host "Updated rqio.exe"
-} catch {
-    Write-Warning "Built $output, but rqio.exe is locked. Close running rqio.exe processes and copy $output over rqio.exe."
+if ($isWindows) {
+    try {
+        Copy-Item $output "rqio.exe" -Force
+        Write-Host "Updated rqio.exe"
+    } catch {
+        Write-Warning "Built $output, but rqio.exe is locked. Close running rqio.exe processes and copy $output over rqio.exe."
+    }
+} else {
+    Write-Host "Built $output"
 }
 
-$coreOutput = "rqio_core.dll"
 $coreArgs = @(
     "src/rqio_core.cpp"
 )
@@ -246,22 +276,15 @@ $coreArgs += @(
     "-Iinclude/rayquiro",
     "-Ithird_party/raylib/src",
     "-std=c++17",
-    "-shared"
+    $sharedFlag
 )
 
 $coreArgs += $commonNativeCompileFlags
 $coreArgs += $commonNativeLinkFlags
 
 $coreArgs += $raylibObjects
-$coreArgs += @(
-    "-o", $coreOutput,
-    "-lopengl32",
-    "-lgdi32",
-    "-lwinmm",
-    "-lws2_32",
-    "-ladvapi32",
-    "-luser32"
-)
+$coreArgs += @("-o", $coreOutput)
+$coreArgs += $platformLibs
 
 $exitCode = Invoke-Compiler $cxxCompiler $coreArgs
 if ($exitCode -ne 0) {
