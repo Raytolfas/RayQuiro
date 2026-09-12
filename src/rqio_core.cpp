@@ -22,7 +22,7 @@
 #endif
 
 namespace {
-constexpr const char* kRqioCoreVersion = "0.1.1";
+constexpr const char* kRqioCoreVersion = "0.2.0";
 
 std::string make_error_message(const std::exception& error) {
     return std::string("[RayQuiroCore] ") + error.what();
@@ -397,3 +397,4 @@ RQIO_CORE_EXPORT void rqio_core_free_string(char* value) {
         std::free(value);
     }
 }
+

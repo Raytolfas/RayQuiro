@@ -285,5 +285,56 @@ inline void draw_fps(int x, int y) {
     DrawFPS(x, y);
     rte::backendState.frameDrawCalls += 1;
 }
+
+inline void draw_rect(int x, int y, int w, int h, RTColor color) {
+    if (!rte::backendState.windowReady) return;
+    rte::ensure_mode2d();
+    DrawRectangle(x, y, w, h, rte::convert_color(color));
+    rte::backendState.frameDrawCalls += 1;
+}
+
+inline void draw_rect_lines(int x, int y, int w, int h, RTColor color) {
+    if (!rte::backendState.windowReady) return;
+    rte::ensure_mode2d();
+    DrawRectangleLines(x, y, w, h, rte::convert_color(color));
+    rte::backendState.frameDrawCalls += 1;
+}
+
+inline void draw_circle(int x, int y, float radius, RTColor color) {
+    if (!rte::backendState.windowReady) return;
+    rte::ensure_mode2d();
+    DrawCircle(x, y, radius, rte::convert_color(color));
+    rte::backendState.frameDrawCalls += 1;
+}
+
+inline void draw_circle_lines(int x, int y, float radius, RTColor color) {
+    if (!rte::backendState.windowReady) return;
+    rte::ensure_mode2d();
+    DrawCircleLines(x, y, radius, rte::convert_color(color));
+    rte::backendState.frameDrawCalls += 1;
+}
+
+inline void draw_line(int x1, int y1, int x2, int y2, RTColor color) {
+    if (!rte::backendState.windowReady) return;
+    rte::ensure_mode2d();
+    DrawLine(x1, y1, x2, y2, rte::convert_color(color));
+    rte::backendState.frameDrawCalls += 1;
+}
+
+inline void draw_pixel(int x, int y, RTColor color) {
+    if (!rte::backendState.windowReady) return;
+    rte::ensure_mode2d();
+    DrawPixel(x, y, rte::convert_color(color));
+    rte::backendState.frameDrawCalls += 1;
+}
+
+inline int screen_width() {
+    return rte::backendState.windowReady ? GetScreenWidth() : 0;
+}
+
+inline int screen_height() {
+    return rte::backendState.windowReady ? GetScreenHeight() : 0;
+}
 }
 #endif
+

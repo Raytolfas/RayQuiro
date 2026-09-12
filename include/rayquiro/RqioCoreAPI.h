@@ -27,3 +27,4 @@ RQIO_CORE_EXPORT int rqio_core_run_source(RqioCoreHandle* handle, const char* vi
 RQIO_CORE_EXPORT int rqio_core_describe_file(RqioCoreHandle* handle, const char* script_path, char** out_json, char** out_error);
 RQIO_CORE_EXPORT int rqio_core_describe_source(RqioCoreHandle* handle, const char* virtual_filename, const char* source_code, char** out_json, char** out_error);
 RQIO_CORE_EXPORT void rqio_core_free_string(char* value);
+

@@ -163,3 +163,21 @@ RQENGINE_EXPORT int rqengine_export_scene_json(RQEngineHandle* handle, const cha
 RQENGINE_EXPORT int rqengine_save_scene(RQEngineHandle* handle, const char* scene_name, const char* file_path, char** out_path, char** out_error);
 RQENGINE_EXPORT int rqengine_load_scene(RQEngineHandle* handle, const char* scene_name, const char* file_path, char** out_path, char** out_error);
 RQENGINE_EXPORT void rqengine_free_string(char* value);
+
+RQENGINE_EXPORT int rqengine_pick_object(
+    RQEngineHandle* handle,
+    const char*     scene_name,
+    int             screen_x,
+    int             screen_y,
+    int             viewport_w,
+    int             viewport_h,
+    char**          out_json,
+    char**          out_error);
+
+RQENGINE_EXPORT int rqengine_render_editor_scene(
+    RQEngineHandle* handle,
+    const char*     scene_name,
+    const char*     selected_entity,
+    int             show_grid,
+    char**          out_error);
+

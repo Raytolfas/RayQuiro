@@ -154,4 +154,3 @@ int rqm_builtin_ui_invoke(const char* function_name, const char* json_args, char
     }
 }
 
-

@@ -105,3 +105,4 @@ inline RTBackendCapabilities rt_backend_capabilities(RTBackendKind kind) {
         return RTBackendCapabilities{"raylib", true, true, false, false};
     }
 }
+

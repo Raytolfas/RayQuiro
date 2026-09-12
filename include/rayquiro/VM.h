@@ -38,14 +38,14 @@ public:
 private:
     struct CatchFrame {
         std::size_t catch_addr;
-        std::string error_var; // global var name to store error message
+        std::string error_var;
     };
 
     struct Frame {
         const BytecodeFunction* function = nullptr;
         std::size_t ip = 0;
         std::vector<VMValue> locals;
-        std::vector<CatchFrame> catchStack; // active try/catch frames
+        std::vector<CatchFrame> catchStack;
     };
 
     std::unordered_map<std::string, VMValue> globals_;
@@ -314,7 +314,7 @@ private:
     VMValue execute(const BytecodeProgram& program, const BytecodeFunction& function, const std::vector<VMValue>& args) {
         Frame frame;
         frame.function = &function;
-        // Pre-size locals: enough for params + all declared locals
+
         int totalSlots = std::max(static_cast<int>(args.size()), function.localCount);
         frame.locals.resize(static_cast<std::size_t>(totalSlots));
         for (std::size_t i = 0; i < args.size(); ++i) {
@@ -322,7 +322,7 @@ private:
         }
 
         while (frame.ip < frame.function->code.size()) {
-        try { // try/catch wrapper for TryCatch support
+        try {
             const Instruction instruction = frame.function->code[frame.ip++];
             switch (instruction.op) {
             case OpCode::Constant:
@@ -346,7 +346,7 @@ private:
                 break;
             }
             case OpCode::BuildObject: {
-                // instruction.a = number of key-value pairs
+
                 VMValue::Object obj;
                 std::vector<std::pair<std::string, VMValue>> pairs(static_cast<std::size_t>(instruction.a));
                 for (int i = static_cast<int>(pairs.size()) - 1; i >= 0; --i) {
@@ -365,13 +365,13 @@ private:
                 break;
             }
             case OpCode::SetIndex: {
-                // stack: obj, key, val (val on top)
+
                 const VMValue val   = pop();
                 const VMValue key   = pop();
                 VMValue       obj   = pop();
                 if (std::holds_alternative<VMValue::Object>(obj.data)) {
                     std::get<VMValue::Object>(obj.data)[toString(key)] = val;
-                    // Write back to global/local that holds this object
+
                 } else if (std::holds_alternative<VMValue::Array>(obj.data)) {
                     int idx = static_cast<int>(toNumber(key));
                     auto& arr = std::get<VMValue::Array>(obj.data);
@@ -385,7 +385,7 @@ private:
                 break;
             }
             case OpCode::SetGlobalIndex: {
-                // stack: [key, val]; instruction.a = const index of global name
+
                 const VMValue val = pop();
                 const VMValue key = pop();
                 const std::string name = std::get<std::string>(frame.function->constants.at(static_cast<std::size_t>(instruction.a)).data);
@@ -409,7 +409,7 @@ private:
                 break;
             }
             case OpCode::SetLocalIndex: {
-                // stack: [key, val]; instruction.a = local slot
+
                 const VMValue val = pop();
                 const VMValue key = pop();
                 std::size_t slot = static_cast<std::size_t>(instruction.a);
@@ -432,7 +432,7 @@ private:
                 break;
             }
             case OpCode::AppendGlobal: {
-                // stack: [val]; instruction.a = const-idx of global name
+
                 const VMValue val = pop();
                 const std::string name = std::get<std::string>(frame.function->constants.at(static_cast<std::size_t>(instruction.a)).data);
                 auto found = globals_.find(name);
@@ -447,7 +447,7 @@ private:
                 break;
             }
             case OpCode::AppendLocal: {
-                // stack: [val]; instruction.a = local slot
+
                 const VMValue val = pop();
                 std::size_t slot = static_cast<std::size_t>(instruction.a);
                 if (slot >= frame.locals.size()) frame.locals.resize(slot + 1);
@@ -461,7 +461,7 @@ private:
                 break;
             }
             case OpCode::AppendObjGlobal: {
-                // stack: [key, val]; instruction.a = const-idx of global object name
+
                 const VMValue val = pop();
                 const VMValue key = pop();
                 const std::string name = std::get<std::string>(frame.function->constants.at(static_cast<std::size_t>(instruction.a)).data);
@@ -473,7 +473,7 @@ private:
                     if (std::holds_alternative<VMValue::Array>(inner.data)) {
                         std::get<VMValue::Array>(inner.data).push_back(val);
                     } else {
-                        // Initialize as array if not set
+
                         inner = VMValue::Array{val};
                     }
                 } else {
@@ -483,7 +483,7 @@ private:
                 break;
             }
             case OpCode::AppendObjLocal: {
-                // stack: [key, val]; instruction.a = local slot of the object
+
                 const VMValue val = pop();
                 const VMValue key = pop();
                 std::size_t slot = static_cast<std::size_t>(instruction.a);
@@ -507,7 +507,7 @@ private:
                 throw std::runtime_error(msg);
             }
             case OpCode::Concat: {
-                // Pop n values, concatenate as strings (left-to-right)
+
                 int n = instruction.a;
                 std::vector<VMValue> parts(static_cast<std::size_t>(n));
                 for (int i = n - 1; i >= 0; --i) parts[static_cast<std::size_t>(i)] = pop();
@@ -612,35 +612,34 @@ private:
             case OpCode::Return:
                 return stack_.empty() ? VMValue() : pop();
             case OpCode::TryBegin: {
-                // a = catch_addr, b = error_name_const_idx
+
                 std::string errorVar = toString(
                     frame.function->constants.at(static_cast<std::size_t>(instruction.b)));
                 frame.catchStack.push_back({static_cast<std::size_t>(instruction.a), errorVar});
                 break;
             }
             case OpCode::TryEnd: {
-                // Pop active catch frame and jump past catch body
+
                 if (!frame.catchStack.empty()) frame.catchStack.pop_back();
                 frame.ip = static_cast<std::size_t>(instruction.a);
                 break;
             }
-            } // end switch
+            }
         } catch (const std::exception& e) {
             if (!frame.catchStack.empty()) {
-                // Jump to catch block, store error message in global
+
                 CatchFrame cf = frame.catchStack.back();
                 frame.catchStack.pop_back();
                 if (!cf.error_var.empty()) {
                     globals_[cf.error_var] = VMValue(std::string(e.what()));
                 }
                 frame.ip = cf.catch_addr;
-                // Clear any partial stack values from failed try body
-                // (We don't know the exact stack depth, so just continue)
+
             } else {
-                throw; // no active catch frame, re-propagate
+                throw;
             }
         }
-        } // end while
+        }
 
         return VMValue();
     }
@@ -881,7 +880,7 @@ public:
             return VMValue(static_cast<double>(std::chrono::duration_cast<std::chrono::milliseconds>(now).count()));
         }
         if (name == "__optional_get") {
-            // args[0] = object, args[1] = key
+
             if (args.size() < 2 || isNull(args[0])) return VMValue();
             const std::string key = toString(args[1]);
             if (std::holds_alternative<VMValue::Object>(args[0].data)) {
@@ -1159,7 +1158,6 @@ public:
             return VMValue(distribution(engine));
         }
 
-        // ── Math extras ───────────────────────────────────────────────────────
         if (name == "atan2") return VMValue(std::atan2(toNumber(args[0]), toNumber(args[1])));
         if (name == "hypot") return VMValue(std::hypot(toNumber(args[0]), toNumber(args[1])));
         if (name == "atan")  return VMValue(std::atan(toNumber(args[0])));
@@ -1169,7 +1167,6 @@ public:
         if (name == "log2")  return VMValue(std::log2(toNumber(args[0])));
         if (name == "log10") return VMValue(std::log10(toNumber(args[0])));
 
-        // ── String extras ─────────────────────────────────────────────────────
         if (name == "startswith") {
             if (args.size() >= 2) {
                 auto s = toString(args[0]); auto p = toString(args[1]);
@@ -1215,3 +1212,4 @@ public:
         return std::nullopt;
     }
 };
+

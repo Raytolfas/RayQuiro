@@ -25,20 +25,20 @@ public:
         wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
         RegisterClassA(&wc);
 
-        hwnd = CreateWindowExA(0, CLASS_NAME, title.c_str(), 
-            WS_OVERLAPPEDWINDOW | WS_VISIBLE, 
-            CW_USEDEFAULT, CW_USEDEFAULT, w, h, 
+        hwnd = CreateWindowExA(0, CLASS_NAME, title.c_str(),
+            WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+            CW_USEDEFAULT, CW_USEDEFAULT, w, h,
             NULL, NULL, hInst, NULL);
     }
 
     void add_button(std::string text, int x, int y, int w, int h) {
-        CreateWindowA("BUTTON", text.c_str(), 
+        CreateWindowA("BUTTON", text.c_str(),
             WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON,
             x, y, w, h, hwnd, NULL, hInst, NULL);
     }
 
     void add_text(std::string text, int x, int y, int w, int h) {
-        CreateWindowA("STATIC", text.c_str(), 
+        CreateWindowA("STATIC", text.c_str(),
             WS_VISIBLE | WS_CHILD | SS_LEFT,
             x, y, w, h, hwnd, NULL, hInst, NULL);
     }
@@ -55,3 +55,4 @@ public:
         MessageBoxA(NULL, text.c_str(), title.c_str(), MB_OK | MB_ICONINFORMATION);
     }
 };
+

@@ -203,7 +203,7 @@ class Generator {
         }
 
         if (auto returnStmt = dynamic_cast<ReturnStmt*>(stmt)) {
-            scanExpr(returnStmt->value.get());
+            for (const auto& v : returnStmt->values) scanExpr(v.get());
         }
     }
 
@@ -465,6 +465,10 @@ class Generator {
             return "rq::index(" + genExpr(indexExpr->target.get()) + ", " + genExpr(indexExpr->index.get()) + ")";
         }
 
+        if (auto setIdx = dynamic_cast<SetIndexExpr*>(expr)) {
+            return "rq::set_index(" + genExpr(setIdx->object.get()) + ", " + genExpr(setIdx->index.get()) + ", " + genExpr(setIdx->value.get()) + ")";
+        }
+
         if (auto assignExpr = dynamic_cast<AssignExpr*>(expr)) {
             return "(" + mangleSymbol(assignExpr->name) + " = " + genExpr(assignExpr->value.get()) + ")";
         }
@@ -528,10 +532,17 @@ class Generator {
         }
 
         if (auto returnStmt = dynamic_cast<ReturnStmt*>(stmt)) {
-            if (returnStmt->value) {
-                out << indent << "return " << genExpr(returnStmt->value.get()) << ";\n";
-            } else {
+            if (returnStmt->values.empty()) {
                 out << indent << "return rq::Value();\n";
+            } else if (returnStmt->values.size() == 1) {
+                out << indent << "return " << genExpr(returnStmt->values[0].get()) << ";\n";
+            } else {
+                out << indent << "return rq::Value::from_array({";
+                for (size_t i = 0; i < returnStmt->values.size(); ++i) {
+                    if (i > 0) out << ",";
+                    out << genExpr(returnStmt->values[i].get());
+                }
+                out << "});\n";
             }
             return;
         }
@@ -657,7 +668,7 @@ public:
                 out << "rq::Value " << mangleSymbol(functionStmt->name) << "(";
                 for (size_t i = 0; i < functionStmt->params.size(); ++i) {
                     if (i) out << ", ";
-                    out << "rq::Value " << mangleSymbol(functionStmt->params[i]);
+                    out << "rq::Value " << mangleSymbol(functionStmt->params[i].name);
                 }
                 out << ");\n";
             }
@@ -676,7 +687,7 @@ public:
                 out << "rq::Value " << mangleSymbol(functionStmt->name) << "(";
                 for (size_t i = 0; i < functionStmt->params.size(); ++i) {
                     if (i) out << ", ";
-                    out << "rq::Value " << mangleSymbol(functionStmt->params[i]);
+                    out << "rq::Value " << mangleSymbol(functionStmt->params[i].name);
                 }
                 out << ") {\n";
                 for (auto& bodyStmt : functionStmt->body->statements) {
@@ -701,3 +712,4 @@ public:
         return features;
     }
 };
+

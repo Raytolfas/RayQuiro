@@ -2344,11 +2344,6 @@ RQENGINE_EXPORT void rqengine_free_string(char* value) {
     delete[] value;
 }
 
-// ── Editor-only: Object picking via screen-space ray ──────────────────────────
-// Returns JSON: {"hit": true, "entity": "name", "distance": 3.14}
-// or            {"hit": false}
-// screen_x, screen_y — mouse position in viewport pixels
-// viewport_w, viewport_h — viewport size in pixels
 RQENGINE_EXPORT int rqengine_pick_object(
     RQEngineHandle*  handle,
     const char*      scene_name,
@@ -2373,18 +2368,15 @@ RQENGINE_EXPORT int rqengine_pick_object(
         }
         const EngineScene& scene = found->second;
 
-        // Build camera-space ray from screen coordinates
-        // NDC: x in [-1,1], y in [-1,1] (y flipped)
         const float ndcX = (2.0f * static_cast<float>(screen_x) / static_cast<float>(viewport_w)) - 1.0f;
         const float ndcY = 1.0f - (2.0f * static_cast<float>(screen_y) / static_cast<float>(viewport_h));
         const float fovRad = store.cameraFov * (3.14159265358979323846f / 180.0f);
         const float tanHalfFov = std::tan(fovRad * 0.5f);
         const float aspect = static_cast<float>(viewport_w) / static_cast<float>(viewport_h);
 
-        // Camera basis vectors
         const EngineVec3 camPos   = store.cameraPosition;
         const EngineVec3 forward  = vec3_normalize(vec3_sub(store.cameraTarget, camPos));
-        // right = forward x up
+
         const EngineVec3 up       = vec3_normalize(store.cameraUp);
         const EngineVec3 right    = vec3_normalize(EngineVec3{
             forward.y * up.z - forward.z * up.y,
@@ -2397,7 +2389,6 @@ RQENGINE_EXPORT int rqengine_pick_object(
             right.x * forward.y - right.y * forward.x
         };
 
-        // Ray direction in world space
         const float rx = ndcX * aspect * tanHalfFov;
         const float ry = ndcY * tanHalfFov;
         const EngineVec3 rayDir = vec3_normalize(EngineVec3{
@@ -2406,7 +2397,6 @@ RQENGINE_EXPORT int rqengine_pick_object(
             forward.z + right.z * rx + camUp.z * ry
         });
 
-        // AABB ray-intersection test for each entity
         std::string bestEntity;
         float bestDist = 1e30f;
 
@@ -2414,7 +2404,6 @@ RQENGINE_EXPORT int rqengine_pick_object(
             const EngineEntity& ent = pair.second;
             if (!ent.visible) continue;
 
-            // Half-extents: use scale as box size
             const float hx = std::max(0.05f, ent.scale.x * 0.5f);
             const float hy = std::max(0.05f, ent.scale.y * 0.5f);
             const float hz = std::max(0.05f, ent.scale.z * 0.5f);
@@ -2422,7 +2411,6 @@ RQENGINE_EXPORT int rqengine_pick_object(
             const EngineVec3 bmin{ ent.position.x - hx, ent.position.y - hy, ent.position.z - hz };
             const EngineVec3 bmax{ ent.position.x + hx, ent.position.y + hy, ent.position.z + hz };
 
-            // Slab method AABB intersection
             auto safe_div = [](float a, float b) -> float {
                 return (std::abs(b) < 1e-12f) ? (a >= 0.0f ? 1e30f : -1e30f) : (a / b);
             };
@@ -2454,15 +2442,6 @@ RQENGINE_EXPORT int rqengine_pick_object(
     });
 }
 
-// ── Editor-only: Render scene with editor gizmo overlay ───────────────────────
-// Draws the scene exactly like rqengine_draw_scene, then overlays:
-//   - Selection highlight (bright wireframe bounding box around selected entity)
-//   - Transform axes gizmo at selected entity's position
-//   - Grid
-//   - Entity labels (name + kind)
-// selected_entity: name of the currently selected entity, or nullptr/empty for none
-// show_grid: 1 = draw editor grid, 0 = skip
-// Returns number of entities drawn (same as rqengine_draw_scene)
 RQENGINE_EXPORT int rqengine_render_editor_scene(
     RQEngineHandle*  handle,
     const char*      scene_name,
@@ -2480,20 +2459,16 @@ RQENGINE_EXPORT int rqengine_render_editor_scene(
         const std::string sname = scene_name == nullptr ? store.currentScene : std::string(scene_name);
         const std::string selName = selected_entity == nullptr ? std::string() : std::string(selected_entity);
 
-        // 1. Draw editor grid
         if (show_grid != 0) {
             rt_draw_grid(24, 1.0f);
         }
 
-        // 2. Draw all scene entities (normal render)
         submitted = render_scene_entities(store, sname);
 
-        // 3. Editor overlays: selection + gizmos (2D overlay drawn after 3D scene)
         const auto sceneIt = store.scenes.find(sname);
         if (sceneIt == store.scenes.end()) return;
         const EngineScene& scene = sceneIt->second;
 
-        // Project a world point to screen (simple perspective)
         int sw = rt_screen_width();
         int sh = rt_screen_height();
         const float fovRad  = store.cameraFov * (3.14159265358979323846f / 180.0f);
@@ -2527,7 +2502,6 @@ RQENGINE_EXPORT int rqengine_render_editor_scene(
             return true;
         };
 
-        // 4. Selection highlight — orange bounding box + entity label
         if (!selName.empty()) {
             const auto entIt = scene.entities.find(selName);
             if (entIt != scene.entities.end()) {
@@ -2537,20 +2511,19 @@ RQENGINE_EXPORT int rqengine_render_editor_scene(
                 const float hz = std::max(0.05f, sel.scale.z * 0.5f);
                 const EngineVec3 c = sel.position;
 
-                // 8 corners of the AABB
                 const EngineVec3 corners[8] = {
                     {c.x-hx, c.y-hy, c.z-hz}, {c.x+hx, c.y-hy, c.z-hz},
                     {c.x+hx, c.y+hy, c.z-hz}, {c.x-hx, c.y+hy, c.z-hz},
                     {c.x-hx, c.y-hy, c.z+hz}, {c.x+hx, c.y-hy, c.z+hz},
                     {c.x+hx, c.y+hy, c.z+hz}, {c.x-hx, c.y+hy, c.z+hz}
                 };
-                // 12 edges of the cube
+
                 const int edges[12][2] = {
-                    {0,1},{1,2},{2,3},{3,0}, // bottom face
-                    {4,5},{5,6},{6,7},{7,4}, // top face
-                    {0,4},{1,5},{2,6},{3,7}  // verticals
+                    {0,1},{1,2},{2,3},{3,0},
+                    {4,5},{5,6},{6,7},{7,4},
+                    {0,4},{1,5},{2,6},{3,7}
                 };
-                const RTColor selColor{255, 165, 0, 255}; // orange
+                const RTColor selColor{255, 165, 0, 255};
                 for (const auto& edge : edges) {
                     int x1,y1,x2,y2;
                     if (world_to_screen(corners[edge[0]], x1, y1) &&
@@ -2559,7 +2532,6 @@ RQENGINE_EXPORT int rqengine_render_editor_scene(
                     }
                 }
 
-                // Entity label above selection
                 int lx, ly;
                 const EngineVec3 labelPt{c.x, c.y + hy + 0.3f, c.z};
                 if (world_to_screen(labelPt, lx, ly)) {
@@ -2567,18 +2539,17 @@ RQENGINE_EXPORT int rqengine_render_editor_scene(
                     rt_draw_text(sel.kind.c_str(), lx, ly - 5, 10, RTColor{180, 180, 180, 180});
                 }
 
-                // 5. Transform axes gizmo at entity origin (X=red, Y=green, Z=blue)
                 const float gizmoLen = std::max(0.6f, std::max({sel.scale.x, sel.scale.y, sel.scale.z}) * 0.8f);
                 int ox, oy;
                 if (world_to_screen(c, ox, oy)) {
                     int ax, ay;
                     if (world_to_screen({c.x+gizmoLen, c.y, c.z}, ax, ay))
-                        rt_draw_line(ox, oy, ax, ay, RTColor{255, 60, 60, 255});   // X axis - red
+                        rt_draw_line(ox, oy, ax, ay, RTColor{255, 60, 60, 255});
                     if (world_to_screen({c.x, c.y+gizmoLen, c.z}, ax, ay))
-                        rt_draw_line(ox, oy, ax, ay, RTColor{60, 220, 60, 255});   // Y axis - green
+                        rt_draw_line(ox, oy, ax, ay, RTColor{60, 220, 60, 255});
                     if (world_to_screen({c.x, c.y, c.z+gizmoLen}, ax, ay))
-                        rt_draw_line(ox, oy, ax, ay, RTColor{60, 100, 255, 255});  // Z axis - blue
-                    // Axis labels
+                        rt_draw_line(ox, oy, ax, ay, RTColor{60, 100, 255, 255});
+
                     if (world_to_screen({c.x+gizmoLen+0.1f, c.y, c.z}, ax, ay))
                         rt_draw_text("X", ax, ay, 11, RTColor{255, 80, 80, 220});
                     if (world_to_screen({c.x, c.y+gizmoLen+0.1f, c.z}, ax, ay))
@@ -2589,7 +2560,6 @@ RQENGINE_EXPORT int rqengine_render_editor_scene(
             }
         }
 
-        // 6. Non-selected entity name labels (subtle, small)
         for (const auto& pair : scene.entities) {
             if (pair.first == selName || !pair.second.visible) continue;
             int lx, ly;
@@ -2624,5 +2594,4 @@ int rqm_builtin_engine_invoke(const char* function_name, const char* json_args, 
         return 1;
     }
 }
-
 

@@ -5,7 +5,8 @@ build-linux/
 *.html
 *.dll
 *.exe
-# rqio packages
+*.o
+*.spv
 packages/
 .vscode/
 .cache/

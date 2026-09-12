@@ -45,7 +45,6 @@ std::string rebuildCommandLine(int argc, char* argv[]) {
     return cmd;
 }
 
-
 enum class CliMode {
     Run,
     Debug,
@@ -341,12 +340,12 @@ CliOptions parseArguments(int argc, char* argv[]) {
     }
     if (first == "init") {
         if (argc >= 3) {
-            // rqio init <path>  →  old project scaffold
+
             options.mode = CliMode::Init;
             options.initPath = argv[2];
             if (argc > 3) throw std::runtime_error("Usage: rqio init [project-folder]");
         } else {
-            // rqio init  →  create rqio.json in current directory
+
             options.mode = CliMode::PackageInit;
         }
         return options;
@@ -361,7 +360,7 @@ CliOptions parseArguments(int argc, char* argv[]) {
     }
     if (first == "install") {
         ++index;
-        // collect remaining args
+
         std::string spec;
         for (; index < argc; ++index) {
             const std::string arg = argv[index];
@@ -370,10 +369,10 @@ CliOptions parseArguments(int argc, char* argv[]) {
             throw std::runtime_error("Too many arguments for 'install'.");
         }
         if (spec.empty()) {
-            // rqio install  →  install all from rqio.json
+
             options.mode = CliMode::PackageInstall;
         } else {
-            // rqio install <name>  →  install from approved registry (old behavior)
+
             options.mode = CliMode::FrameworkInstall;
             options.approvedRegistryOnly = true;
             options.frameworkSpec = spec;
@@ -482,11 +481,10 @@ CliOptions parseArguments(int argc, char* argv[]) {
         options.mode = CliMode::PackageList;
         ++index;
     } else if (first == "init") {
-        // "rqio init" without a path → project init (package manager)
-        // "rqio init <path>" → project scaffold (existing Init mode)
+
         if (index + 1 < argc && std::string(argv[index + 1]).rfind("--", 0) != 0
                               && std::string(argv[index + 1]).find('=') == std::string::npos) {
-            // next arg is a path, treat as old Init
+
         } else {
             options.mode = CliMode::PackageInit;
             ++index;
@@ -496,7 +494,6 @@ CliOptions parseArguments(int argc, char* argv[]) {
     for (int i = index; i < argc; ++i) {
         const std::string arg = argv[i];
 
-        // -- separator: everything after this goes to the script
         if (arg == "--") {
             for (int j = i + 1; j < argc; ++j) {
                 options.scriptArgs.push_back(argv[j]);
@@ -514,7 +511,7 @@ CliOptions parseArguments(int argc, char* argv[]) {
             continue;
         }
         if (arg == "--vm") {
-            options.preferVm = true; // no-op, VM is now default
+            options.preferVm = true;
             continue;
         }
         if (arg == "--legacy") {
@@ -685,7 +682,6 @@ std::filesystem::path makeBundleDir(
     return buildDir / (cliOptions.inputPath.stem().string() + "-bundle");
 }
 
-// Global script args for VM's process.args() support
 static std::vector<std::string> g_scriptArgs;
 
 int runVmProgram(const BytecodeProgram& program) {
@@ -839,7 +835,6 @@ int main(int argc, char* argv[]) {
             return 0;
         }
 
-        // ── Package manager commands ──────────────────────────────────────────
         const std::filesystem::path pkgRoot = projectConfig.found
             ? projectConfig.projectRoot
             : std::filesystem::current_path();
@@ -877,7 +872,6 @@ int main(int argc, char* argv[]) {
             return 0;
         }
 
-        // Automatic update check & prompt
         if (cliOptions.mode != CliMode::Help &&
             cliOptions.mode != CliMode::Version &&
             cliOptions.mode != CliMode::Init &&
@@ -889,7 +883,7 @@ int main(int argc, char* argv[]) {
                     std::cout << "Would you like to install the update now? [y/N]: ";
                     std::string response;
                     if (std::getline(std::cin, response)) {
-                        // Trim response
+
                         response.erase(0, response.find_first_not_of(" \t\r\n"));
                         response.erase(response.find_last_not_of(" \t\r\n") + 1);
                         if (response == "y" || response == "Y") {
@@ -907,14 +901,14 @@ int main(int argc, char* argv[]) {
         }
 
         if (cliOptions.mode == CliMode::FrameworkInstall) {
-            // Native modules still use old path
+
             if (RayQuiroCliServices::isNativeModuleSpec(cliOptions.frameworkSpec)) {
                 const std::filesystem::path installRoot = cliOptions.localInstall
                     ? (projectConfig.projectRoot / ".rq_modules" / "native")
                     : RayQuiroUserPaths::systemModulesRoot();
                 return RayQuiroCliServices::installNativeModule(cliOptions.frameworkSpec, installRoot);
             }
-            // rqio framework install → alias for rqio add (global)
+
             RayQuiroCliServices::addPackage(cliOptions.frameworkSpec, pkgRoot,
                                             cliOptions.localInstall);
             return 0;
@@ -1065,10 +1059,8 @@ int main(int argc, char* argv[]) {
 
         if (cliOptions.mode == CliMode::Run) {
             auto resolved = Compiler::resolveForExecution(cliOptions.inputPath);
-            g_scriptArgs = cliOptions.scriptArgs;  // for VM process.args()
+            g_scriptArgs = cliOptions.scriptArgs;
 
-            // ── Bytecode VM (default since 0.2.0) ────────────────────────────
-            // Skip VM if --legacy flag used or program has imports (not yet supported)
             if (!cliOptions.legacyMode &&
                 BytecodeCompiler::supports(
                     *resolved.program,
@@ -1081,12 +1073,11 @@ int main(int argc, char* argv[]) {
                         resolved.builtinSymbolAliases);
                     return runVmProgram(program);
                 } catch (const std::exception& vmErr) {
-                    // VM compilation failed, fall through to tree-walk
+
                     Log::warn(std::string("VM: ") + vmErr.what() + " - falling back to interpreter");
                 }
             }
 
-            // ── Tree-walk interpreter (legacy / import-using programs) ────────
             Interpreter interpreter(
                 projectConfig.projectRoot,
                 exePath,
@@ -1108,13 +1099,11 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        // ── Debug mode (DAP) ──────────────────────────────────────────────────
         if (cliOptions.mode == CliMode::Debug) {
             auto resolved = Compiler::resolveForExecution(cliOptions.inputPath);
             const std::string absPath =
                 std::filesystem::absolute(cliOptions.inputPath).string();
 
-            // Create DAP server and wait for debugger to connect
             auto dap = std::make_shared<DAPServer>(cliOptions.dapPort);
             if (!dap->start()) {
                 std::cerr << "[DAP] Failed to start server on port "
@@ -1128,7 +1117,6 @@ int main(int argc, char* argv[]) {
                 resolved.builtinSymbolAliases);
             interpreter.setSourcePath(absPath);
 
-            // Attach debug hook
             interpreter.setDebugHook(
                 [&dap, &absPath]
                 (const std::string& filePath, int line) {
@@ -1136,14 +1124,11 @@ int main(int argc, char* argv[]) {
                     const std::string& path = filePath.empty() ? absPath : filePath;
                     if (!dap->shouldPause(path, line)) return;
 
-                    // Stack frame
                     dap->setStackFrames({{"<script>", path, line}});
 
-                    // Block until VS Code sends continue/next/stepIn
                     dap->waitForResume();
                 });
 
-            // Notify VS Code that we're ready, then run
             dap->sendEvent("process", {{"name", absPath}, {"isLocalProcess", true}});
 
             const std::filesystem::path previousPath = std::filesystem::current_path();
@@ -1162,7 +1147,6 @@ int main(int argc, char* argv[]) {
         }
 
         cleanupGeneratedCppArtifacts(projectConfig.projectRoot / projectConfig.buildDir);
-
 
         const BuildOptions buildOptions = makeBuildOptions(cliOptions, exeRoot, projectConfig);
         Compiler compiler;
@@ -1194,3 +1178,4 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 }
+

@@ -4373,8 +4373,16 @@ inline void draw_cube(RTVec3 position, RTVec3 size, RTColor color) { (void)posit
 inline void draw_plane(RTVec3 position, RTVec2 size, RTColor color) { (void)position; (void)size; (void)color; }
 inline void draw_sphere(RTVec3 position, float radius, RTColor color) { (void)position; (void)radius; (void)color; }
 inline void draw_text(const char* text, int x, int y, int size, RTColor color) { (void)text; (void)x; (void)y; (void)size; (void)color; }
+inline void draw_rect(int x, int y, int w, int h, RTColor color) { (void)x; (void)y; (void)w; (void)h; (void)color; }
+inline void draw_rect_lines(int x, int y, int w, int h, RTColor color) { (void)x; (void)y; (void)w; (void)h; (void)color; }
+inline void draw_circle(int x, int y, float radius, RTColor color) { (void)x; (void)y; (void)radius; (void)color; }
+inline void draw_circle_lines(int x, int y, float radius, RTColor color) { (void)x; (void)y; (void)radius; (void)color; }
+inline void draw_line(int x1, int y1, int x2, int y2, RTColor color) { (void)x1; (void)y1; (void)x2; (void)y2; (void)color; }
+inline void draw_pixel(int x, int y, RTColor color) { (void)x; (void)y; (void)color; }
+inline int screen_width() { return 0; }
+inline int screen_height() { return 0; }
 inline void draw_fps(int x, int y) { (void)x; (void)y; }
 }
 
-
 #endif
+

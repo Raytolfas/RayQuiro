@@ -330,6 +330,19 @@ inline Value index(const Value& target, const Value& indexValue) {
     return Value();
 }
 
+inline Value set_index(Value obj, const Value& key, const Value& val) {
+    if (is_object(obj)) {
+        (*obj.as_object())[to_string(key)] = val;
+    } else if (is_array(obj)) {
+        const int i = static_cast<int>(to_number(key));
+        auto arr = obj.as_array();
+        if (i >= 0 && i < static_cast<int>(arr->size())) {
+            (*arr)[static_cast<size_t>(i)] = val;
+        }
+    }
+    return val;
+}
+
 inline Value print(const std::vector<Value>& args) {
     for (size_t i = 0; i < args.size(); ++i) {
         if (i) std::cout << " ";
@@ -3326,3 +3339,4 @@ inline Value engine_draw_fps(const std::vector<Value>& args) {
 )";
     }
 };
+

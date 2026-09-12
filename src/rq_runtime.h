@@ -89,3 +89,4 @@ static inline RqValue rq_concat_n(RqValue* parts,int n){
     RqValue r;r.type=RQ_STR;r.d.str=buf;return r;
 }
 static inline void rq_throw_msg(const char* msg){fprintf(stderr,"error: %s\n",msg?msg:"");exit(1);}
+

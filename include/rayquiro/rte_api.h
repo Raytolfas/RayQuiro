@@ -327,102 +327,118 @@ inline float rt_mouse_y() {
 }
 
 inline void rt_draw_grid(int slices, float spacing) {
-    switch (rte::backendState.activeKind) {
-    case RTBackendKind::Vulkan:
-        vulkan_backend::draw_grid(slices, spacing);
-        return;
-    case RTBackendKind::Raylib:
-    default:
 #if RAYQUIRO_HAS_RAYLIB
-        raylib_backend::draw_grid(slices, spacing);
+    raylib_backend::draw_grid(slices, spacing);
 #else
-        (void)slices; (void)spacing;
+    (void)slices; (void)spacing;
 #endif
-        return;
-    }
 }
 
 inline void rt_draw_cube(RTVec3 position, RTVec3 size, RTColor color) {
     rte::backendState.frameDrawCalls += 1;
-    switch (rte::backendState.activeKind) {
-    case RTBackendKind::Vulkan:
-        vulkan_backend::draw_cube(position, size, color);
-        return;
-    case RTBackendKind::Raylib:
-    default:
 #if RAYQUIRO_HAS_RAYLIB
-        raylib_backend::draw_cube(position, size, color);
+    raylib_backend::draw_cube(position, size, color);
 #else
-        (void)position; (void)size; (void)color;
+    (void)position; (void)size; (void)color;
 #endif
-        return;
-    }
 }
 
 inline void rt_draw_plane(RTVec3 position, RTVec2 size, RTColor color) {
     rte::backendState.frameDrawCalls += 1;
-    switch (rte::backendState.activeKind) {
-    case RTBackendKind::Vulkan:
-        vulkan_backend::draw_plane(position, size, color);
-        return;
-    case RTBackendKind::Raylib:
-    default:
 #if RAYQUIRO_HAS_RAYLIB
-        raylib_backend::draw_plane(position, size, color);
+    raylib_backend::draw_plane(position, size, color);
 #else
-        (void)position; (void)size; (void)color;
+    (void)position; (void)size; (void)color;
 #endif
-        return;
-    }
 }
 
 inline void rt_draw_sphere(RTVec3 position, float radius, RTColor color) {
     rte::backendState.frameDrawCalls += 1;
-    switch (rte::backendState.activeKind) {
-    case RTBackendKind::Vulkan:
-        vulkan_backend::draw_sphere(position, radius, color);
-        return;
-    case RTBackendKind::Raylib:
-    default:
 #if RAYQUIRO_HAS_RAYLIB
-        raylib_backend::draw_sphere(position, radius, color);
+    raylib_backend::draw_sphere(position, radius, color);
 #else
-        (void)position; (void)radius; (void)color;
+    (void)position; (void)radius; (void)color;
 #endif
-        return;
-    }
 }
 
 inline void rt_draw_text(const char* text, int x, int y, int size, RTColor color) {
-    switch (rte::backendState.activeKind) {
-    case RTBackendKind::Vulkan:
-        vulkan_backend::draw_text(text, x, y, size, color);
-        return;
-    case RTBackendKind::Raylib:
-    default:
 #if RAYQUIRO_HAS_RAYLIB
-        raylib_backend::draw_text(text, x, y, size, color);
+    raylib_backend::draw_text(text, x, y, size, color);
 #else
-        (void)text; (void)x; (void)y; (void)size; (void)color;
+    (void)text; (void)x; (void)y; (void)size; (void)color;
 #endif
-        return;
-    }
 }
 
 inline void rt_draw_fps(int x, int y) {
-    switch (rte::backendState.activeKind) {
-    case RTBackendKind::Vulkan:
-        vulkan_backend::draw_fps(x, y);
-        return;
-    case RTBackendKind::Raylib:
-    default:
 #if RAYQUIRO_HAS_RAYLIB
-        raylib_backend::draw_fps(x, y);
+    raylib_backend::draw_fps(x, y);
 #else
-        (void)x; (void)y;
+    (void)x; (void)y;
 #endif
-        return;
-    }
+}
+
+inline void rt_draw_rect(int x, int y, int w, int h, RTColor color) {
+#if RAYQUIRO_HAS_RAYLIB
+    raylib_backend::draw_rect(x, y, w, h, color);
+#else
+    (void)x; (void)y; (void)w; (void)h; (void)color;
+#endif
+}
+
+inline void rt_draw_rect_lines(int x, int y, int w, int h, RTColor color) {
+#if RAYQUIRO_HAS_RAYLIB
+    raylib_backend::draw_rect_lines(x, y, w, h, color);
+#else
+    (void)x; (void)y; (void)w; (void)h; (void)color;
+#endif
+}
+
+inline void rt_draw_circle(int x, int y, float radius, RTColor color) {
+#if RAYQUIRO_HAS_RAYLIB
+    raylib_backend::draw_circle(x, y, radius, color);
+#else
+    (void)x; (void)y; (void)radius; (void)color;
+#endif
+}
+
+inline void rt_draw_circle_lines(int x, int y, float radius, RTColor color) {
+#if RAYQUIRO_HAS_RAYLIB
+    raylib_backend::draw_circle_lines(x, y, radius, color);
+#else
+    (void)x; (void)y; (void)radius; (void)color;
+#endif
+}
+
+inline void rt_draw_line(int x1, int y1, int x2, int y2, RTColor color) {
+#if RAYQUIRO_HAS_RAYLIB
+    raylib_backend::draw_line(x1, y1, x2, y2, color);
+#else
+    (void)x1; (void)y1; (void)x2; (void)y2; (void)color;
+#endif
+}
+
+inline void rt_draw_pixel(int x, int y, RTColor color) {
+#if RAYQUIRO_HAS_RAYLIB
+    raylib_backend::draw_pixel(x, y, color);
+#else
+    (void)x; (void)y; (void)color;
+#endif
+}
+
+inline int rt_screen_width() {
+#if RAYQUIRO_HAS_RAYLIB
+    return raylib_backend::screen_width();
+#else
+    return 0;
+#endif
+}
+
+inline int rt_screen_height() {
+#if RAYQUIRO_HAS_RAYLIB
+    return raylib_backend::screen_height();
+#else
+    return 0;
+#endif
 }
 
 inline void rt_set_material_state(RTColor albedo, RTColor emissive, float roughness, float metallic, int textured) {
@@ -868,3 +884,4 @@ inline int rt_backend_is_placeholder() {
 inline int rt_backend_is_vulkan_family() {
     return rt_backend_capabilities(rte::backendState.activeKind).isVulkanFamily ? 1 : 0;
 }
+

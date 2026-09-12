@@ -817,3 +817,4 @@ RQM_EXPORT int rqm_invoke(const char* function_name, const char* json_args, char
 RQM_EXPORT void rqm_free(char* memory) {
     delete[] memory;
 }
+

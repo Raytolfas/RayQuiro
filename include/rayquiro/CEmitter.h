@@ -346,3 +346,4 @@ private:
              << "    " << entryFname << "();\n    return 0;\n}\n";
     }
 };
+

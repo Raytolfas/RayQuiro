@@ -10,7 +10,6 @@ struct VMValue {
     using Array = std::vector<VMValue>;
     using Object = std::map<std::string, VMValue>;
 
-
     std::variant<std::monostate, double, std::string, bool, Array, Object> data;
 
     VMValue() : data(std::monostate{}) {}
@@ -28,9 +27,9 @@ enum class OpCode : std::uint8_t {
     True,
     False,
     BuildArray,
-    BuildObject,   // pop 2*n (key, val pairs) from stack → push object
-    GetIndex,      // stack: [obj, key] → push obj[key]
-    SetIndex,      // stack: [obj, key, val] → obj[key]=val, push val
+    BuildObject,
+    GetIndex,
+    SetIndex,
     Pop,
     DefineGlobal,
     GetGlobal,
@@ -55,18 +54,18 @@ enum class OpCode : std::uint8_t {
     Loop,
     Call,
     Return,
-    Throw,         // stack: [msg] → throw runtime_error(to_string(msg))
-    Concat,        // instruction.a = n values → pop n, concat to string, push
-    TryBegin,      // instruction.a = catch_addr; instruction.b = error_name_const_idx
-    TryEnd,        // instruction.a = after_catch_addr (jump over catch body)
-    Dup,           // duplicate top of stack
-    JumpIfNotNull, // instruction.b = target; jump if top-of-stack is NOT null (leaves value)
-    SetGlobalIndex, // instruction.a = const-idx of name; stack: [key, val] → globals[name][key]=val; push val
-    SetLocalIndex,  // instruction.a = local slot;         stack: [key, val] → locals[slot][key]=val; push val
-    AppendGlobal,   // instruction.a = const-idx of name;  stack: [val] → globals[name].push_back(val); push val
-    AppendLocal,    // instruction.a = local slot;          stack: [val] → locals[slot].push_back(val); push val
-    AppendObjGlobal,// instruction.a = const-idx of name;  stack: [key, val] → globals[name][key].push_back(val); push val
-    AppendObjLocal, // instruction.a = local slot;          stack: [key, val] → locals[slot][key].push_back(val); push val
+    Throw,
+    Concat,
+    TryBegin,
+    TryEnd,
+    Dup,
+    JumpIfNotNull,
+    SetGlobalIndex,
+    SetLocalIndex,
+    AppendGlobal,
+    AppendLocal,
+    AppendObjGlobal,
+    AppendObjLocal,
 };
 
 struct Instruction {
@@ -80,10 +79,11 @@ struct BytecodeFunction {
     std::vector<std::string> params;
     std::vector<Instruction> code;
     std::vector<VMValue> constants;
-    int localCount = 0;  // total local slots needed (set by compiler)
+    int localCount = 0;
 };
 
 struct BytecodeProgram {
     BytecodeFunction entry;
     std::unordered_map<std::string, BytecodeFunction> functions;
 };
+

@@ -65,23 +65,44 @@ public:
 
 private:
     std::unique_ptr<Stmt> parseStatement() {
-        if (match({TokenType::IMPORT})) return parseImport();
-        if (match({TokenType::FROM})) return parseFromImport();
-        if (match({TokenType::VAR, TokenType::LET})) return parseVar(previous().type == TokenType::LET);
-        if (match({TokenType::FN})) return parseFunction();
-        if (match({TokenType::IF})) return parseIf();
-        if (match({TokenType::WHILE})) return parseWhile();
-        if (match({TokenType::FOR})) return parseFor();
-        if (match({TokenType::RETURN})) return parseReturn();
-        if (match({TokenType::BREAK})) return parseBreak();
-        if (match({TokenType::CONTINUE})) return parseContinue();
-        if (check(TokenType::IDENTIFIER) && peek().value == "log.info") {
-            if (pos + 1 < tokens.size() && tokens[pos + 1].type == TokenType::ARROW_LOG) {
-                return parseLog();
-            }
+        int stmtLine = peek().line;
+        std::unique_ptr<Stmt> node;
+
+        if (match({TokenType::IMPORT}))            node = parseImport();
+        else if (match({TokenType::FROM}))         node = parseFromImport();
+        else if (match({TokenType::VAR, TokenType::LET})) node = parseVar(previous().type == TokenType::LET);
+        else if (match({TokenType::FN}))           node = parseFunction();
+        else if (match({TokenType::IF}))           node = parseIf();
+        else if (match({TokenType::WHILE}))        node = parseWhile();
+        else if (match({TokenType::FOR}))          node = parseFor();
+        else if (match({TokenType::SWITCH}))       node = parseSwitch();
+        else if (match({TokenType::RETURN}))       node = parseReturn();
+        else if (match({TokenType::BREAK}))        node = parseBreak();
+        else if (match({TokenType::CONTINUE}))     node = parseContinue();
+        else if (match({TokenType::TRY}))          node = parseTryCatch();
+        else if (match({TokenType::ASYNC})) {
+            expect(TokenType::FN, "Expected 'fn' after 'async'");
+            node = parseFunction();
+            static_cast<FunctionStmt*>(node.get())->isAsync = true;
         }
-        if (match({TokenType::LBRACE})) return parseBlock();
-        return parseExprStmt();
+        else if (check(TokenType::IDENTIFIER) && peek().value == "log.info" &&
+                 pos + 1 < tokens.size() && tokens[pos + 1].type == TokenType::ARROW_LOG) {
+            node = parseLog();
+        }
+        else if (match({TokenType::THROW})) {
+            auto t = std::make_unique<ThrowStmt>();
+            t->value = parseExpression();
+            match({TokenType::SEMICOLON});
+            node = std::move(t);
+        }
+        else if (match({TokenType::STRUCT}))    node = parseStruct();
+        else if (match({TokenType::ENUM}))      node = parseEnum();
+        else if (match({TokenType::INTERFACE})) node = parseInterface();
+        else if (match({TokenType::LBRACE}))    node = parseBlock();
+        else                                    node = parseExprStmt();
+
+        if (node) node->line = stmtLine;
+        return node;
     }
 
     std::unique_ptr<Stmt> parseImport() {
@@ -126,6 +147,42 @@ private:
     }
 
     std::unique_ptr<Stmt> parseVar(bool isLet) {
+
+        if (match({TokenType::LBRACKET})) {
+            auto node = std::make_unique<ArrayDestructureStmt>();
+            while (!check(TokenType::RBRACKET) && !isAtEnd()) {
+                if (check(TokenType::COMMA)) {
+                    node->names.push_back("");
+                } else {
+                    node->names.push_back(expect(TokenType::IDENTIFIER, "Expected variable name").value);
+                }
+                if (!match({TokenType::COMMA})) break;
+            }
+            expect(TokenType::RBRACKET, "Expected ']'");
+            expect(TokenType::EQUALS, "Expected '=' after destructure pattern");
+            node->init = parseAssignment();
+            match({TokenType::SEMICOLON});
+            return node;
+        }
+
+        if (match({TokenType::LBRACE})) {
+            auto node = std::make_unique<ObjectDestructureStmt>();
+            while (!check(TokenType::RBRACE) && !isAtEnd()) {
+                std::string key = expect(TokenType::IDENTIFIER, "Expected key name").value;
+                std::string local = key;
+                if (match({TokenType::COLON})) {
+                    local = expect(TokenType::IDENTIFIER, "Expected local name").value;
+                }
+                node->bindings.push_back({key, local});
+                if (!match({TokenType::COMMA})) break;
+            }
+            expect(TokenType::RBRACE, "Expected '}'");
+            expect(TokenType::EQUALS, "Expected '=' after destructure pattern");
+            node->init = parseAssignment();
+            match({TokenType::SEMICOLON});
+            return node;
+        }
+
         auto node = std::make_unique<VarStmt>();
         node->isLet = isLet;
         Token name = expect(TokenType::IDENTIFIER, "Expected variable name");
@@ -149,12 +206,7 @@ private:
         Token name = expect(TokenType::IDENTIFIER, "Expected function name");
         fn->name = name.value;
         expect(TokenType::LPAREN, "Expected '(' after function name");
-        if (!check(TokenType::RPAREN)) {
-            do {
-                Token param = expect(TokenType::IDENTIFIER, "Expected parameter name");
-                fn->params.push_back(param.value);
-            } while (match({TokenType::COMMA}));
-        }
+        fn->params = parseParamList();
         expect(TokenType::RPAREN, "Expected ')' after parameters");
         expect(TokenType::LBRACE, "Expected '{' before function body");
         fn->body = parseBlock();
@@ -189,7 +241,27 @@ private:
     }
 
     std::unique_ptr<Stmt> parseFor() {
-        expect(TokenType::LPAREN, "Expected '(' after for");
+
+        if (!check(TokenType::LPAREN)) {
+
+            std::string keyVar = expect(TokenType::IDENTIFIER, "Expected variable name after 'for'").value;
+            std::string valVar;
+            if (match({TokenType::COMMA})) {
+                valVar = expect(TokenType::IDENTIFIER, "Expected second variable name").value;
+            }
+            expect(TokenType::IN, "Expected 'in' after for variable");
+            auto iterable = parseExpression();
+            expect(TokenType::LBRACE, "Expected '{' after for-in iterable");
+            auto body = parseBlock();
+            auto node = std::make_unique<ForInStmt>();
+            node->keyVar = keyVar;
+            node->valVar = valVar;
+            node->iterable = std::move(iterable);
+            node->body = std::move(body);
+            return node;
+        }
+
+        expect(TokenType::LPAREN, "Expected '(' after 'for'");
         std::unique_ptr<Stmt> init;
         if (match({TokenType::SEMICOLON})) {
             init = nullptr;
@@ -243,10 +315,40 @@ private:
         return loop;
     }
 
+    std::unique_ptr<Stmt> parseSwitch() {
+        expect(TokenType::LPAREN, "Expected '(' after 'switch'");
+        auto subject = parseExpression();
+        expect(TokenType::RPAREN, "Expected ')' after switch subject");
+        expect(TokenType::LBRACE, "Expected '{' after switch(...)");
+        auto node = std::make_unique<SwitchStmt>();
+        node->subject = std::move(subject);
+        while (!check(TokenType::RBRACE) && !isAtEnd()) {
+            CaseClause clause;
+            if (match({TokenType::CASE})) {
+                clause.value = parseExpression();
+                expect(TokenType::COLON, "Expected ':' after case value");
+            } else if (match({TokenType::DEFAULT})) {
+                expect(TokenType::COLON, "Expected ':' after default");
+                clause.value = nullptr;
+            } else {
+                throw error("Expected 'case' or 'default'", peek());
+            }
+            while (!check(TokenType::CASE) && !check(TokenType::DEFAULT) && !check(TokenType::RBRACE) && !isAtEnd()) {
+                clause.body.push_back(parseStatement());
+            }
+            node->cases.push_back(std::move(clause));
+        }
+        expect(TokenType::RBRACE, "Expected '}' after switch body");
+        return node;
+    }
+
     std::unique_ptr<Stmt> parseReturn() {
         auto node = std::make_unique<ReturnStmt>();
-        if (!check(TokenType::SEMICOLON) && !check(TokenType::RBRACE)) {
-            node->value = parseExpression();
+        if (!check(TokenType::SEMICOLON) && !check(TokenType::RBRACE) && !isAtEnd()) {
+            node->values.push_back(parseAssignment());
+            while (match({TokenType::COMMA})) {
+                node->values.push_back(parseAssignment());
+            }
         }
         match({TokenType::SEMICOLON});
         return node;
@@ -271,6 +373,121 @@ private:
         return block;
     }
 
+    std::vector<FuncParam> parseParamList() {
+        std::vector<FuncParam> params;
+        while (!check(TokenType::RPAREN) && !isAtEnd()) {
+            FuncParam p;
+            if (match({TokenType::DOT_DOT_DOT})) {
+                p.isVariadic = true;
+                p.name = expect(TokenType::IDENTIFIER, "Expected parameter name after ...").value;
+                params.push_back(std::move(p));
+                break;
+            }
+            p.name = expect(TokenType::IDENTIFIER, "Expected parameter name").value;
+            if (match({TokenType::EQUALS})) {
+                p.defaultValue = parseAssignment();
+            }
+            params.push_back(std::move(p));
+            if (!match({TokenType::COMMA})) break;
+        }
+        return params;
+    }
+
+    std::unique_ptr<Stmt> parseStruct() {
+        std::string name = expect(TokenType::IDENTIFIER, "Expected struct name").value;
+        auto node = std::make_unique<StructStmt>();
+        node->name = name;
+
+        if (match({TokenType::IMPL})) {
+            node->impls.push_back(expect(TokenType::IDENTIFIER, "Expected interface name after 'impl'").value);
+            while (match({TokenType::COMMA})) {
+                node->impls.push_back(expect(TokenType::IDENTIFIER, "Expected interface name").value);
+            }
+        }
+        expect(TokenType::LBRACE, "Expected '{' after struct name");
+        while (!check(TokenType::RBRACE) && !isAtEnd()) {
+            std::string fieldName = expect(TokenType::IDENTIFIER, "Expected field name or method").value;
+            expect(TokenType::COLON, "Expected ':' after field name");
+            node->fields.push_back({fieldName, parseAssignment()});
+            match({TokenType::COMMA});
+        }
+        expect(TokenType::RBRACE, "Expected '}' after struct fields");
+        return node;
+    }
+
+    std::unique_ptr<Stmt> parseEnum() {
+        std::string name = expect(TokenType::IDENTIFIER, "Expected enum name").value;
+        expect(TokenType::LBRACE, "Expected '{' after enum name");
+        auto node = std::make_unique<EnumStmt>();
+        node->name = name;
+        int autoVal = 0;
+        while (!check(TokenType::RBRACE) && !isAtEnd()) {
+            EnumVariant variant;
+            variant.name = expect(TokenType::IDENTIFIER, "Expected enum variant name").value;
+            if (match({TokenType::EQUALS})) {
+                Token numTok = expect(TokenType::NUMBER, "Expected integer value after '='");
+                variant.value = static_cast<int>(std::stod(numTok.value));
+                variant.hasExplicit = true;
+                autoVal = variant.value + 1;
+            } else {
+                variant.value = autoVal++;
+            }
+            node->variants.push_back(std::move(variant));
+            match({TokenType::COMMA});
+        }
+        expect(TokenType::RBRACE, "Expected '}' after enum variants");
+        return node;
+    }
+
+    std::unique_ptr<Stmt> parseInterface() {
+        std::string name = expect(TokenType::IDENTIFIER, "Expected interface name").value;
+        expect(TokenType::LBRACE, "Expected '{' after interface name");
+        auto node = std::make_unique<InterfaceStmt>();
+        node->name = name;
+        while (!check(TokenType::RBRACE) && !isAtEnd()) {
+            expect(TokenType::FN, "Expected 'fn' in interface body");
+            InterfaceMethod method;
+            method.name = expect(TokenType::IDENTIFIER, "Expected method name").value;
+            expect(TokenType::LPAREN, "Expected '(' after method name");
+            while (!check(TokenType::RPAREN) && !isAtEnd()) {
+                method.paramNames.push_back(expect(TokenType::IDENTIFIER, "Expected param name").value);
+                match({TokenType::COMMA});
+            }
+            expect(TokenType::RPAREN, "Expected ')'");
+
+            if (match({TokenType::MINUS})) {
+                if (check(TokenType::GT)) { advance(); }
+                if (check(TokenType::IDENTIFIER)) { advance(); }
+            }
+            match({TokenType::SEMICOLON});
+            node->methods.push_back(std::move(method));
+        }
+        expect(TokenType::RBRACE, "Expected '}' after interface body");
+        return node;
+    }
+
+    std::unique_ptr<Stmt> parseTryCatch() {
+        expect(TokenType::LBRACE, "Expected '{' after try");
+        auto tryNode = std::make_unique<TryCatchStmt>();
+        tryNode->tryBody = parseBlock();
+        if (match({TokenType::CATCH})) {
+            expect(TokenType::LPAREN, "Expected '(' after catch");
+            Token errTok = expect(TokenType::IDENTIFIER, "Expected error variable name");
+            tryNode->errorParam = errTok.value;
+            expect(TokenType::RPAREN, "Expected ')' after catch variable");
+            expect(TokenType::LBRACE, "Expected '{' after catch(...)");
+            tryNode->catchBody = parseBlock();
+        }
+        if (match({TokenType::FINALLY})) {
+            expect(TokenType::LBRACE, "Expected '{' after finally");
+            tryNode->finallyBody = parseBlock();
+        }
+        if (!tryNode->catchBody && !tryNode->finallyBody) {
+            throw error("try must have at least catch or finally", previous());
+        }
+        return tryNode;
+    }
+
     std::unique_ptr<Stmt> parseLog() {
         advance();
         expect(TokenType::ARROW_LOG, "Expected '=>' after log.info");
@@ -293,7 +510,23 @@ private:
     }
 
     std::unique_ptr<Expr> parseAssignment() {
-        auto expr = parseOr();
+        auto expr = parseNullCoalesce();
+
+        if (match({TokenType::PLUS_EQUALS, TokenType::MINUS_EQUALS,
+                   TokenType::STAR_EQUALS, TokenType::SLASH_EQUALS,
+                   TokenType::PERCENT_EQUALS})) {
+            std::string op = previous().value;
+            auto rhs = parseAssignment();
+
+            if (auto id = dynamic_cast<IdentifierExpr*>(expr.get())) {
+                auto node = std::make_unique<CompoundAssignExpr>();
+                node->name = id->name;
+                node->op = std::string(1, op[0]);
+                node->value = std::move(rhs);
+                return node;
+            }
+            throw error("Invalid compound assignment target", previous());
+        }
         if (match({TokenType::EQUALS})) {
             auto value = parseAssignment();
             if (auto id = dynamic_cast<IdentifierExpr*>(expr.get())) {
@@ -302,7 +535,26 @@ private:
                 assign->value = std::move(value);
                 return assign;
             }
+            if (auto idx = dynamic_cast<IndexExpr*>(expr.get())) {
+                auto setIdx = std::make_unique<SetIndexExpr>();
+                setIdx->object = std::move(idx->target);
+                setIdx->index = std::move(idx->index);
+                setIdx->value = std::move(value);
+                return setIdx;
+            }
             throw error("Invalid assignment target", previous());
+        }
+        return expr;
+    }
+
+    std::unique_ptr<Expr> parseNullCoalesce() {
+        auto expr = parseOr();
+        while (match({TokenType::QUESTION_QUESTION})) {
+            auto right = parseOr();
+            auto node = std::make_unique<NullCoalesceExpr>();
+            node->left  = std::move(expr);
+            node->right = std::move(right);
+            expr = std::move(node);
         }
         return expr;
     }
@@ -400,6 +652,25 @@ private:
             un->right = std::move(right);
             return un;
         }
+
+        if (match({TokenType::PLUS_PLUS, TokenType::MINUS_MINUS})) {
+            std::string op = previous().value;
+            Token name = expect(TokenType::IDENTIFIER, "Expected variable after '" + op + "'");
+
+            auto node = std::make_unique<CompoundAssignExpr>();
+            node->name = name.value;
+            node->op = (op == "++") ? "+" : "-";
+            auto one = std::make_unique<LiteralExpr>();
+            one->kind = LiteralExpr::Kind::Number; one->value = "1";
+            node->value = std::move(one);
+            return node;
+        }
+        if (match({TokenType::AWAIT})) {
+            auto operand = parseUnary();
+            auto awaitExpr = std::make_unique<AwaitExpr>();
+            awaitExpr->operand = std::move(operand);
+            return awaitExpr;
+        }
         return parseCall();
     }
 
@@ -414,12 +685,19 @@ private:
                     } while (match({TokenType::COMMA}));
                 }
                 expect(TokenType::RPAREN, "Expected ')' after arguments");
-                auto id = dynamic_cast<IdentifierExpr*>(expr.get());
-                if (!id) throw error("Can only call functions by name", previous());
-                auto call = std::make_unique<CallExpr>();
-                call->callee = id->name;
-                call->args = std::move(args);
-                expr = std::move(call);
+
+                if (auto id = dynamic_cast<IdentifierExpr*>(expr.get())) {
+                    auto call = std::make_unique<CallExpr>();
+                    call->callee = id->name;
+                    call->args = std::move(args);
+                    expr = std::move(call);
+                } else {
+
+                    auto call = std::make_unique<DynCallExpr>();
+                    call->callee = std::move(expr);
+                    call->args = std::move(args);
+                    expr = std::move(call);
+                }
             } else if (match({TokenType::LBRACKET})) {
                 auto index = parseExpression();
                 expect(TokenType::RBRACKET, "Expected ']'");
@@ -427,6 +705,30 @@ private:
                 idx->target = std::move(expr);
                 idx->index = std::move(index);
                 expr = std::move(idx);
+            } else if (match({TokenType::PLUS_PLUS, TokenType::MINUS_MINUS})) {
+
+                std::string op = previous().value;
+                if (auto id = dynamic_cast<IdentifierExpr*>(expr.get())) {
+                    auto post = std::make_unique<PostfixExpr>();
+                    post->op = op;
+                    post->name = id->name;
+                    expr = std::move(post);
+                } else {
+                    throw error("Postfix '" + op + "' requires variable", previous());
+                }
+            } else if (match({TokenType::QUESTION_DOT})) {
+
+                auto oc = std::make_unique<OptionalChainExpr>();
+                oc->object = std::move(expr);
+                if (check(TokenType::LBRACKET)) {
+                    advance();
+                    oc->index = parseExpression();
+                    expect(TokenType::RBRACKET, "Expected ']' after ?[");
+                } else {
+                    Token field = expect(TokenType::IDENTIFIER, "Expected field name after ?.");
+                    oc->field = field.value;
+                }
+                expr = std::move(oc);
             } else {
                 break;
             }
@@ -447,6 +749,9 @@ private:
             lit->value = previous().value;
             return lit;
         }
+        if (match({TokenType::TEMPLATE_STRING})) {
+            return parseTemplateLiteral(previous().value);
+        }
         if (match({TokenType::TRUE})) {
             auto lit = std::make_unique<LiteralExpr>();
             lit->kind = LiteralExpr::Kind::Bool;
@@ -465,9 +770,38 @@ private:
             lit->value = "null";
             return lit;
         }
+
+        if (match({TokenType::FN})) {
+            return parseLambda(false);
+        }
+        if (match({TokenType::ASYNC})) {
+            expect(TokenType::FN, "Expected 'fn' after 'async'");
+            return parseLambda(true);
+        }
+
+        if (match({TokenType::LBRACE})) {
+            return parseObjectLiteral();
+        }
         if (match({TokenType::IDENTIFIER})) {
+            std::string name = previous().value;
+
+            if (check(TokenType::LBRACE)
+                && pos + 1 < tokens.size() && tokens[pos + 1].type == TokenType::IDENTIFIER
+                && pos + 2 < tokens.size() && tokens[pos + 2].type == TokenType::COLON) {
+                advance();
+                auto inst = std::make_unique<StructInstExpr>();
+                inst->typeName = name;
+                while (!check(TokenType::RBRACE) && !isAtEnd()) {
+                    std::string fieldName = expect(TokenType::IDENTIFIER, "Expected field name").value;
+                    expect(TokenType::COLON, "Expected ':'");
+                    inst->fields.push_back({fieldName, parseAssignment()});
+                    match({TokenType::COMMA});
+                }
+                expect(TokenType::RBRACE, "Expected '}'");
+                return inst;
+            }
             auto id = std::make_unique<IdentifierExpr>();
-            id->name = previous().value;
+            id->name = name;
             return id;
         }
         if (match({TokenType::LPAREN})) {
@@ -487,4 +821,71 @@ private:
         }
         throw error("Unexpected token", peek());
     }
+
+    std::unique_ptr<Expr> parseObjectLiteral() {
+        auto obj = std::make_unique<ObjectExpr>();
+        if (!check(TokenType::RBRACE)) {
+            do {
+                std::string key;
+                if (check(TokenType::STRING)) {
+                    key = advance().value;
+                } else if (check(TokenType::IDENTIFIER)) {
+                    key = advance().value;
+                } else {
+                    throw error("Expected string or identifier as object key", peek());
+                }
+                expect(TokenType::COLON, "Expected ':' after object key");
+                auto val = parseExpression();
+                obj->fields.emplace_back(key, std::move(val));
+            } while (match({TokenType::COMMA}) && !check(TokenType::RBRACE));
+        }
+        expect(TokenType::RBRACE, "Expected '}' to close object literal");
+        return obj;
+    }
+
+    std::unique_ptr<Expr> parseLambda(bool isAsync) {
+        expect(TokenType::LPAREN, "Expected '(' after 'fn'");
+        auto params = parseParamList();
+        expect(TokenType::RPAREN, "Expected ')' after parameters");
+        expect(TokenType::LBRACE, "Expected '{' after fn parameters");
+        auto body = parseBlock();
+        auto lambda = std::make_unique<LambdaExpr>();
+        lambda->params = std::move(params);
+        lambda->body = std::move(body);
+        lambda->isAsync = isAsync;
+        return lambda;
+    }
+
+    std::unique_ptr<Expr> parseTemplateLiteral(const std::string& raw) {
+        auto tmpl = std::make_unique<TemplateLiteralExpr>();
+        size_t i = 0;
+        while (i <= raw.size()) {
+
+            size_t start = i;
+            while (i < raw.size() && !(raw[i] == '$' && i + 1 < raw.size() && raw[i+1] == '{')) {
+                i++;
+            }
+            tmpl->parts.push_back(raw.substr(start, i - start));
+            if (i >= raw.size()) break;
+
+            i += 2;
+
+            size_t exprStart = i;
+            int depth = 1;
+            while (i < raw.size() && depth > 0) {
+                if (raw[i] == '{') depth++;
+                else if (raw[i] == '}') depth--;
+                if (depth > 0) i++;
+                else i++;
+            }
+            std::string exprSrc = raw.substr(exprStart, i - exprStart - 1);
+
+            Lexer innerLex(exprSrc);
+            auto innerToks = innerLex.tokenize();
+            Parser innerParser(innerToks);
+            tmpl->exprs.push_back(innerParser.parseExpression());
+        }
+        return tmpl;
+    }
 };
+

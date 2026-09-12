@@ -56,9 +56,8 @@ private:
         : builtinNamespaceAliases_(namespaceAliases),
           builtinSymbolAliases_(symbolAliases) {}
 
-    // --- loop context stacks for break/continue patching ---
-    std::vector<std::vector<int>> breakStack_;    // per-loop pending break jumps
-    std::vector<int>              loopStartStack_; // loop start addresses
+    std::vector<std::vector<int>> breakStack_;
+    std::vector<int>              loopStartStack_;
 
     BytecodeProgram compileProgram(const ProgramNode& program) {
         BytecodeProgram output;
@@ -77,7 +76,7 @@ private:
             }
             compileStmt(statement.get(), output.entry, globals, true);
         }
-        output.entry.localCount = globals.nextSlot; // top-level locals
+        output.entry.localCount = globals.nextSlot;
         emit(output.entry, OpCode::Null);
         emit(output.entry, OpCode::Return);
         return output;
@@ -99,7 +98,7 @@ private:
         }
         emit(function, OpCode::Null);
         emit(function, OpCode::Return);
-        function.localCount = scope.nextSlot; // record slots used
+        function.localCount = scope.nextSlot;
         return function;
     }
 
@@ -107,13 +106,13 @@ private:
         if (!stmt) return true;
         if (dynamic_cast<ImportStmt*>(stmt) != nullptr) return false;
         if (dynamic_cast<FromImportStmt*>(stmt) != nullptr) return false;
-        // everything else is supported — ForIn, TryCatch, Break, Continue, etc.
+
         return true;
     }
 
     bool supportsExpr(Expr* expr) const {
         if (!expr) return true;
-        // Accept all expression types that we now compile
+
         return true;
     }
 
@@ -288,7 +287,6 @@ private:
             patchJump(function, exitJump, static_cast<int>(function.code.size()));
             emit(function, OpCode::Pop);
 
-            // Patch break jumps to exit
             int afterLoop = static_cast<int>(function.code.size());
             for (int idx : breakStack_.back()) patchJump(function, idx, afterLoop);
             breakStack_.pop_back();
@@ -310,25 +308,22 @@ private:
             return;
         }
 
-        // ── break ──────────────────────────────────────────────────────────────
         if (dynamic_cast<BreakStmt*>(stmt) != nullptr) {
-            // Emit a Jump placeholder; patch at end of enclosing loop
+
             int idx = emitPlaceholder(function, OpCode::Jump);
             if (!breakStack_.empty()) breakStack_.back().push_back(idx);
             return;
         }
 
-        // ── continue ───────────────────────────────────────────────────────────
         if (dynamic_cast<ContinueStmt*>(stmt) != nullptr) {
-            // Loop back to start of enclosing loop
+
             int target = loopStartStack_.empty() ? 0 : loopStartStack_.back();
             emit(function, OpCode::Loop, target);
             return;
         }
 
-        // ── for item in arr  /  for k, v in obj ───────────────────────────────
         if (auto forIn = dynamic_cast<ForInStmt*>(stmt)) {
-            // Allocate temp locals for collection and index
+
             int collSlot = scope.nextSlot++;
             int idxSlot  = scope.nextSlot++;
             int keySlot  = scope.nextSlot++;
@@ -339,39 +334,34 @@ private:
                 scope.locals[forIn->valVar] = valSlot;
             }
 
-            // __coll = iterable
             compileExpr(forIn->iterable.get(), function, scope);
             emit(function, OpCode::SetLocal, collSlot);
             emit(function, OpCode::Pop);
-            // __idx = 0
+
             emit(function, OpCode::Constant, addConstant(function, VMValue(0.0)));
             emit(function, OpCode::SetLocal, idxSlot);
             emit(function, OpCode::Pop);
 
-            // loop_start:
             const int loopStart = static_cast<int>(function.code.size());
             loopStartStack_.push_back(loopStart);
             breakStack_.push_back({});
 
-            // condition: __idx < len(__coll)
             emit(function, OpCode::GetLocal, idxSlot);
             emit(function, OpCode::GetLocal, collSlot);
             emit(function, OpCode::Call,
                 addConstant(function, VMValue(std::string("len"))), 1);
             emit(function, OpCode::Less);
             const int exitJump = emitPlaceholder(function, OpCode::JumpIfFalse);
-            emit(function, OpCode::Pop); // pop condition
+            emit(function, OpCode::Pop);
 
-            // keyVar = __coll[__idx]  (for objects this gives the key)
             emit(function, OpCode::GetLocal, collSlot);
             emit(function, OpCode::GetLocal, idxSlot);
             emit(function, OpCode::GetIndex);
             emit(function, OpCode::SetLocal, keySlot);
             emit(function, OpCode::Pop);
 
-            // if key-value iteration: valVar = __coll[key]
             if (valSlot != -1) {
-                // For object: get value by key string
+
                 emit(function, OpCode::GetLocal, collSlot);
                 emit(function, OpCode::GetLocal, keySlot);
                 emit(function, OpCode::GetIndex);
@@ -379,10 +369,8 @@ private:
                 emit(function, OpCode::Pop);
             }
 
-            // body
             compileStmt(forIn->body.get(), function, scope, false);
 
-            // __idx = __idx + 1
             emit(function, OpCode::GetLocal, idxSlot);
             emit(function, OpCode::Constant, addConstant(function, VMValue(1.0)));
             emit(function, OpCode::Add);
@@ -391,9 +379,8 @@ private:
 
             emit(function, OpCode::Loop, loopStart);
             patchJump(function, exitJump, static_cast<int>(function.code.size()));
-            emit(function, OpCode::Pop); // pop condition
+            emit(function, OpCode::Pop);
 
-            // Patch all break jumps to here
             int afterLoop = static_cast<int>(function.code.size());
             for (int idx : breakStack_.back()) patchJump(function, idx, afterLoop);
             breakStack_.pop_back();
@@ -401,51 +388,42 @@ private:
             return;
         }
 
-        // ── throw expr ─────────────────────────────────────────────────────────
         if (auto throwStmt = dynamic_cast<ThrowStmt*>(stmt)) {
             compileExpr(throwStmt->value.get(), function, scope);
             emit(function, OpCode::Throw);
             return;
         }
 
-        // ── try { } catch (e) { } finally { } ─────────────────────────────────
         if (auto tryCatch = dynamic_cast<TryCatchStmt*>(stmt)) {
-            // TryBegin: instruction.a = catch_addr (patched), instruction.b = error_name_const
+
             int errorNameConst = addConstant(function, VMValue(tryCatch->errorParam));
             int tryBeginIdx = emitPlaceholder(function, OpCode::TryBegin);
             function.code.back().b = errorNameConst;
 
-            // compile try body
             compileStmt(tryCatch->tryBody.get(), function, scope, false);
 
-            // TryEnd: skip over catch block
             int tryEndIdx = emitPlaceholder(function, OpCode::TryEnd);
 
-            // patch TryBegin to point here (catch block start)
             int catchStart = static_cast<int>(function.code.size());
             patchJump(function, tryBeginIdx, catchStart);
 
-            // compile catch body
             if (tryCatch->catchBody) {
-                // error var is already stored in globals by VM when exception occurs
+
                 compileStmt(tryCatch->catchBody.get(), function, scope, false);
             }
 
-            // compile finally body
             if (tryCatch->finallyBody) {
                 compileStmt(tryCatch->finallyBody.get(), function, scope, false);
             }
 
-            // patch TryEnd to skip past catch+finally
             int afterCatch = static_cast<int>(function.code.size());
             patchJump(function, tryEndIdx, afterCatch);
             return;
         }
 
-        // ── struct TypeName { ... } ────────────────────────────────────────────
         if (auto structDef = dynamic_cast<StructStmt*>(stmt)) {
             int count = 0;
-            // __struct__ tag
+
             emit(function, OpCode::Constant, addConstant(function, VMValue(std::string("__struct__"))));
             emit(function, OpCode::Constant, addConstant(function, VMValue(structDef->name)));
             count++;
@@ -459,24 +437,21 @@ private:
             return;
         }
 
-        // ── enum ───────────────────────────────────────────────────────────────
         if (auto enumStmt = dynamic_cast<EnumStmt*>(stmt)) {
-            // Build object {North:0, South:1, ...} + __enum__ tag
+
             int count = 0;
             for (const auto& variant : enumStmt->variants) {
                 emit(function, OpCode::Constant, addConstant(function, VMValue(variant.name)));
                 emit(function, OpCode::Constant, addConstant(function, VMValue(static_cast<double>(variant.value))));
                 count++;
             }
-            // __enum__ tag
+
             emit(function, OpCode::Constant, addConstant(function, VMValue(std::string("__enum__"))));
             emit(function, OpCode::Constant, addConstant(function, VMValue(enumStmt->name)));
             count++;
             emit(function, OpCode::BuildObject, count);
             emit(function, OpCode::DefineGlobal, addConstant(function, VMValue(enumStmt->name)));
 
-            // Also register each variant as "EnumName.VariantName" global
-            // because the Lexer tokenizes dotted names as single identifiers
             for (const auto& variant : enumStmt->variants) {
                 emit(function, OpCode::Constant,
                     addConstant(function, VMValue(static_cast<double>(variant.value))));
@@ -486,7 +461,6 @@ private:
             return;
         }
 
-        // interface — just a no-op at bytecode level (registry is in Interpreter)
         if (dynamic_cast<InterfaceStmt*>(stmt) != nullptr) {
             return;
         }
@@ -597,7 +571,6 @@ private:
             return;
         }
 
-        // { key: val, ... } object literal
         if (auto objExpr = dynamic_cast<ObjectExpr*>(expr)) {
             for (const auto& [key, valExpr] : objExpr->fields) {
                 emit(function, OpCode::Constant, addConstant(function, VMValue(key)));
@@ -607,9 +580,8 @@ private:
             return;
         }
 
-        // struct TypeName { field: val, ... } instantiation
         if (auto structInst = dynamic_cast<StructInstExpr*>(expr)) {
-            // __type__ tag
+
             emit(function, OpCode::Constant, addConstant(function, VMValue(std::string("__type__"))));
             emit(function, OpCode::Constant, addConstant(function, VMValue(structInst->typeName)));
             int count = 1;
@@ -629,10 +601,9 @@ private:
             return;
         }
 
-        // table[key] = val
         if (auto setIdx = dynamic_cast<SetIndexExpr*>(expr)) {
             if (auto id = dynamic_cast<IdentifierExpr*>(setIdx->object.get())) {
-                // Simple variable target — compile key+val, then set directly in globals/locals
+
                 compileExpr(setIdx->index.get(), function, scope);
                 compileExpr(setIdx->value.get(), function, scope);
                 if (const auto local = localSlot(scope, id->name)) {
@@ -641,7 +612,7 @@ private:
                     emit(function, OpCode::SetGlobalIndex, addConstant(function, VMValue(id->name)));
                 }
             } else {
-                // Complex target expression — fallback to old SetIndex (copy semantics)
+
                 compileExpr(setIdx->object.get(), function, scope);
                 compileExpr(setIdx->index.get(), function, scope);
                 compileExpr(setIdx->value.get(), function, scope);
@@ -650,7 +621,6 @@ private:
             return;
         }
 
-        // `template ${expr} string`
         if (auto tmpl = dynamic_cast<TemplateLiteralExpr*>(expr)) {
             int n = 0;
             for (std::size_t i = 0; i < tmpl->parts.size(); ++i) {
@@ -660,9 +630,9 @@ private:
                 }
                 if (i < tmpl->exprs.size()) {
                     compileExpr(tmpl->exprs[i].get(), function, scope);
-                    // Convert to string via Concat(1) trick: push "" + expr
+
                     emit(function, OpCode::Constant, addConstant(function, VMValue(std::string(""))));
-                    emit(function, OpCode::Add); // string + anything => string concat in VM
+                    emit(function, OpCode::Add);
                     n++;
                 }
             }
@@ -674,9 +644,8 @@ private:
             return;
         }
 
-        // x += y  compound assignment
         if (auto compAssign = dynamic_cast<CompoundAssignExpr*>(expr)) {
-            // Load current value
+
             if (const auto local = localSlot(scope, compAssign->name)) {
                 emit(function, OpCode::GetLocal, *local);
             } else {
@@ -688,7 +657,7 @@ private:
             else if (compAssign->op == "*") emit(function, OpCode::Multiply);
             else if (compAssign->op == "/") emit(function, OpCode::Divide);
             else if (compAssign->op == "%") emit(function, OpCode::Modulo);
-            // Store result
+
             if (const auto local = localSlot(scope, compAssign->name)) {
                 emit(function, OpCode::SetLocal, *local);
             } else {
@@ -697,7 +666,6 @@ private:
             return;
         }
 
-        // x++ / x-- postfix
         if (auto postfix = dynamic_cast<PostfixExpr*>(expr)) {
             if (const auto local = localSlot(scope, postfix->name)) {
                 emit(function, OpCode::GetLocal, *local);
@@ -715,10 +683,8 @@ private:
             return;
         }
 
-        // DynCallExpr: expr(args) where callee is an expression (not just identifier)
-        // Fall back: try to get the callee name if it's an identifier
         if (auto dynCall = dynamic_cast<DynCallExpr*>(expr)) {
-            // Check if callee is a simple identifier — treat as regular call
+
             if (auto id = dynamic_cast<IdentifierExpr*>(dynCall->callee.get())) {
                 for (const auto& arg : dynCall->args) compileExpr(arg.get(), function, scope);
                 emit(function, OpCode::Call,
@@ -726,24 +692,22 @@ private:
                     static_cast<int>(dynCall->args.size()));
                 return;
             }
-            // Otherwise emit null (graceful degradation)
+
             emit(function, OpCode::Null);
             return;
         }
 
-        // AwaitExpr: await promise — just evaluate operand (no real async in VM)
         if (auto awaitExpr = dynamic_cast<AwaitExpr*>(expr)) {
             compileExpr(awaitExpr->operand.get(), function, scope);
             return;
         }
 
         if (auto call = dynamic_cast<CallExpr*>(expr)) {
-            // Special case: push(arrayVar, val) → compile val, emit AppendGlobal/AppendLocal
-            // This ensures the array is mutated in-place in the VM (value-semantics fix)
+
             if (call->callee == "push" && call->args.size() == 2) {
                 if (auto id = dynamic_cast<IdentifierExpr*>(call->args[0].get())) {
-                    // push(simpleVar, val)
-                    compileExpr(call->args[1].get(), function, scope);  // push value onto stack
+
+                    compileExpr(call->args[1].get(), function, scope);
                     if (const auto local = localSlot(scope, id->name)) {
                         emit(function, OpCode::AppendLocal, *local);
                     } else {
@@ -753,9 +717,9 @@ private:
                 }
                 if (auto indexExpr = dynamic_cast<IndexExpr*>(call->args[0].get())) {
                     if (auto objId = dynamic_cast<IdentifierExpr*>(indexExpr->target.get())) {
-                        // push(obj["key"], val) — obj is a simple variable
-                        compileExpr(indexExpr->index.get(), function, scope);  // push key
-                        compileExpr(call->args[1].get(), function, scope);     // push val
+
+                        compileExpr(indexExpr->index.get(), function, scope);
+                        compileExpr(call->args[1].get(), function, scope);
                         if (const auto local = localSlot(scope, objId->name)) {
                             emit(function, OpCode::AppendObjLocal, *local);
                         } else {
@@ -765,7 +729,7 @@ private:
                     }
                 }
             }
-            // General case:
+
             for (const auto& arg : call->args) {
                 compileExpr(arg.get(), function, scope);
             }
@@ -777,21 +741,19 @@ private:
             return;
         }
 
-        // ?? null-coalescing: evaluate left; if null use right
         if (auto nc = dynamic_cast<NullCoalesceExpr*>(expr)) {
             compileExpr(nc->left.get(), function, scope);
-            // Dup top, jump past right if not null
+
             emit(function, OpCode::Dup);
             int jmpIdx = static_cast<int>(function.code.size());
-            emit(function, OpCode::JumpIfNotNull, 0);  // placeholder
-            emit(function, OpCode::Pop);                // discard null left
+            emit(function, OpCode::JumpIfNotNull, 0);
+            emit(function, OpCode::Pop);
             compileExpr(nc->right.get(), function, scope);
             int afterRight = static_cast<int>(function.code.size());
             function.code[jmpIdx].b = afterRight;
             return;
         }
 
-        // ?. optional chaining: push object, push field name, call __optional_get
         if (auto oc = dynamic_cast<OptionalChainExpr*>(expr)) {
             compileExpr(oc->object.get(), function, scope);
             if (!oc->field.empty()) {
@@ -879,3 +841,4 @@ private:
         function.code.at(static_cast<std::size_t>(instructionIndex)).a = targetIndex;
     }
 };
+

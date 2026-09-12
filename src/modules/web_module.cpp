@@ -827,3 +827,4 @@ int rqm_builtin_web_invoke(const char* function_name, const char* json_args, cha
 void rqm_builtin_free(char* memory) {
     delete[] memory;
 }
+

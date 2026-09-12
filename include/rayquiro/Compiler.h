@@ -23,8 +23,8 @@ struct BuildOptions {
     std::filesystem::path outputCppPath;
     std::filesystem::path outputExePath;
     std::filesystem::path runtimeIncludePath;
-    bool releaseMode = false;  // --release: -O3 -flto (max speed)
-    bool debugBuild  = false;  // --debug:   -O0 -g   (debug symbols)
+    bool releaseMode = false;
+    bool debugBuild  = false;
 };
 
 struct BuildResult {
@@ -588,13 +588,13 @@ private:
         std::filesystem::path cursor = std::filesystem::absolute(importerDir).lexically_normal();
         while (!cursor.empty()) {
             addRoot(cursor / ".rq_modules");
-            addRoot(cursor / ".rqio" / "packages");  // local: ./.rqio/packages/
+            addRoot(cursor / ".rqio" / "packages");
             if (cursor == cursor.root_path() || cursor.parent_path() == cursor) {
                 break;
             }
             cursor = cursor.parent_path();
         }
-        addRoot(RayQuiroUserPaths::packagesRoot());   // global: ~/.rqio/packages/
+        addRoot(RayQuiroUserPaths::packagesRoot());
         addRoot(std::filesystem::current_path() / ".rq_modules");
 
         std::vector<std::filesystem::path> candidates;
@@ -602,7 +602,7 @@ private:
             std::filesystem::path frameworkRoot = root / parts.front();
             if (parts.size() == 1) {
                 candidates.push_back(frameworkRoot / "main.rq");
-                candidates.push_back(frameworkRoot / "index.rq");  // ← npm-style
+                candidates.push_back(frameworkRoot / "index.rq");
                 candidates.push_back(frameworkRoot / (parts.front() + ".rq"));
                 continue;
             }
@@ -626,7 +626,7 @@ private:
             if (auto varStmt = dynamic_cast<VarStmt*>(statement.get())) {
                 exports[varStmt->name] = ModuleExport{false, varStmt->isLet, {}};
             } else if (auto functionStmt = dynamic_cast<FunctionStmt*>(statement.get())) {
-                // Extract param names from FuncParam (ModuleExport uses vector<string>)
+
                 std::vector<std::string> paramNames;
                 for (const auto& p : functionStmt->params) paramNames.push_back(p.name);
                 exports[functionStmt->name] = ModuleExport{true, false, paramNames};
@@ -671,7 +671,7 @@ private:
     ) {
         auto function = std::make_unique<FunctionStmt>();
         function->name = targetName;
-        // Convert vector<string> params to vector<FuncParam>
+
         for (const std::string& pname : params) {
             FuncParam fp; fp.name = pname;
             function->params.push_back(std::move(fp));
@@ -875,3 +875,4 @@ private:
         return std::string(value);
     }
 };
+

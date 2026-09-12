@@ -2344,6 +2344,235 @@ RQENGINE_EXPORT void rqengine_free_string(char* value) {
     delete[] value;
 }
 
+RQENGINE_EXPORT int rqengine_pick_object(
+    RQEngineHandle*  handle,
+    const char*      scene_name,
+    int              screen_x,
+    int              screen_y,
+    int              viewport_w,
+    int              viewport_h,
+    char**           out_json,
+    char**           out_error
+) {
+    if (handle == nullptr || out_json == nullptr) {
+        assign_error(out_error, "rqengine_pick_object requires a valid handle and out_json.");
+        return 1;
+    }
+    return execute_with_error(out_error, [&]() {
+        const EngineStore& store = handle->store;
+        const std::string sname = scene_name == nullptr ? store.currentScene : std::string(scene_name);
+        const auto found = store.scenes.find(sname);
+        if (found == store.scenes.end() || viewport_w <= 0 || viewport_h <= 0) {
+            *out_json = duplicate_string("{\"hit\":false}");
+            return;
+        }
+        const EngineScene& scene = found->second;
+
+        const float ndcX = (2.0f * static_cast<float>(screen_x) / static_cast<float>(viewport_w)) - 1.0f;
+        const float ndcY = 1.0f - (2.0f * static_cast<float>(screen_y) / static_cast<float>(viewport_h));
+        const float fovRad = store.cameraFov * (3.14159265358979323846f / 180.0f);
+        const float tanHalfFov = std::tan(fovRad * 0.5f);
+        const float aspect = static_cast<float>(viewport_w) / static_cast<float>(viewport_h);
+
+        const EngineVec3 camPos   = store.cameraPosition;
+        const EngineVec3 forward  = vec3_normalize(vec3_sub(store.cameraTarget, camPos));
+
+        const EngineVec3 up       = vec3_normalize(store.cameraUp);
+        const EngineVec3 right    = vec3_normalize(EngineVec3{
+            forward.y * up.z - forward.z * up.y,
+            forward.z * up.x - forward.x * up.z,
+            forward.x * up.y - forward.y * up.x
+        });
+        const EngineVec3 camUp = EngineVec3{
+            right.y * forward.z - right.z * forward.y,
+            right.z * forward.x - right.x * forward.z,
+            right.x * forward.y - right.y * forward.x
+        };
+
+        const float rx = ndcX * aspect * tanHalfFov;
+        const float ry = ndcY * tanHalfFov;
+        const EngineVec3 rayDir = vec3_normalize(EngineVec3{
+            forward.x + right.x * rx + camUp.x * ry,
+            forward.y + right.y * rx + camUp.y * ry,
+            forward.z + right.z * rx + camUp.z * ry
+        });
+
+        std::string bestEntity;
+        float bestDist = 1e30f;
+
+        for (const auto& pair : scene.entities) {
+            const EngineEntity& ent = pair.second;
+            if (!ent.visible) continue;
+
+            const float hx = std::max(0.05f, ent.scale.x * 0.5f);
+            const float hy = std::max(0.05f, ent.scale.y * 0.5f);
+            const float hz = std::max(0.05f, ent.scale.z * 0.5f);
+
+            const EngineVec3 bmin{ ent.position.x - hx, ent.position.y - hy, ent.position.z - hz };
+            const EngineVec3 bmax{ ent.position.x + hx, ent.position.y + hy, ent.position.z + hz };
+
+            auto safe_div = [](float a, float b) -> float {
+                return (std::abs(b) < 1e-12f) ? (a >= 0.0f ? 1e30f : -1e30f) : (a / b);
+            };
+
+            const float tx1 = safe_div(bmin.x - camPos.x, rayDir.x);
+            const float tx2 = safe_div(bmax.x - camPos.x, rayDir.x);
+            const float ty1 = safe_div(bmin.y - camPos.y, rayDir.y);
+            const float ty2 = safe_div(bmax.y - camPos.y, rayDir.y);
+            const float tz1 = safe_div(bmin.z - camPos.z, rayDir.z);
+            const float tz2 = safe_div(bmax.z - camPos.z, rayDir.z);
+
+            const float tmin = std::max({std::min(tx1,tx2), std::min(ty1,ty2), std::min(tz1,tz2)});
+            const float tmax = std::min({std::max(tx1,tx2), std::max(ty1,ty2), std::max(tz1,tz2)});
+
+            if (tmax >= 0.0f && tmin <= tmax && tmin < bestDist) {
+                bestDist = tmin > 0.0f ? tmin : 0.0f;
+                bestEntity = pair.first;
+            }
+        }
+
+        std::ostringstream out;
+        if (!bestEntity.empty()) {
+            out << "{\"hit\":true,\"entity\":\"" << json_escape(bestEntity)
+                << "\",\"distance\":" << bestDist << "}";
+        } else {
+            out << "{\"hit\":false}";
+        }
+        *out_json = duplicate_string(out.str());
+    });
+}
+
+RQENGINE_EXPORT int rqengine_render_editor_scene(
+    RQEngineHandle*  handle,
+    const char*      scene_name,
+    const char*      selected_entity,
+    int              show_grid,
+    char**           out_error
+) {
+    if (handle == nullptr) {
+        assign_error(out_error, "rqengine_render_editor_scene requires a valid handle.");
+        return 0;
+    }
+    int submitted = 0;
+    execute_with_error(out_error, [&]() {
+        EngineStore& store = handle->store;
+        const std::string sname = scene_name == nullptr ? store.currentScene : std::string(scene_name);
+        const std::string selName = selected_entity == nullptr ? std::string() : std::string(selected_entity);
+
+        if (show_grid != 0) {
+            rt_draw_grid(24, 1.0f);
+        }
+
+        submitted = render_scene_entities(store, sname);
+
+        const auto sceneIt = store.scenes.find(sname);
+        if (sceneIt == store.scenes.end()) return;
+        const EngineScene& scene = sceneIt->second;
+
+        int sw = rt_screen_width();
+        int sh = rt_screen_height();
+        const float fovRad  = store.cameraFov * (3.14159265358979323846f / 180.0f);
+        const float tanHFov = std::tan(fovRad * 0.5f);
+        const float aspect  = (sh > 0) ? (static_cast<float>(sw) / static_cast<float>(sh)) : 1.0f;
+
+        const EngineVec3 camPos  = store.cameraPosition;
+        const EngineVec3 forward = vec3_normalize(vec3_sub(store.cameraTarget, camPos));
+        const EngineVec3 up      = vec3_normalize(store.cameraUp);
+        const EngineVec3 right   = vec3_normalize(EngineVec3{
+            forward.y * up.z - forward.z * up.y,
+            forward.z * up.x - forward.x * up.z,
+            forward.x * up.y - forward.y * up.x
+        });
+        const EngineVec3 camUp = EngineVec3{
+            right.y * forward.z - right.z * forward.y,
+            right.z * forward.x - right.x * forward.z,
+            right.x * forward.y - right.y * forward.x
+        };
+
+        auto world_to_screen = [&](const EngineVec3& pt, int& sx, int& sy) -> bool {
+            const EngineVec3 rel{ pt.x - camPos.x, pt.y - camPos.y, pt.z - camPos.z };
+            const float depth = rel.x * forward.x + rel.y * forward.y + rel.z * forward.z;
+            if (depth < 0.05f) return false;
+            const float rx2 = rel.x * right.x  + rel.y * right.y  + rel.z * right.z;
+            const float ry2 = rel.x * camUp.x  + rel.y * camUp.y  + rel.z * camUp.z;
+            const float ndcX = rx2 / (depth * aspect * tanHFov);
+            const float ndcY = ry2 / (depth * tanHFov);
+            sx = static_cast<int>((ndcX + 1.0f) * 0.5f * static_cast<float>(sw));
+            sy = static_cast<int>((1.0f - ndcY) * 0.5f * static_cast<float>(sh));
+            return true;
+        };
+
+        if (!selName.empty()) {
+            const auto entIt = scene.entities.find(selName);
+            if (entIt != scene.entities.end()) {
+                const EngineEntity& sel = entIt->second;
+                const float hx = std::max(0.05f, sel.scale.x * 0.5f);
+                const float hy = std::max(0.05f, sel.scale.y * 0.5f);
+                const float hz = std::max(0.05f, sel.scale.z * 0.5f);
+                const EngineVec3 c = sel.position;
+
+                const EngineVec3 corners[8] = {
+                    {c.x-hx, c.y-hy, c.z-hz}, {c.x+hx, c.y-hy, c.z-hz},
+                    {c.x+hx, c.y+hy, c.z-hz}, {c.x-hx, c.y+hy, c.z-hz},
+                    {c.x-hx, c.y-hy, c.z+hz}, {c.x+hx, c.y-hy, c.z+hz},
+                    {c.x+hx, c.y+hy, c.z+hz}, {c.x-hx, c.y+hy, c.z+hz}
+                };
+
+                const int edges[12][2] = {
+                    {0,1},{1,2},{2,3},{3,0},
+                    {4,5},{5,6},{6,7},{7,4},
+                    {0,4},{1,5},{2,6},{3,7}
+                };
+                const RTColor selColor{255, 165, 0, 255};
+                for (const auto& edge : edges) {
+                    int x1,y1,x2,y2;
+                    if (world_to_screen(corners[edge[0]], x1, y1) &&
+                        world_to_screen(corners[edge[1]], x2, y2)) {
+                        rt_draw_line(x1, y1, x2, y2, selColor);
+                    }
+                }
+
+                int lx, ly;
+                const EngineVec3 labelPt{c.x, c.y + hy + 0.3f, c.z};
+                if (world_to_screen(labelPt, lx, ly)) {
+                    rt_draw_text(selName.c_str(), lx, ly - 18, 12, RTColor{255, 230, 100, 220});
+                    rt_draw_text(sel.kind.c_str(), lx, ly - 5, 10, RTColor{180, 180, 180, 180});
+                }
+
+                const float gizmoLen = std::max(0.6f, std::max({sel.scale.x, sel.scale.y, sel.scale.z}) * 0.8f);
+                int ox, oy;
+                if (world_to_screen(c, ox, oy)) {
+                    int ax, ay;
+                    if (world_to_screen({c.x+gizmoLen, c.y, c.z}, ax, ay))
+                        rt_draw_line(ox, oy, ax, ay, RTColor{255, 60, 60, 255});
+                    if (world_to_screen({c.x, c.y+gizmoLen, c.z}, ax, ay))
+                        rt_draw_line(ox, oy, ax, ay, RTColor{60, 220, 60, 255});
+                    if (world_to_screen({c.x, c.y, c.z+gizmoLen}, ax, ay))
+                        rt_draw_line(ox, oy, ax, ay, RTColor{60, 100, 255, 255});
+
+                    if (world_to_screen({c.x+gizmoLen+0.1f, c.y, c.z}, ax, ay))
+                        rt_draw_text("X", ax, ay, 11, RTColor{255, 80, 80, 220});
+                    if (world_to_screen({c.x, c.y+gizmoLen+0.1f, c.z}, ax, ay))
+                        rt_draw_text("Y", ax, ay, 11, RTColor{80, 220, 80, 220});
+                    if (world_to_screen({c.x, c.y, c.z+gizmoLen+0.1f}, ax, ay))
+                        rt_draw_text("Z", ax, ay, 11, RTColor{80, 120, 255, 220});
+                }
+            }
+        }
+
+        for (const auto& pair : scene.entities) {
+            if (pair.first == selName || !pair.second.visible) continue;
+            int lx, ly;
+            const EngineVec3& p = pair.second.position;
+            const float labelY  = p.y + std::max(0.05f, pair.second.scale.y * 0.5f) + 0.15f;
+            if (world_to_screen({p.x, labelY, p.z}, lx, ly)) {
+                rt_draw_text(pair.first.c_str(), lx, ly, 10, RTColor{160, 180, 200, 140});
+            }
+        }
+    });
+    return submitted;
+}
+
 RQM_EXPORT int rqm_invoke(const char* function_name, const char* json_args, char** json_result, char** error_message) {
     try {
         std::vector<ScalarValue> args = parse_args(json_args);
@@ -2369,3 +2598,4 @@ RQM_EXPORT int rqm_invoke(const char* function_name, const char* json_args, char
 RQM_EXPORT void rqm_free(char* memory) {
     delete[] memory;
 }
+

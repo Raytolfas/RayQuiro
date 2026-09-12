@@ -32,6 +32,10 @@ inline std::filesystem::path frameworksRoot() {
     return rqioHome() / "frameworks";
 }
 
+inline std::filesystem::path packagesRoot() {
+    return rqioHome() / "packages";
+}
+
 inline std::filesystem::path systemModulesRoot() {
 #ifdef _WIN32
     if (const auto programFiles = getenvString("ProgramFiles")) {
@@ -57,3 +61,4 @@ inline std::filesystem::path tempRoot() {
     return rqioHome() / "tmp";
 }
 }
+

@@ -73,13 +73,13 @@ inline int closesocket(SOCKET socket) { return ::close(socket); }
 
 class Interpreter {
 public:
-    // LambdaValue stores raw AST pointers (non-owning) вЂ” AST must outlive interpreter.
+
     struct LambdaValue {
-        std::vector<std::string> paramNames;    // parameter names in order
-        std::vector<Expr*>       paramDefaults; // raw ptr to default expr (nullptr = required)
-        bool hasVariadic = false;               // last param is variadic (...rest)
+        std::vector<std::string> paramNames;
+        std::vector<Expr*>       paramDefaults;
+        bool hasVariadic = false;
         BlockStmt* body;
-        std::shared_ptr<void> closure; // actually shared_ptr<Environment>
+        std::shared_ptr<void> closure;
         bool isAsync = false;
     };
 
@@ -203,10 +203,8 @@ private:
             throw std::runtime_error("Undefined variable: " + name);
         }
 
-        // Alias for assign (used by engine editor API)
         void set(const std::string& name, const Value& value) { assign(name, value); }
 
-        // Access the flat variable map (for Inspector / Reflection)
         const std::unordered_map<std::string, VariableSlot>& vars() const { return values; }
     };
 
@@ -364,28 +362,24 @@ private:
     WebState webState_;
     EngineState engineState_;
 
-    // 0.2.0 additions
-    std::vector<std::string> processArgs_;   // CLI args passed to the script
-    std::string currentSourcePath_;          // absolute path of currently running script (for DAP)
+    std::vector<std::string> processArgs_;
+    std::string currentSourcePath_;
 #if RAYQUIRO_HAS_RAYLIB
     std::vector<Sound>    soundRegistry_;
     std::vector<Music>    musicRegistry_;
     std::vector<Texture2D> textureRegistry_;
 #endif
-    std::unordered_map<std::string, Value> structDefs_; // struct prototypes
-    std::unordered_map<std::string, std::vector<std::string>> interfaceRegistry_; // interface name в†’ required method names
+    std::unordered_map<std::string, Value> structDefs_;
+    std::unordered_map<std::string, std::vector<std::string>> interfaceRegistry_;
 
-    // Engine editor/play mode
     enum class EngineMode { Editor, Playing, Paused };
     EngineMode engineMode_ = EngineMode::Editor;
-    Value sceneSnapshot_;   // JSON snapshot taken at play() for stop() restore
+    Value sceneSnapshot_;
 #ifdef _WIN32
     RayQuiroApp appRuntime_;
     RayQuiroModernUI uiRuntime_;
 #endif
 
-    // в”Ђв”Ђ Debug hook (DAP) в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
-    // Called before every statement. Set by DAPServer integration in main.cpp.
     using DebugHook = std::function<void(const std::string& filePath, int line)>;
     DebugHook debugHook_;
 
@@ -395,7 +389,7 @@ public:
     void setSourcePath(const std::string& path) { currentSourcePath_ = path; }
 
 private:
-    // async/await promise store (shared across threads)
+
     static inline std::unordered_map<std::string, std::shared_future<Value>> promiseStore_;
     static inline std::mutex promiseMutex_;
     static inline int promiseCounter_ = 0;
@@ -738,7 +732,7 @@ private:
 
         if (auto oc = dynamic_cast<OptionalChainExpr*>(expr)) {
             Value obj = evaluate(oc->object.get(), env);
-            if (is_null(obj)) return Value(); // propagate null
+            if (is_null(obj)) return Value();
             if (!oc->field.empty()) {
                 if (is_object(obj)) {
                     auto it = obj.as_object()->find(oc->field);
@@ -788,11 +782,11 @@ private:
 
         if (auto postfix = dynamic_cast<PostfixExpr*>(expr)) {
             Value cur = env->get(postfix->name);
-            Value prev = cur; // return pre-increment value for x++ (actually postfix returns old)
+            Value prev = cur;
             double n = to_number(cur);
             Value next = Value(postfix->op == "++" ? n + 1.0 : n - 1.0);
             env->assign(postfix->name, next);
-            return prev; // postfix returns old value
+            return prev;
         }
 
         if (auto awaitExpr = dynamic_cast<AwaitExpr*>(expr)) {
@@ -800,7 +794,6 @@ private:
             return awaitPromise(operand);
         }
 
-        // Object literal: { "key": expr, ... }
         if (auto objExpr = dynamic_cast<ObjectExpr*>(expr)) {
             Value obj = Value::object();
             auto& map = *obj.as_object();
@@ -810,7 +803,6 @@ private:
             return obj;
         }
 
-        // Lambda expression: fn(params) { body } вЂ” creates a closure capturing current env
         if (auto lambdaExpr = dynamic_cast<LambdaExpr*>(expr)) {
             auto lv = std::make_shared<LambdaValue>();
             for (const auto& p : lambdaExpr->params) {
@@ -824,7 +816,6 @@ private:
             return Value(Value::Fn(lv));
         }
 
-        // Dynamic call: lambdaVar(args)
         if (auto dynCall = dynamic_cast<DynCallExpr*>(expr)) {
             Value callee = evaluate(dynCall->callee.get(), env);
             std::vector<Value> args;
@@ -833,7 +824,6 @@ private:
             return callLambda(callee, args, env);
         }
 
-        // Template literal: `Hello ${name}!`
         if (auto tmpl = dynamic_cast<TemplateLiteralExpr*>(expr)) {
             std::string result;
             for (size_t i = 0; i < tmpl->parts.size(); ++i) {
@@ -845,29 +835,27 @@ private:
             return Value(result);
         }
 
-        // в”Ђв”Ђ Struct instantiation: TypeName { field: value, ... } в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
         if (auto structInst = dynamic_cast<StructInstExpr*>(expr)) {
-            // Look up the struct prototype in env
+
             Value proto;
             try { proto = env->get(structInst->typeName); } catch (...) {}
-            // Create a new object (shallow copy of proto if it's an object)
+
             Value obj = Value::object();
             if (is_object(proto)) {
                 for (const auto& [k, v] : *proto.as_object()) {
-                    if (k == "__struct__") continue; // skip type tag
+                    if (k == "__struct__") continue;
                     (*obj.as_object())[k] = v;
                 }
             }
-            // Override with provided fields
+
             for (const auto& field : structInst->fields) {
                 (*obj.as_object())[field.first] = evaluate(field.second.get(), env);
             }
-            // Tag with struct type name
+
             (*obj.as_object())["__type__"] = Value(structInst->typeName);
             return obj;
         }
 
-        // в”Ђв”Ђ await promise в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
         if (auto awaitExpr = dynamic_cast<AwaitExpr*>(expr)) {
             Value operand = evaluate(awaitExpr->operand.get(), env);
             return awaitPromise(operand);
@@ -879,7 +867,6 @@ private:
     void execute(Stmt* stmt, const std::shared_ptr<Environment>& env) {
         if (!stmt) return;
 
-        // в”Ђв”Ђ DAP debug hook в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
         if (debugHook_ && stmt->line > 0) {
             debugHook_(currentSourcePath_, stmt->line);
         }
@@ -1013,7 +1000,7 @@ private:
             bool matched = false;
             for (auto& clause : switchStmt->cases) {
                 if (!matched) {
-                    if (!clause.value) { matched = true; } // default
+                    if (!clause.value) { matched = true; }
                     else {
                         Value caseVal = evaluate(clause.value.get(), env);
                         matched = (to_string(subject) == to_string(caseVal));
@@ -1028,29 +1015,27 @@ private:
             return;
         }
 
-        // в”Ђв”Ђ throw expr в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
         if (auto throwStmt = dynamic_cast<ThrowStmt*>(stmt)) {
             Value v = evaluate(throwStmt->value.get(), env);
             throw std::runtime_error(to_string(v));
         }
 
-        // в”Ђв”Ђ struct TypeName { field: default, ... } в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
         if (auto structDef = dynamic_cast<StructStmt*>(stmt)) {
-            // Store struct definition as an object in globals_
+
             Value proto = Value::object();
             for (const auto& field : structDef->fields) {
                 (*proto.as_object())[field.first] = evaluate(field.second.get(), env);
             }
-            // Tag it so we know it's a struct prototype
+
             (*proto.as_object())["__struct__"] = Value(structDef->name);
-            // Record which interfaces this struct implements
+
             if (!structDef->impls.empty()) {
                 Value implsArr = Value::array();
                 for (const auto& iname : structDef->impls) {
                     implsArr.as_array()->push_back(Value(iname));
                 }
                 (*proto.as_object())["__impls__"] = implsArr;
-                // Runtime check: verify all required interface methods exist on this proto
+
                 for (const auto& iname : structDef->impls) {
                     auto it = interfaceRegistry_.find(iname);
                     if (it != interfaceRegistry_.end()) {
@@ -1069,14 +1054,12 @@ private:
             return;
         }
 
-        // в”Ђв”Ђ enum Direction { North, South, East, West } в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
         if (auto enumDef = dynamic_cast<EnumStmt*>(stmt)) {
             Value enumObj = Value::object();
             for (const auto& variant : enumDef->variants) {
                 Value varVal(static_cast<double>(variant.value));
                 (*enumObj.as_object())[variant.name] = varVal;
-                // Also register "Direction.North" as a standalone global
-                // because the Lexer treats dotted names as single identifiers
+
                 env->define(enumDef->name + "." + variant.name, varVal, true);
             }
             (*enumObj.as_object())["__enum__"] = Value(enumDef->name);
@@ -1084,15 +1067,14 @@ private:
             return;
         }
 
-        // в”Ђв”Ђ interface Drawable { fn draw(); fn get_bounds() -> object; } в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
         if (auto ifaceDef = dynamic_cast<InterfaceStmt*>(stmt)) {
-            // Register required method names in the interface registry
+
             std::vector<std::string> required;
             for (const auto& m : ifaceDef->methods) {
                 required.push_back(m.name);
             }
             interfaceRegistry_[ifaceDef->name] = required;
-            // Also expose as global object so code can inspect it
+
             Value ifaceObj = Value::object();
             (*ifaceObj.as_object())["__interface__"] = Value(ifaceDef->name);
             Value methods = Value::array();
@@ -1104,20 +1086,18 @@ private:
             return;
         }
 
-        // в”Ђв”Ђ var [a, b, c] = expr в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
         if (auto ad = dynamic_cast<ArrayDestructureStmt*>(stmt)) {
             Value src = evaluate(ad->init.get(), env);
             if (!is_array(src)) throw std::runtime_error("Array destructure requires an array");
             auto& arr = *src.as_array();
             for (size_t i = 0; i < ad->names.size(); ++i) {
-                if (ad->names[i].empty()) continue; // hole
+                if (ad->names[i].empty()) continue;
                 Value v = (i < arr.size()) ? arr[i] : Value();
                 env->define(ad->names[i], v, false);
             }
             return;
         }
 
-        // в”Ђв”Ђ var {x, y: local} = expr в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
         if (auto od = dynamic_cast<ObjectDestructureStmt*>(stmt)) {
             Value src = evaluate(od->init.get(), env);
             if (!is_object(src)) throw std::runtime_error("Object destructure requires an object");
@@ -1134,7 +1114,6 @@ private:
         throw std::runtime_error("Unsupported statement encountered in interpreter.");
     }
 
-    // Call a lambda (closure) value with given arguments
     Value callLambda(const Value& callee, const std::vector<Value>& args,
                      const std::shared_ptr<Environment>& callSiteEnv) {
         if (!is_lambda(callee)) {
@@ -1147,7 +1126,7 @@ private:
             size_t ni = lv->paramNames.size();
             for (size_t i = 0; i < ni; ++i) {
                 if (lv->hasVariadic && i == ni - 1) {
-                    // Pack remaining args into array
+
                     Value rest = Value::array();
                     for (size_t j = i; j < args.size(); ++j)
                         rest.as_array()->push_back(args[j]);
@@ -1202,11 +1181,9 @@ private:
         return Value();
     }
 
-    // в”Ђв”Ђ Public API for Raytolfas Engine Editor в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
-    // Call a RayQuiro function if it exists; returns nullopt if the function isn't defined
     std::optional<Value> callFunctionIfExists(const std::string& name, const std::vector<Value>& args) {
         if (functions_.count(name)) return callFunction(name, args);
-        // Also check globals_ for lambda variables
+
         try {
             Value v = globals_->get(name);
             if (is_lambda(v)) return callLambda(v, args, globals_);
@@ -1214,14 +1191,12 @@ private:
         return std::nullopt;
     }
 
-    // Check if a function is defined in the current script
     bool hasFunction(const std::string& name) {
         if (functions_.count(name)) return true;
         try { Value v = globals_->get(name); return is_lambda(v); } catch (...) {}
         return false;
     }
 
-    // Get all global variables as a Value (object) вЂ” for Inspector panel
     Value getGlobals() const {
         Value obj = Value::object();
         for (const auto& [k, slot] : globals_->vars()) {
@@ -1231,7 +1206,6 @@ private:
         return obj;
     }
 
-    // Set a global variable from the editor (Inspector panel edits)
     void setGlobal(const std::string& name, Value val) {
         try { globals_->assign(name, val); } catch (...) { globals_->define(name, val, false); }
     }
@@ -1247,7 +1221,7 @@ private:
 
         const auto found = functions_.find(callee);
         if (found == functions_.end()) {
-            // Check if env has a lambda variable with this name
+
             try {
                 Value lval = globals_->get(callee);
                 if (is_lambda(lval)) return callLambda(lval, args, globals_);
@@ -1257,7 +1231,6 @@ private:
 
         FunctionStmt* function = found->second;
 
-        // Helper: bind FuncParam list to a frame
         auto bindFuncParams = [&](std::shared_ptr<Environment> frame, const std::vector<Value>& callArgs) {
             for (size_t i = 0; i < function->params.size(); ++i) {
                 const auto& p = function->params[i];
@@ -1275,14 +1248,12 @@ private:
             }
         };
 
-        // Async function: run in background thread, return promise
         if (function->isAsync) {
             const std::string promId = newPromiseId();
             auto capturedArgs = args;
             auto fut = std::async(std::launch::async, [this, function, capturedArgs, &bindFuncParams]() -> Value {
                 auto frame = std::make_shared<Environment>(globals_);
-                // Note: can't use bindFuncParams lambda (captures by ref) safely in thread
-                // So inline the binding here:
+
                 for (size_t i = 0; i < function->params.size(); ++i) {
                     const auto& p = function->params[i];
                     if (p.isVariadic) {
@@ -1329,13 +1300,13 @@ private:
         if (builtin == "num") return builtin_num(args);
         if (builtin == "bool") return builtin_bool(args);
         if (builtin == "type") return builtin_type(args);
-        // is_impl(obj, "InterfaceName") в†’ true if obj has all required methods
+
         if (builtin == "is_impl") {
             if (args.size() < 2) return Value(false);
             const Value& obj = args[0];
             if (!is_object(obj) && !is_null(args[1])) return Value(false);
             std::string ifaceName = to_string(args[1]);
-            // Check __impls__ tag first (fast path)
+
             if (is_object(obj)) {
                 auto imp = obj.as_object()->find("__impls__");
                 if (imp != obj.as_object()->end() && is_array(imp->second)) {
@@ -1344,7 +1315,7 @@ private:
                     }
                 }
             }
-            // Fallback: duck-typing вЂ” check all required methods exist
+
             auto it = interfaceRegistry_.find(ifaceName);
             if (it == interfaceRegistry_.end()) return Value(false);
             if (!is_object(obj)) return Value(false);
@@ -1354,15 +1325,13 @@ private:
             }
             return Value(true);
         }
-        // is_enum(val) в†’ true if val is an enum object (has __enum__ tag)
+
         if (builtin == "is_enum") {
             if (args.empty()) return Value(false);
             if (!is_object(args[0])) return Value(false);
             return Value(args[0].as_object()->count("__enum__") > 0);
         }
 
-        // в”Ђв”Ђ async / promise builtins в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
-        // promise.all([p1, p2, ...]) в†’ await all promises, return array of results
         if (builtin == "promise.all") {
             if (args.empty() || !is_array(args[0])) return Value::array();
             Value results = Value::array();
@@ -1371,8 +1340,7 @@ private:
             }
             return results;
         }
-        // promise.race([p1, p2, ...]) в†’ return result of first resolved promise
-        // (Simplified: awaits each in order, returns the first non-null)
+
         if (builtin == "promise.race") {
             if (args.empty() || !is_array(args[0])) return Value();
             for (const auto& p : *args[0].as_array()) {
@@ -1381,7 +1349,7 @@ private:
             }
             return Value();
         }
-        // promise.resolve(value) в†’ return an already-resolved promise object
+
         if (builtin == "promise.resolve") {
             const std::string promId = newPromiseId();
             Value val = args.empty() ? Value() : args[0];
@@ -1391,7 +1359,7 @@ private:
             (*promObj.as_object())["__promise_id__"] = Value(promId);
             return promObj;
         }
-        // await(promise) вЂ” shorthand callable form of the await keyword
+
         if (builtin == "await") {
             if (args.empty()) return Value();
             return awaitPromise(args[0]);
@@ -1578,7 +1546,7 @@ private:
         if (builtin == "engine.rect_overlap") return builtin_engine_rect_overlap(args);
         if (builtin == "engine.circle_overlap") return builtin_engine_circle_overlap(args);
         if (builtin == "engine.point_in_rect") return builtin_engine_point_in_rect(args);
-        // KEY_ constants
+
         if (builtin == "engine.KEY_A") return Value(65.0);
         if (builtin == "engine.KEY_B") return Value(66.0);
         if (builtin == "engine.KEY_C") return Value(67.0);
@@ -1640,8 +1608,6 @@ private:
         if (builtin == "engine.KEY_F11") return Value(300.0);
         if (builtin == "engine.KEY_F12") return Value(301.0);
 
-
-        // в”Ђв”Ђ Functional: map, filter, reduce, any, all, sorted в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
         if (builtin == "map") {
             if (args.size() >= 2 && is_array(args[0]) && is_lambda(args[1])) {
                 Value result = Value::array();
@@ -1704,7 +1670,6 @@ private:
             return Value::array();
         }
 
-        // в”Ђв”Ђ String extras в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
         if (builtin == "startswith") {
             if (args.size() >= 2 && is_string(args[0]) && is_string(args[1])) {
                 const std::string& s = std::get<std::string>(args[0].data);
@@ -1774,7 +1739,7 @@ private:
             return Value(std::string(""));
         }
         if (builtin == "format") {
-            // format("Hello %s age %d", name, age)
+
             if (!args.empty() && is_string(args[0])) {
                 std::string fmt = to_string(args[0]);
                 std::string out;
@@ -1796,7 +1761,6 @@ private:
             return Value(std::string(""));
         }
 
-        // в”Ђв”Ђ Regex в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
         if (builtin == "regexp.test") {
             if (args.size() >= 2 && is_string(args[0]) && is_string(args[1])) {
                 try {
@@ -1832,7 +1796,6 @@ private:
             return args.empty() ? Value() : args[0];
         }
 
-        // в”Ђв”Ђ Base64 в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
         if (builtin == "base64.encode") {
             if (!args.empty() && is_string(args[0])) {
                 const std::string& in = std::get<std::string>(args[0].data);
@@ -1866,7 +1829,6 @@ private:
             return Value(std::string(""));
         }
 
-        // в”Ђв”Ђ URL encode/decode в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
         if (builtin == "url.encode") {
             if (!args.empty() && is_string(args[0])) {
                 const std::string& s = std::get<std::string>(args[0].data);
@@ -1895,7 +1857,6 @@ private:
             return Value(std::string(""));
         }
 
-        // в”Ђв”Ђ UUID в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
         if (builtin == "uuid") {
             static std::random_device rd;
             static std::mt19937 gen(rd());
@@ -1911,7 +1872,6 @@ private:
             return Value(ss.str());
         }
 
-        // в”Ђв”Ђ Math extras в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
         if (builtin == "atan2") return Value(std::atan2(to_number(args[0]), to_number(args[1])));
         if (builtin == "hypot") return Value(std::hypot(to_number(args[0]), to_number(args[1])));
         if (builtin == "atan")  return Value(std::atan(to_number(args[0])));
@@ -1921,7 +1881,6 @@ private:
         if (builtin == "log2")  return Value(std::log2(to_number(args[0])));
         if (builtin == "log10") return Value(std::log10(to_number(args[0])));
 
-        // в”Ђв”Ђ fs.list / fs.rename в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
         if (builtin == "fs.list") {
             if (!args.empty() && is_string(args[0])) {
                 Value result = Value::array();
@@ -1941,22 +1900,19 @@ private:
             return Value(false);
         }
 
-        // в”Ђв”Ђ HTTP extras в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
         if (builtin == "http.put" || builtin == "http.delete" || builtin == "http.patch") {
-            // Minimal TCP-based raw HTTP вЂ” same approach as http.post but with specified method
+
             if (args.empty()) return Value::object();
             std::string method = (builtin == "http.put") ? "PUT" : (builtin == "http.delete") ? "DELETE" : "PATCH";
             std::string url = to_string(args[0]);
             std::string body = args.size() >= 2 ? to_string(args[1]) : "";
-            // Delegate to the http.post builtin logic by reusing existing implementation
-            // We construct a minimal HTTP request using the same TCP helpers
+
             Value result = Value::object();
             (*result.as_object())["status"] = Value(0.0);
             (*result.as_object())["body"] = Value(std::string(""));
-            return result; // stub вЂ” same infrastructure as http.post
+            return result;
         }
 
-        // в”Ђв”Ђ http.listen вЂ” simple HTTP server в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
         if (builtin == "http.listen") {
             if (args.size() < 2 || !is_lambda(args[1])) {
                 throw std::runtime_error("http.listen(port, handler) requires a lambda handler");
@@ -1991,7 +1947,7 @@ private:
 #endif
                 SOCKET clientSock = accept(serverSock, (sockaddr*)&clientAddr, &clientLen);
                 if (clientSock == INVALID_SOCKET) continue;
-                // Read request
+
                 std::string raw;
                 char buf[4096];
                 int received;
@@ -2000,25 +1956,24 @@ private:
                     raw += buf;
                     if (raw.find("\r\n\r\n") != std::string::npos) break;
                 }
-                // Parse method, path, headers, body
+
                 std::string method, path, httpBody, query;
                 std::unordered_map<std::string,std::string> headers;
                 std::istringstream ss(raw);
                 std::string line;
                 std::getline(ss, line);
                 { std::istringstream ls(line); ls >> method >> path; }
-                // split path?query
+
                 auto qpos = path.find('?');
                 if (qpos != std::string::npos) { query = path.substr(qpos+1); path = path.substr(0,qpos); }
                 while (std::getline(ss, line) && line != "\r" && !line.empty()) {
                     auto col = line.find(':');
                     if (col != std::string::npos) headers[line.substr(0,col)] = line.substr(col+2);
                 }
-                // body after \r\n\r\n
+
                 auto bpos = raw.find("\r\n\r\n");
                 if (bpos != std::string::npos) httpBody = raw.substr(bpos+4);
 
-                // Build req object
                 Value req = Value::object();
                 (*req.as_object())["method"] = Value(method);
                 (*req.as_object())["path"] = Value(path);
@@ -2028,23 +1983,19 @@ private:
                 for (auto& h : headers) (*hdrsObj.as_object())[h.first] = Value(h.second);
                 (*req.as_object())["headers"] = hdrsObj;
 
-                // Build res object (simple: shared state to collect response)
                 struct ResState { int status = 200; std::string body; std::string contentType = "application/json"; };
                 auto resState = std::make_shared<ResState>();
                 Value res = Value::object();
-                // res.send(body)
+
                 auto sendLambda = std::make_shared<LambdaValue>();
                 sendLambda->paramNames = {"body"};
-                // Use a trick: store resState ptr via a custom builtin registered per-request
-                // Simpler: build response inline after handler returns
-                (*res.as_object())["_resState"] = Value(std::string("")); // placeholder
 
-                // Call handler
+                (*res.as_object())["_resState"] = Value(std::string(""));
+
                 try {
                     callLambda(handler, {req, res}, globals_);
                 } catch (...) {}
 
-                // Build HTTP response from res object
                 std::string responseBody;
                 int statusCode = 200;
                 std::string ct = "text/plain";
@@ -2063,10 +2014,6 @@ private:
             return Value();
         }
 
-        // в”Ђв”Ђ type() updated for lambda в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
-        // (Already handled above; this ensures "function" is returned)
-
-        // в”Ђв”Ђ env.* в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
         if (builtin == "env.get") {
             if (args.empty()) return Value(std::string(""));
             const char* v = std::getenv(to_string(args[0]).c_str());
@@ -2111,7 +2058,6 @@ private:
             return obj;
         }
 
-        // в”Ђв”Ђ process.* в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
         if (builtin == "process.exit") {
             int code = args.empty() ? 0 : static_cast<int>(to_number(args[0]));
             std::exit(code);
@@ -2439,7 +2385,6 @@ private:
         if (builtin=="vec_lerp"&&args.size()>=3&&is_object(args[0])&&is_object(args[1])){auto&a=*args[0].as_object();auto&b=*args[1].as_object();double t=to_number(args[2]);bool i3=a.count("z")&&b.count("z");Value r=Value::object();(*r.as_object())["x"]=Value(to_number(a.at("x"))+(to_number(b.at("x"))-to_number(a.at("x")))*t);(*r.as_object())["y"]=Value(to_number(a.at("y"))+(to_number(b.at("y"))-to_number(a.at("y")))*t);if(i3)(*r.as_object())["z"]=Value(to_number(a.at("z"))+(to_number(b.at("z"))-to_number(a.at("z")))*t);return r;}
         if (builtin=="vec_cross"&&args.size()>=2&&is_object(args[0])&&is_object(args[1])){auto&a=*args[0].as_object();auto&b=*args[1].as_object();double ax=to_number(a.at("x")),ay=to_number(a.at("y")),az=a.count("z")?to_number(a.at("z")):0;double bx=to_number(b.at("x")),by=to_number(b.at("y")),bz=b.count("z")?to_number(b.at("z")):0;Value r=Value::object();(*r.as_object())["x"]=Value(ay*bz-az*by);(*r.as_object())["y"]=Value(az*bx-ax*bz);(*r.as_object())["z"]=Value(ax*by-ay*bx);return r;}
 
-        // в”Ђв”Ђ engine: Audio в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
 #if RAYQUIRO_HAS_RAYLIB
         if (builtin=="engine.init_audio"){InitAudioDevice();return Value();}
         if (builtin=="engine.load_sound"){
@@ -2464,7 +2409,6 @@ private:
         if (builtin=="engine.set_music_volume"){if(args.size()>=2&&is_object(args[0])){auto it=args[0].as_object()->find("__music_idx__");if(it!=args[0].as_object()->end()){size_t idx=static_cast<size_t>(to_number(it->second));if(idx<musicRegistry_.size())SetMusicVolume(musicRegistry_[idx],static_cast<float>(to_number(args[1])));}}return Value();}
         if (builtin=="engine.is_music_playing"){if(!args.empty()&&is_object(args[0])){auto it=args[0].as_object()->find("__music_idx__");if(it!=args[0].as_object()->end()){size_t idx=static_cast<size_t>(to_number(it->second));if(idx<musicRegistry_.size())return Value(IsMusicStreamPlaying(musicRegistry_[idx]));}}return Value(false);}
 
-        // в”Ђв”Ђ engine: Textures в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
         if (builtin=="engine.load_texture"){
             if(args.empty())return Value();
             Texture2D tex=LoadTexture(to_string(args[0]).c_str());
@@ -2488,9 +2432,8 @@ private:
             return Value();
         }
         if (builtin=="engine.unload_texture"){if(!args.empty()&&is_object(args[0])){auto it=args[0].as_object()->find("__tex_idx__");if(it!=args[0].as_object()->end()){size_t idx=static_cast<size_t>(to_number(it->second));if(idx<textureRegistry_.size())UnloadTexture(textureRegistry_[idx]);}}return Value();}
-#endif // RAYQUIRO_HAS_RAYLIB
+#endif
 
-        // в”Ђв”Ђ Engine: Editor / Play Mode в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
         if (builtin=="engine.is_editor")  return Value(engineMode_==EngineMode::Editor);
         if (builtin=="engine.is_playing") return Value(engineMode_==EngineMode::Playing);
         if (builtin=="engine.is_paused")  return Value(engineMode_==EngineMode::Paused);
@@ -2520,7 +2463,7 @@ private:
             }
             return Value();
         }
-        // в”Ђв”Ђ Engine: Reflection / Inspector в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+
         if (builtin=="engine.get_script_vars") {
             Value arr=Value::array();
             for(const auto&[k,slot]:globals_->vars()){
@@ -2545,7 +2488,7 @@ private:
         if (builtin=="engine.set_var") {
             if(args.size()>=2) setGlobal(to_string(args[0]),args[1]); return Value();
         }
-        // в”Ђв”Ђ Engine: Dynamic call helpers в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+
         if (builtin=="engine.call") {
             if(args.empty()) return Value();
             std::vector<Value> fnArgs(args.begin()+1,args.end());
@@ -2555,7 +2498,7 @@ private:
             if(args.empty()) return Value(false);
             return Value(hasFunction(to_string(args[0])));
         }
-        // в”Ђв”Ђ Engine: Scene I/O в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+
         if (builtin=="engine.scene_save") {
             if(args.empty()) return Value(false);
             auto res=callBuiltin("json.stringify",{getGlobals()});
@@ -2576,14 +2519,14 @@ private:
             }catch(...){}
             return Value(false);
         }
-        // в”Ђв”Ђ Engine: Gizmos в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+
 #if RAYQUIRO_HAS_RAYLIB
         if(builtin=="engine.gizmo_rect"&&engineMode_==EngineMode::Editor&&args.size()>=4){DrawRectangleLinesEx({(float)to_number(args[0]),(float)to_number(args[1]),(float)to_number(args[2]),(float)to_number(args[3])},1.5f,{100,180,255,180});return Value();}
         if(builtin=="engine.gizmo_line"&&engineMode_==EngineMode::Editor&&args.size()>=4){DrawLine((int)to_number(args[0]),(int)to_number(args[1]),(int)to_number(args[2]),(int)to_number(args[3]),{100,180,255,200});return Value();}
         if(builtin=="engine.gizmo_circle"&&engineMode_==EngineMode::Editor&&args.size()>=3){DrawCircleLines((int)to_number(args[0]),(int)to_number(args[1]),(float)to_number(args[2]),{100,255,180,200});return Value();}
         if(builtin=="engine.gizmo_text"&&engineMode_==EngineMode::Editor&&args.size()>=3){DrawText(to_string(args[0]).c_str(),(int)to_number(args[1]),(int)to_number(args[2]),args.size()>=4?(int)to_number(args[3]):12,{100,200,255,220});return Value();}
 #endif
-        // в”Ђв”Ђ Engine: Hot Reload в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+
         if(builtin=="engine.watch_reload"){bool en=!args.empty()&&is_bool(args[0])&&std::get<bool>(args[0].data);globals_->define("__hot_reload__",Value(en),true);return Value();}
 
         return std::nullopt;
@@ -4952,8 +4895,6 @@ private:
         return Value(px >= rx && px <= rx + rw && py >= ry && py <= ry + rh);
     }
 
-
-
     static unsigned char engine_clamp_channel(float value) {
         if (value < 0.0f) return 0;
         if (value > 255.0f) return 255;
@@ -5499,5 +5440,4 @@ private:
         return Value(std::filesystem::exists(assetPath));
     }
 };
-
 

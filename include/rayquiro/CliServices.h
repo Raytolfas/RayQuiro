@@ -444,7 +444,6 @@ inline void expandZipArchive(const std::filesystem::path& zipPath, const std::fi
 #endif
 }
 
-
 inline std::filesystem::path detectExtractedRoot(const std::filesystem::path& extractDir) {
     std::vector<std::filesystem::path> directories;
     for (const auto& entry : std::filesystem::directory_iterator(extractDir)) {
@@ -605,7 +604,6 @@ inline int installFrameworkPackage(
     return 0;
 }
 
-
 inline int installFramework(
     const std::string& spec,
     const std::filesystem::path& installRoot = RayQuiroUserPaths::frameworksRoot()
@@ -660,7 +658,7 @@ inline int installNativeModule(
             }
         }
     } catch (...) {
-        // Fall back to the default module location when registry lookup fails.
+
     }
 
     const std::filesystem::path targetPath = installRoot / fileName;
@@ -678,7 +676,6 @@ inline int installNativeModule(
     std::cout << "[RayQuiro] Installed native module '" << spec << "' into " << targetPath.string() << std::endl;
     return 0;
 }
-
 
 inline void launchHiddenBatch(const std::filesystem::path& batchPath) {
 #ifdef _WIN32
@@ -796,8 +793,6 @@ inline void createSelfUpdateScripts(
 #endif
 }
 
-
-
 inline std::time_t parseIsoUtc(const std::string& s) {
     if (s.size() < 19) return 0;
     try {
@@ -870,7 +865,7 @@ inline UpdateCheckResult checkForUpdatesQuietly(const std::string& currentVersio
             }
         }
     } catch (...) {
-        // quiet fail
+
     }
     return res;
 #endif
@@ -923,28 +918,12 @@ inline int selfUpdate(
 #endif
 }
 
-
-// в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
-// Package Manager (rqio add / install / remove / list / init)
-//
-// Global (default): ~/.rqio/packages/<name>/
-// Local  (--local): <project>/.rqio/packages/<name>/
-//
-// Spec formats:
-//   "telebot"           в†’ look up in approved registry в†’ GitHub ZIP
-//   "user/repo"         в†’ GitHub ZIP of branch main
-//   "user/repo@branch"  в†’ GitHub ZIP of that branch/tag
-//   "github:user/repo"  в†’ same as user/repo
-// в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
-
 struct RqioManifest {
     std::string name;
     std::string version     = "1.0.0";
     std::string description;
-    std::map<std::string, std::string> dependencies; // name -> spec
+    std::map<std::string, std::string> dependencies;
 };
-
-// в”Ђв”Ђ JSON helpers в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
 
 inline std::map<std::string, std::string> findJsonObjectPairs(
     const std::string& json, const std::string& key)
@@ -1033,40 +1012,26 @@ inline void writeRqioLock(const std::filesystem::path& projectRoot,
     writeText(projectRoot / "rqio.lock", js.str());
 }
 
-// в”Ђв”Ђ Install paths в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
-
-// Global: ~/.rqio/packages/
 inline std::filesystem::path globalPackagesRoot() {
     return RayQuiroUserPaths::packagesRoot();
 }
 
-// Local: <project>/.rqio/packages/
 inline std::filesystem::path localPackagesRoot(const std::filesystem::path& projectRoot) {
     return projectRoot / ".rqio" / "packages";
 }
 
-// в”Ђв”Ђ Spec resolution в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
-
-// Resolves a package spec to a FrameworkPackage.
-// "telebot"        в†’ approved registry lookup
-// "user/repo"      в†’ GitHub direct
-// "user/repo@tag"  в†’ GitHub direct, specific tag
-// "github:..."     в†’ strip prefix, then same as above
 inline FrameworkPackage resolvePackageSpec(const std::string& rawSpec) {
     std::string spec = trim(rawSpec);
-    // strip "github:" prefix
+
     if (spec.rfind("github:", 0) == 0) spec = spec.substr(7);
 
     if (spec.find('/') != std::string::npos) {
-        // Direct GitHub spec: user/repo[@branch]
+
         return parseRepoSpec(spec);
     }
 
-    // No slash в†’ look up in approved registry
     return findApprovedFramework(spec);
 }
-
-// в”Ђв”Ђ rqio init в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
 
 inline void initProject(const std::filesystem::path& projectRoot) {
     const std::filesystem::path manifest = projectRoot / "rqio.json";
@@ -1081,7 +1046,6 @@ inline void initProject(const std::filesystem::path& projectRoot) {
     m.version = "1.0.0";
     writeRqioManifest(projectRoot, m);
 
-    // add .rqio/ to .gitignore
     const std::filesystem::path gitignore = projectRoot / ".gitignore";
     std::string existing;
     if (std::filesystem::exists(gitignore)) existing = readText(gitignore);
@@ -1094,8 +1058,6 @@ inline void initProject(const std::filesystem::path& projectRoot) {
     std::cout << "[rqio] Created rqio.json for project '" << m.name << "'\n";
     std::cout << "[rqio] Local packages will go into .rqio/packages/ (gitignored)\n";
 }
-
-// в”Ђв”Ђ rqio add / install <spec> в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
 
 inline void addPackage(const std::string& spec,
                         const std::filesystem::path& projectRoot,
@@ -1110,7 +1072,6 @@ inline void addPackage(const std::string& spec,
     std::filesystem::create_directories(installRoot);
     installFrameworkPackage(pkg, installRoot);
 
-    // if local, also update rqio.json + rqio.lock
     if (localInstall) {
         RqioManifest m = readRqioManifest(projectRoot);
         if (m.name.empty())
@@ -1129,8 +1090,6 @@ inline void addPackage(const std::string& spec,
                   << "' globally into " << installRoot.string() << "\n";
     }
 }
-
-// в”Ђв”Ђ rqio install (from rqio.json) в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
 
 inline void installAllPackages(const std::filesystem::path& projectRoot) {
     const RqioManifest m = readRqioManifest(projectRoot);
@@ -1159,8 +1118,6 @@ inline void installAllPackages(const std::filesystem::path& projectRoot) {
               << " package(s) in " << installRoot.string() << "\n";
 }
 
-// в”Ђв”Ђ rqio remove в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
-
 inline void removePackage(const std::string& name,
                            const std::filesystem::path& projectRoot,
                            bool localOnly = false)
@@ -1170,14 +1127,14 @@ inline void removePackage(const std::string& name,
     std::error_code ec;
 
     if (!localOnly) {
-        // try global first
+
         const std::filesystem::path global = globalPackagesRoot() / safeName;
         if (std::filesystem::exists(global)) {
             std::filesystem::remove_all(global, ec);
             std::cout << "[rqio] Removed global package: " << global.string() << "\n";
             removed = true;
         }
-        // also check legacy frameworks dir
+
         const std::filesystem::path legacy = RayQuiroUserPaths::frameworksRoot() / safeName;
         if (std::filesystem::exists(legacy)) {
             std::filesystem::remove_all(legacy, ec);
@@ -1186,7 +1143,6 @@ inline void removePackage(const std::string& name,
         }
     }
 
-    // local .rqio/packages/
     const std::filesystem::path local = localPackagesRoot(projectRoot) / safeName;
     if (std::filesystem::exists(local)) {
         std::filesystem::remove_all(local, ec);
@@ -1197,15 +1153,12 @@ inline void removePackage(const std::string& name,
     if (!removed)
         std::cout << "[rqio] Package '" << name << "' not found.\n";
 
-    // remove from rqio.json if present
     RqioManifest m = readRqioManifest(projectRoot);
     if (m.dependencies.erase(name) > 0) {
         writeRqioManifest(projectRoot, m);
         std::cout << "[rqio] Removed '" << name << "' from rqio.json\n";
     }
 }
-
-// в”Ђв”Ђ rqio list в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
 
 inline void listInstalledPackages(const std::filesystem::path& projectRoot, bool showGlobal = true, bool showLocal = true) {
     const RqioManifest m = readRqioManifest(projectRoot);
@@ -1235,4 +1188,5 @@ inline void listInstalledPackages(const std::filesystem::path& projectRoot, bool
     }
 }
 
-} // namespace RayQuiroCliServices
+}
+

@@ -165,59 +165,64 @@ public:
                 else if (s == "true") addToken(tokens, TokenType::TRUE, s, startLine, startCol);
                 else if (s == "false") addToken(tokens, TokenType::FALSE, s, startLine, startCol);
                 else if (s == "null") addToken(tokens, TokenType::NULL_T, s, startLine, startCol);
+                else if (s == "try") addToken(tokens, TokenType::TRY, s, startLine, startCol);
+                else if (s == "catch") addToken(tokens, TokenType::CATCH, s, startLine, startCol);
+                else if (s == "finally") addToken(tokens, TokenType::FINALLY, s, startLine, startCol);
+                else if (s == "async") addToken(tokens, TokenType::ASYNC, s, startLine, startCol);
+                else if (s == "await") addToken(tokens, TokenType::AWAIT, s, startLine, startCol);
+                else if (s == "in") addToken(tokens, TokenType::IN, s, startLine, startCol);
+                else if (s == "switch") addToken(tokens, TokenType::SWITCH, s, startLine, startCol);
+                else if (s == "case") addToken(tokens, TokenType::CASE, s, startLine, startCol);
+                else if (s == "default") addToken(tokens, TokenType::DEFAULT, s, startLine, startCol);
+                else if (s == "throw") addToken(tokens, TokenType::THROW, s, startLine, startCol);
+                else if (s == "struct") addToken(tokens, TokenType::STRUCT, s, startLine, startCol);
+                else if (s == "enum") addToken(tokens, TokenType::ENUM, s, startLine, startCol);
+                else if (s == "interface") addToken(tokens, TokenType::INTERFACE, s, startLine, startCol);
+                else if (s == "impl") addToken(tokens, TokenType::IMPL, s, startLine, startCol);
                 else addToken(tokens, TokenType::IDENTIFIER, s, startLine, startCol);
                 continue;
             }
 
             if (c == '=' && peekNext() == '>') {
-                advance();
-                advance();
+                advance(); advance();
                 addToken(tokens, TokenType::ARROW_LOG, "=>", startLine, startCol);
                 continue;
             }
 
-            if (c == '=' && peekNext() == '=') {
-                advance();
-                advance();
-                addToken(tokens, TokenType::EQUAL_EQUAL, "==", startLine, startCol);
+            if (c == '.' && peekNext() == '.' && pos + 2 < src.size() && src[pos+2] == '.') {
+                advance(); advance(); advance();
+                addToken(tokens, TokenType::DOT_DOT_DOT, "...", startLine, startCol);
                 continue;
             }
 
-            if (c == '!' && peekNext() == '=') {
+            if (c == '`') {
                 advance();
-                advance();
-                addToken(tokens, TokenType::BANG_EQUAL, "!=", startLine, startCol);
+                std::string raw;
+                while (pos < src.size() && peek() != '`') {
+                    if (peek() == '\\' && peekNext() == '`') {
+                        advance(); raw += '`';
+                    } else {
+                        raw += advance();
+                    }
+                }
+                if (pos < src.size()) advance();
+                addToken(tokens, TokenType::TEMPLATE_STRING, raw, startLine, startCol);
                 continue;
             }
 
-            if (c == '<' && peekNext() == '=') {
-                advance();
-                advance();
-                addToken(tokens, TokenType::LTE, "<=", startLine, startCol);
-                continue;
-            }
-
-            if (c == '>' && peekNext() == '=') {
-                advance();
-                advance();
-                addToken(tokens, TokenType::GTE, ">=", startLine, startCol);
-                continue;
-            }
-
-            if (c == '&' && peekNext() == '&') {
-                advance();
-                advance();
-                addToken(tokens, TokenType::AND_AND, "&&", startLine, startCol);
-                continue;
-            }
-
-            if (c == '|' && peekNext() == '|') {
-                advance();
-                advance();
-                addToken(tokens, TokenType::OR_OR, "||", startLine, startCol);
-                continue;
-            }
-
+            if (c == '=' && peekNext() == '=') { advance(); advance(); addToken(tokens, TokenType::EQUAL_EQUAL, "==", startLine, startCol); continue; }
+            if (c == '!' && peekNext() == '=') { advance(); advance(); addToken(tokens, TokenType::BANG_EQUAL, "!=", startLine, startCol); continue; }
+            if (c == '<' && peekNext() == '=') { advance(); advance(); addToken(tokens, TokenType::LTE, "<=", startLine, startCol); continue; }
+            if (c == '>' && peekNext() == '=') { advance(); advance(); addToken(tokens, TokenType::GTE, ">=", startLine, startCol); continue; }
+            if (c == '&' && peekNext() == '&') { advance(); advance(); addToken(tokens, TokenType::AND_AND, "&&", startLine, startCol); continue; }
+            if (c == '|' && peekNext() == '|') { advance(); advance(); addToken(tokens, TokenType::OR_OR, "||", startLine, startCol); continue; }
+            if (c == '+' && peekNext() == '+') { advance(); advance(); addToken(tokens, TokenType::PLUS_PLUS, "++", startLine, startCol); continue; }
+            if (c == '-' && peekNext() == '-') { advance(); advance(); addToken(tokens, TokenType::MINUS_MINUS, "--", startLine, startCol); continue; }
+            if (c == '+' && peekNext() == '=') { advance(); advance(); addToken(tokens, TokenType::PLUS_EQUALS, "+=", startLine, startCol); continue; }
+            if (c == '-' && peekNext() == '=') { advance(); advance(); addToken(tokens, TokenType::MINUS_EQUALS, "-=", startLine, startCol); continue; }
+            if (c == '*' && peekNext() == '=') { advance(); advance(); addToken(tokens, TokenType::STAR_EQUALS, "*=", startLine, startCol); continue; }
+            if (c == '/' && peekNext() == '=') { advance(); advance(); addToken(tokens, TokenType::SLASH_EQUALS, "/=", startLine, startCol); continue; }
+            if (c == '%' && peekNext() == '=') { advance(); advance(); addToken(tokens, TokenType::PERCENT_EQUALS, "%=", startLine, startCol); continue; }
             if (c == '=') { advance(); addToken(tokens, TokenType::EQUALS, "=", startLine, startCol); continue; }
             if (c == '+') { advance(); addToken(tokens, TokenType::PLUS, "+", startLine, startCol); continue; }
             if (c == '-') { advance(); addToken(tokens, TokenType::MINUS, "-", startLine, startCol); continue; }
@@ -236,6 +241,10 @@ public:
             if (c == ',') { advance(); addToken(tokens, TokenType::COMMA, ",", startLine, startCol); continue; }
             if (c == ';') { advance(); addToken(tokens, TokenType::SEMICOLON, ";", startLine, startCol); continue; }
             if (c == ':') { advance(); addToken(tokens, TokenType::COLON, ":", startLine, startCol); continue; }
+            if (c == '?' && peekNext() == '?') { advance(); advance(); addToken(tokens, TokenType::QUESTION_QUESTION, "??", startLine, startCol); continue; }
+            if (c == '?' && peekNext() == '.') { advance(); advance(); addToken(tokens, TokenType::QUESTION_DOT, "?.", startLine, startCol); continue; }
+            if (c == '?') { advance(); addToken(tokens, TokenType::QUESTION, "?", startLine, startCol); continue; }
+            if (c == '.') { advance(); addToken(tokens, TokenType::DOT, ".", startLine, startCol); continue; }
 
             throw std::runtime_error("Unexpected character '" + std::string(1, c) + "' at " + std::to_string(startLine) + ":" + std::to_string(startCol));
         }
@@ -243,3 +252,4 @@ public:
         return tokens;
     }
 };
+
