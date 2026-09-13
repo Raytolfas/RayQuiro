@@ -1,0 +1,36 @@
+struct Point {
+    x: 0,
+    y: 0
+}
+
+var p = Point { x: 10, y: 25 };
+if (p["x"] == 10 && p["y"] == 25) {
+    print("Struct: OK");
+}
+
+var caught = false;
+try {
+    throw "test_error";
+} catch (e) {
+    caught = true;
+} finally {
+    print("Finally: OK");
+}
+
+if (caught) {
+    print("Exception: OK");
+}
+
+var sq = sqrt(16);
+var pw = pow(2, 3);
+var ab = abs(-42);
+if (sq == 4 && pw == 8 && ab == 42) {
+    print("Math builtins: OK");
+}
+
+var h = hash.sha256("hello");
+if (len(h) == 64) {
+    print("Crypto: OK");
+}
+
+print("03_features: PASS");

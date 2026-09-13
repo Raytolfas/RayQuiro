@@ -1,0 +1,22 @@
+var list = [10, 20, 30];
+list[1] = 99;
+
+var dict = {"name": "RayQuiro", "lang": "rq"};
+dict["version"] = "0.2.0";
+
+var [first, second, third] = [1, 2, 3];
+var {name: langName, version: ver} = dict;
+
+var missing = null;
+var fallback = missing ?? "default_val";
+var safeAccess = dict?.["lang"];
+
+if (first == 1 && second == 2 && third == 3) {
+    print("Destructuring: OK");
+}
+
+if (fallback == "default_val" && safeAccess == "rq") {
+    print("Null safety: OK");
+}
+
+print("02_collections: PASS");

@@ -1,0 +1,30 @@
+fn add(a, b = 10) {
+    return a + b;
+}
+
+fn divmod(a, b) {
+    return a / b, a % b;
+}
+
+var x = 5;
+var y = add(x);
+var z = add(x, 20);
+
+if (y == 15 && z == 25) {
+    print("Conditions: OK");
+}
+
+var sum = 0;
+for (var i = 1; i <= 5; i = i + 1) {
+    sum = sum + i;
+}
+
+var count = 0;
+while (count < 3) {
+    count = count + 1;
+}
+
+var [quotient, remainder] = divmod(10, 3);
+print("Math: " + str(quotient) + ", " + str(remainder));
+print("Loops: " + str(sum) + ", " + str(count));
+print("01_basic_syntax: PASS");
