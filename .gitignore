@@ -1,6 +1,3 @@
-.rq_modules/
-build/
-build-linux/
 *.generated.cpp
 *.html
 *.dll
@@ -9,20 +6,9 @@ build-linux/
 *.so
 *.spv
 rqio
-packages/
 .vscode/
 .cache/
 .agents/
-api_docs/
-scripts/
-release/
-modules/
 in-all/
-rqio.json
-rqproject.json
-main.rq
-build_output.txt
-examples/
-vscode/
 examples/
 third_party/
