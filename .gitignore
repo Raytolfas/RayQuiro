@@ -6,7 +6,9 @@ build-linux/
 *.dll
 *.exe
 *.o
+*.so
 *.spv
+rqio
 packages/
 .vscode/
 .cache/
@@ -15,7 +17,7 @@ api_docs/
 tests/
 scripts/
 release/
-/modules/
+modules/
 in-all/
 rqio.json
 rqproject.json
@@ -23,3 +25,5 @@ main.rq
 build_output.txt
 examples/
 vscode/
+examples/
+third_party/

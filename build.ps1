@@ -260,6 +260,7 @@ Invoke-OptionalStrip $output
 if ($isWindows) {
     try {
         Copy-Item $output "rqio.exe" -Force
+        Remove-Item $output -Force -ErrorAction SilentlyContinue
         Write-Host "Updated rqio.exe"
     } catch {
         Write-Warning "Built $output, but rqio.exe is locked. Close running rqio.exe processes and copy $output over rqio.exe."
@@ -294,119 +295,4 @@ if ($exitCode -ne 0) {
 Invoke-OptionalStrip $coreOutput
 
 Write-Host "Built $coreOutput"
-
-if ($false -and (Test-Path "native_modules")) {
-    $modulesDir = "modules"
-    New-Item -ItemType Directory -Force -Path $modulesDir | Out-Null
-
-    $webModuleOutput = Join-Path $modulesDir "web.dll"
-    $webModuleArgs = @(
-        "native_modules/web_module.cpp",
-        "-Iinclude/rayquiro",
-        "-std=c++17",
-        "-shared"
-    )
-
-    $webModuleArgs += $commonNativeCompileFlags
-    $webModuleArgs += $commonNativeLinkFlags
-    $webModuleArgs += @(
-        "-o", $webModuleOutput,
-        "-lws2_32"
-    )
-
-    & $cxxCompiler @webModuleArgs
-    if ($LASTEXITCODE -ne 0) {
-        exit $LASTEXITCODE
-    }
-
-    Invoke-OptionalStrip $webModuleOutput
-
-    Write-Host "Built $webModuleOutput"
-
-    $appModuleOutput = Join-Path $modulesDir "app.dll"
-    $appModuleArgs = @(
-        "native_modules/app_module.cpp",
-        "-Iinclude/rayquiro",
-        "-std=c++17",
-        "-shared"
-    )
-
-    $appModuleArgs += $commonNativeCompileFlags
-    $appModuleArgs += $commonNativeLinkFlags
-    $appModuleArgs += @(
-        "-o", $appModuleOutput,
-        "-luser32",
-        "-lgdi32"
-    )
-
-    & $cxxCompiler @appModuleArgs
-    if ($LASTEXITCODE -ne 0) {
-        exit $LASTEXITCODE
-    }
-
-    Invoke-OptionalStrip $appModuleOutput
-
-    Write-Host "Built $appModuleOutput"
-
-    $uiModuleOutput = Join-Path $modulesDir "ui.dll"
-    $uiModuleArgs = @(
-        "native_modules/ui_module.cpp",
-        "-Iinclude/rayquiro",
-        "-std=c++17",
-        "-shared"
-    )
-
-    $uiModuleArgs += $commonNativeCompileFlags
-    $uiModuleArgs += $commonNativeLinkFlags
-    $uiModuleArgs += @(
-        "-o", $uiModuleOutput,
-        "-luser32",
-        "-lgdi32"
-    )
-
-    & $cxxCompiler @uiModuleArgs
-    if ($LASTEXITCODE -ne 0) {
-        exit $LASTEXITCODE
-    }
-
-    Invoke-OptionalStrip $uiModuleOutput
-
-    Write-Host "Built $uiModuleOutput"
-
-    $engineModuleOutput = Join-Path $modulesDir "engine.dll"
-    $engineModuleArgs = @(
-        "native_modules/engine_module.cpp",
-        "-Iinclude/rayquiro",
-        "-Ithird_party/raylib/src",
-        "-std=c++17",
-        "-shared"
-    )
-
-    $engineModuleArgs += $commonNativeCompileFlags
-    $engineModuleArgs += $commonNativeLinkFlags
-    $engineModuleArgs += @(
-        "-o", $engineModuleOutput
-    )
-
-    $engineModuleArgs += $raylibObjects
-    $engineModuleArgs += @(
-        "-lopengl32",
-        "-lgdi32",
-        "-lwinmm",
-        "-lws2_32",
-        "-ladvapi32",
-        "-luser32"
-    )
-
-    & $cxxCompiler @engineModuleArgs
-    if ($LASTEXITCODE -ne 0) {
-        exit $LASTEXITCODE
-    }
-
-    Invoke-OptionalStrip $engineModuleOutput
-
-    Write-Host "Built $engineModuleOutput"
-} else {
-    Write-Host "native_modules directory not found, skipping building native modules. Prebuilt modules in in-all/modules/ will be used if needed."
-}
 

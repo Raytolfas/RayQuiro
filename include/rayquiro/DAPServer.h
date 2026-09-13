@@ -14,6 +14,7 @@
 #ifdef _WIN32
 
 using socket_t = SOCKET;
+using socklen_t = int;
 static const socket_t INVALID_SOCK = INVALID_SOCKET;
 static inline int close_sock(socket_t s) { return closesocket(s); }
 #  pragma comment(lib, "ws2_32.lib")
