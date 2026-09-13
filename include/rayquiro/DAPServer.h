@@ -151,7 +151,7 @@ inline bool DAPServer::start() {
     std::cerr << "[DAP] Waiting for debugger on port " << port_ << " ...\n";
 
     sockaddr_in clientAddr{};
-    int clientLen = sizeof(clientAddr);
+    socklen_t clientLen = sizeof(clientAddr);
     clientSock_ = ::accept(serverSock_,
                             reinterpret_cast<sockaddr*>(&clientAddr),
                             &clientLen);

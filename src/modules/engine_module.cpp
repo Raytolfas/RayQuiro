@@ -17,6 +17,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <fstream>
 #include <sstream>
 #include <stdexcept>
 #include <string>
