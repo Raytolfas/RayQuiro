@@ -12,6 +12,7 @@ class CEmitter {
 public:
     static std::string emit(const BytecodeProgram& program) {
         CEmitter e;
+        e.program_ = &program;
         e.emitProgram(program);
         return e.out_.str();
     }
@@ -19,6 +20,7 @@ public:
 private:
     std::ostringstream out_;
     std::unordered_set<std::string> globals_declared_;
+    const BytecodeProgram* program_ = nullptr;
 
     static std::string safeName(const std::string& n) {
         std::string r;
@@ -216,8 +218,19 @@ private:
         if (callee=="math.ceil")   return "rq_ceil(_ca[0])";
         if (callee=="math.round")  return "rq_round(_ca[0])";
         if (callee=="math.pow")    return "rq_pow(_ca[0],_ca[1])";
+        size_t expectedParams = (size_t)argc;
+        if (program_) {
+            auto fit = program_->functions.find(callee);
+            if (fit != program_->functions.end()) {
+                expectedParams = fit->second.params.size();
+            }
+        }
         std::string r = "_rq_fn_" + safeName(callee) + "(";
-        for (int i=0; i<argc; i++) { if(i) r+=","; r+="_ca["+std::to_string(i)+"]"; }
+        for (size_t i = 0; i < expectedParams; i++) {
+            if (i) r += ",";
+            if (i < (size_t)argc) r += "_ca[" + std::to_string(i) + "]";
+            else r += "rq_null()";
+        }
         r += ")";
         return r;
     }

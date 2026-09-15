@@ -14,6 +14,7 @@
 #include "BytecodePackage.h"
 #include "CliServices.h"
 #include "DAPServer.h"
+#include "LSPServer.h"
 #include "Formatter.h"
 #include "VM.h"
 #include "CEmitter.h"
@@ -27,7 +28,7 @@
 #endif
 
 namespace {
-const char* kRayQuiroVersion = "0.2.0";
+const char* kRayQuiroVersion = "0.2.1";
 
 std::string rebuildCommandLine(int argc, char* argv[]) {
     std::string cmd;
@@ -48,6 +49,7 @@ std::string rebuildCommandLine(int argc, char* argv[]) {
 enum class CliMode {
     Run,
     Debug,
+    Lsp,
     Pack,
     Bundle,
     Build,
@@ -77,6 +79,7 @@ struct CliOptions {
     bool globalOnly = false;
     bool preferVm = false;
     bool legacyMode = false;
+    bool watchMode = false;
     bool releaseMode = false;
     bool debugBuild  = false;
     bool noLLVM      = false;
@@ -97,13 +100,14 @@ struct ProjectConfig {
 void printHelp() {
     std::cout << "\033[1;36mRayQuiro\033[0m " << kRayQuiroVersion << " — modern, fast programming language\n";
     std::cout << "\n\033[1mUsage:\033[0m\n";
-    std::cout << "  rqio run <script.rq> [--legacy]     Run script (Bytecode VM default)\n";
+    std::cout << "  rqio run <script.rq> [--watch]      Run script (Bytecode VM default, --watch for Hot Reload)\n";
     std::cout << "  rqio build <script.rq> [-o out]     Compile to standalone native binary via LLVM\n";
     std::cout << "  rqio build <script.rq> --release    Compile with -O3 optimization\n";
     std::cout << "  rqio build <script.rq> --debug      Compile with -O0 -g debug symbols\n";
     std::cout << "  rqio build <script.rq> --target <T> Target triple (linux-x64, win-x64, macos-arm64)\n";
     std::cout << "  rqio build <script.rq> --no-llvm    Compile via GCC fallback\n";
     std::cout << "  rqio fmt <script.rq>                Format source file in place\n";
+    std::cout << "  rqio lsp                            Start Language Server Protocol (VS Code IntelliSense)\n";
     std::cout << "  rqio debug <script.rq> [--port N]   Start DAP debug server (VS Code F5)\n";
     std::cout << "\n\033[1mPackage Manager:\033[0m\n";
     std::cout << "  rqio init [folder]                  Initialize project with rqio.json\n";
@@ -452,6 +456,9 @@ CliOptions parseArguments(int argc, char* argv[]) {
     } else if (first == "fmt" || first == "format") {
         options.mode = CliMode::Format;
         ++index;
+    } else if (first == "lsp") {
+        options.mode = CliMode::Lsp;
+        return options;
     } else if (first == "add") {
         options.mode = CliMode::PackageAdd;
         ++index;
@@ -516,6 +523,10 @@ CliOptions parseArguments(int argc, char* argv[]) {
         }
         if (arg == "--legacy") {
             options.legacyMode = true;
+            continue;
+        }
+        if (arg == "--watch" || arg == "-w") {
+            options.watchMode = true;
             continue;
         }
         if (arg == "--port" && i + 1 < argc) {
@@ -924,6 +935,10 @@ int main(int argc, char* argv[]) {
             Log::status("Formatted", cliOptions.inputPath.string());
             return 0;
         }
+        if (cliOptions.mode == CliMode::Lsp) {
+            LSPServer lsp;
+            return lsp.run();
+        }
 
         if (cliOptions.mode == CliMode::Build) {
             auto resolved = Compiler::resolveForExecution(cliOptions.inputPath);
@@ -987,12 +1002,23 @@ int main(int argc, char* argv[]) {
 #ifdef _WIN32
                 if (std::system("where gcc >nul 2>&1") == 0) cc = "gcc";
                 else if (std::system("where clang >nul 2>&1") == 0) cc = "clang";
-                else throw std::runtime_error("rqio build: no compiler found. Install gcc or clang.");
+                else if (std::system("where tcc >nul 2>&1") == 0) cc = "tcc";
 #else
                 if (std::system("which clang >/dev/null 2>&1") == 0) cc = "clang";
                 else if (std::system("which gcc >/dev/null 2>&1") == 0) cc = "gcc";
-                else throw std::runtime_error("rqio build: no compiler found. Install gcc or clang.");
+                else if (std::system("which tcc >/dev/null 2>&1") == 0) cc = "tcc";
 #endif
+            }
+
+            if (cc.empty()) {
+                Log::status("Compiling", cliOptions.inputPath.filename().string() + " (standalone bundle)");
+                const std::filesystem::path bundleDir = outBin.parent_path();
+                const std::string appName = outBin.stem().string();
+                const std::filesystem::path bundledBytecodePath = bundleDir / (appName + ".rqb");
+                BytecodePackage::writeToFile(program, bundledBytecodePath);
+                copyBinaryFile(exePath, outBin);
+                Log::status("Finished", outBin.string());
+                return 0;
             }
 
             std::string cSrc = CEmitter::emit(program);
@@ -1007,7 +1033,8 @@ int main(int argc, char* argv[]) {
             if (isTargetWindows) {
                 platformFlags = " -mconsole";
             }
-            std::string targetFlag = cliOptions.targetTriple.empty() ? "" : (" --target=" + cliOptions.targetTriple);
+            bool isTCC = (cc.find("tcc") != std::string::npos);
+            std::string targetFlag = (cliOptions.targetTriple.empty() || isTCC) ? "" : (" --target=" + cliOptions.targetTriple);
             std::string cmd = q(std::filesystem::path(cc))
                 + " " + optFlags + platformFlags + targetFlag
                 + " -lm "
@@ -1016,11 +1043,12 @@ int main(int argc, char* argv[]) {
 
             bool isLLVM = (cc.find("clang") != std::string::npos);
             std::string modeDesc = cliOptions.releaseMode ? "release" : cliOptions.debugBuild ? "debug" : "optimized";
-            if (!cliOptions.targetTriple.empty()) {
+            if (!cliOptions.targetTriple.empty() && !isTCC) {
                 modeDesc += " -> " + cliOptions.targetTriple;
             }
+            std::string backendName = isLLVM ? " via LLVM" : isTCC ? " via TinyCC" : " via GCC";
             Log::status("Compiling", cliOptions.inputPath.filename().string()
-                + " (" + modeDesc + (isLLVM ? " via LLVM" : " via GCC") + ")");
+                + " (" + modeDesc + backendName + ")");
 
             int ret = runCmd(cmd);
             std::filesystem::remove(cFile);
@@ -1058,45 +1086,75 @@ int main(int argc, char* argv[]) {
         }
 
         if (cliOptions.mode == CliMode::Run) {
-            auto resolved = Compiler::resolveForExecution(cliOptions.inputPath);
-            g_scriptArgs = cliOptions.scriptArgs;
+            auto runOnce = [&]() -> int {
+                auto resolved = Compiler::resolveForExecution(cliOptions.inputPath);
+                g_scriptArgs = cliOptions.scriptArgs;
 
-            if (!cliOptions.legacyMode &&
-                BytecodeCompiler::supports(
-                    *resolved.program,
-                    resolved.builtinNamespaceAliases,
-                    resolved.builtinSymbolAliases)) {
-                try {
-                    const auto program = BytecodeCompiler::compile(
+                if (!cliOptions.legacyMode &&
+                    BytecodeCompiler::supports(
                         *resolved.program,
                         resolved.builtinNamespaceAliases,
-                        resolved.builtinSymbolAliases);
-                    return runVmProgram(program);
-                } catch (const std::exception& vmErr) {
-
-                    Log::warn(std::string("VM: ") + vmErr.what() + " - falling back to interpreter");
+                        resolved.builtinSymbolAliases)) {
+                    try {
+                        const auto program = BytecodeCompiler::compile(
+                            *resolved.program,
+                            resolved.builtinNamespaceAliases,
+                            resolved.builtinSymbolAliases);
+                        return runVmProgram(program);
+                    } catch (const std::exception& vmErr) {
+                        Log::warn(std::string("VM: ") + vmErr.what() + " - falling back to interpreter");
+                    }
                 }
-            }
 
-            Interpreter interpreter(
-                projectConfig.projectRoot,
-                exePath,
-                resolved.builtinNamespaceAliases,
-                resolved.builtinSymbolAliases);
-            interpreter.setProcessArgs(cliOptions.scriptArgs);
+                Interpreter interpreter(
+                    projectConfig.projectRoot,
+                    exePath,
+                    resolved.builtinNamespaceAliases,
+                    resolved.builtinSymbolAliases);
+                interpreter.setProcessArgs(cliOptions.scriptArgs);
 
-            if (interpreter.supports(*resolved.program)) {
-                const std::filesystem::path previousPath = std::filesystem::current_path();
-                std::filesystem::current_path(projectConfig.projectRoot);
+                if (interpreter.supports(*resolved.program)) {
+                    const std::filesystem::path previousPath = std::filesystem::current_path();
+                    std::filesystem::current_path(projectConfig.projectRoot);
+                    try {
+                        const int code = interpreter.run(*resolved.program);
+                        std::filesystem::current_path(previousPath);
+                        return code;
+                    } catch (...) {
+                        std::filesystem::current_path(previousPath);
+                        throw;
+                    }
+                }
+                return 0;
+            };
+
+            if (cliOptions.watchMode) {
+                Log::status("Watching", cliOptions.inputPath.filename().string() + " (Hot Reload active)");
+                std::error_code ec;
+                auto lastTime = std::filesystem::last_write_time(cliOptions.inputPath, ec);
                 try {
-                    const int code = interpreter.run(*resolved.program);
-                    std::filesystem::current_path(previousPath);
-                    return code;
-                } catch (...) {
-                    std::filesystem::current_path(previousPath);
-                    throw;
+                    runOnce();
+                } catch (const std::exception& e) {
+                    Log::reportException(e, cliOptions.inputPath);
                 }
+
+                while (true) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                    auto curTime = std::filesystem::last_write_time(cliOptions.inputPath, ec);
+                    if (!ec && curTime != lastTime) {
+                        lastTime = curTime;
+                        std::cout << "\n\033[1;36m[rqio]\033[0m File changed. Reloading...\n";
+                        try {
+                            runOnce();
+                        } catch (const std::exception& e) {
+                            Log::reportException(e, cliOptions.inputPath);
+                        }
+                    }
+                }
+                return 0;
             }
+
+            return runOnce();
         }
 
         if (cliOptions.mode == CliMode::Debug) {
