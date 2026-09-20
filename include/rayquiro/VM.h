@@ -527,7 +527,23 @@ private:
             case OpCode::GetGlobal: {
                 const std::string name = std::get<std::string>(frame.function->constants.at(static_cast<std::size_t>(instruction.a)).data);
                 const auto found = globals_.find(name);
-                if (found == globals_.end()) throw std::runtime_error("Undefined global: " + name);
+                if (found == globals_.end()) {
+                    const size_t dot = name.find('.');
+                    if (dot != std::string::npos) {
+                        const std::string base = name.substr(0, dot);
+                        const std::string prop = name.substr(dot + 1);
+                        const auto baseFound = globals_.find(base);
+                        if (baseFound != globals_.end() && std::holds_alternative<VMValue::Object>(baseFound->second.data)) {
+                            const auto& obj = std::get<VMValue::Object>(baseFound->second.data);
+                            const auto it = obj.find(prop);
+                            if (it != obj.end()) {
+                                stack_.push_back(it->second);
+                                break;
+                            }
+                        }
+                    }
+                    throw std::runtime_error("Undefined global: " + name);
+                }
                 stack_.push_back(found->second);
                 break;
             }

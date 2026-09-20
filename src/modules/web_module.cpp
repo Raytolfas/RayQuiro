@@ -37,14 +37,63 @@
 #endif
 
 namespace {
-struct ScalarValue {
-    std::variant<std::monostate, double, std::string, bool> data;
+struct WebJsonValue {
+    enum Type { Null, Bool, Number, String, Array, Object } type = Null;
+    bool b = false;
+    double num = 0.0;
+    std::string str;
+    std::vector<WebJsonValue> arr;
+    std::unordered_map<std::string, WebJsonValue> obj;
 
-    ScalarValue() : data(std::monostate{}) {}
-    ScalarValue(double value) : data(value) {}
-    ScalarValue(std::string value) : data(std::move(value)) {}
-    ScalarValue(bool value) : data(value) {}
+    WebJsonValue() = default;
+    WebJsonValue(double n) : type(Number), num(n) {}
+    WebJsonValue(std::string s) : type(String), str(std::move(s)) {}
+    WebJsonValue(const char* s) : type(String), str(s ? s : "") {}
+    WebJsonValue(bool val) : type(Bool), b(val) {}
+
+    bool is_null() const { return type == Null; }
+    bool is_bool() const { return type == Bool; }
+    bool is_number() const { return type == Number; }
+    bool is_string() const { return type == String; }
+    bool is_array() const { return type == Array; }
+    bool is_object() const { return type == Object; }
+
+    std::string to_string() const {
+        if (type == String) return str;
+        if (type == Number) {
+            std::string s = std::to_string(num);
+            if (s.find('.') != std::string::npos) {
+                while (s.size() > 1 && s.back() == '0') s.pop_back();
+                if (!s.empty() && s.back() == '.') s.pop_back();
+            }
+            return s;
+        }
+        if (type == Bool) return b ? "true" : "false";
+        return "";
+    }
+
+    double to_number(double fallback = 0.0) const {
+        if (type == Number) return num;
+        if (type == Bool) return b ? 1.0 : 0.0;
+        if (type == String) {
+            try { return std::stod(str); } catch (...) { return fallback; }
+        }
+        return fallback;
+    }
+
+    int to_int(int fallback = 0) const {
+        return static_cast<int>(to_number(fallback));
+    }
+
+    bool to_bool(bool fallback = false) const {
+        if (type == Bool) return b;
+        if (type == Number) return num != 0.0;
+        if (type == String) return str == "true" || str == "1";
+        return fallback;
+    }
 };
+
+using ScalarValue = WebJsonValue;
 
 struct WebRoute {
     std::string route = "/";
@@ -80,25 +129,11 @@ std::string trim(const std::string& value) {
 }
 
 std::string to_string(const ScalarValue& value) {
-    if (std::holds_alternative<std::monostate>(value.data)) return "";
-    if (std::holds_alternative<std::string>(value.data)) return std::get<std::string>(value.data);
-    if (std::holds_alternative<bool>(value.data)) return std::get<bool>(value.data) ? "true" : "false";
-    std::ostringstream out;
-    out << std::get<double>(value.data);
-    return out.str();
+    return value.to_string();
 }
 
 double to_number(const ScalarValue& value) {
-    if (std::holds_alternative<double>(value.data)) return std::get<double>(value.data);
-    if (std::holds_alternative<bool>(value.data)) return std::get<bool>(value.data) ? 1.0 : 0.0;
-    if (std::holds_alternative<std::string>(value.data)) {
-        try {
-            return std::stod(std::get<std::string>(value.data));
-        } catch (...) {
-            return 0.0;
-        }
-    }
-    return 0.0;
+    return value.to_number();
 }
 
 std::string json_escape(const std::string& value) {
@@ -118,12 +153,35 @@ std::string json_escape(const std::string& value) {
 }
 
 std::string json_stringify(const ScalarValue& value) {
-    if (std::holds_alternative<std::monostate>(value.data)) return "null";
-    if (std::holds_alternative<std::string>(value.data)) return "\"" + json_escape(std::get<std::string>(value.data)) + "\"";
-    if (std::holds_alternative<bool>(value.data)) return std::get<bool>(value.data) ? "true" : "false";
-    std::ostringstream out;
-    out << std::get<double>(value.data);
-    return out.str();
+    if (value.type == ScalarValue::Null) return "null";
+    if (value.type == ScalarValue::String) return "\"" + json_escape(value.str) + "\"";
+    if (value.type == ScalarValue::Bool) return value.b ? "true" : "false";
+    if (value.type == ScalarValue::Number) {
+        std::ostringstream out;
+        out << value.num;
+        return out.str();
+    }
+    if (value.type == ScalarValue::Array) {
+        std::string res = "[";
+        for (size_t i = 0; i < value.arr.size(); ++i) {
+            if (i > 0) res += ",";
+            res += json_stringify(value.arr[i]);
+        }
+        res += "]";
+        return res;
+    }
+    if (value.type == ScalarValue::Object) {
+        std::string res = "{";
+        bool first = true;
+        for (const auto& kv : value.obj) {
+            if (!first) res += ",";
+            first = false;
+            res += "\"" + json_escape(kv.first) + "\":" + json_stringify(kv.second);
+        }
+        res += "}";
+        return res;
+    }
+    return "null";
 }
 
 void json_skip_ws(const std::string& text, size_t& pos) {
@@ -153,11 +211,71 @@ std::string json_parse_string(const std::string& text, size_t& pos) {
     throw std::runtime_error("Unterminated JSON string.");
 }
 
-ScalarValue json_parse_scalar(const std::string& text, size_t& pos) {
+ScalarValue json_parse_value(const std::string& text, size_t& pos);
+
+ScalarValue json_parse_object(const std::string& text, size_t& pos) {
+    ScalarValue val;
+    val.type = ScalarValue::Object;
+    ++pos;
+    json_skip_ws(text, pos);
+    if (pos < text.size() && text[pos] == '}') {
+        ++pos;
+        return val;
+    }
+    while (pos < text.size()) {
+        json_skip_ws(text, pos);
+        std::string key = json_parse_string(text, pos);
+        json_skip_ws(text, pos);
+        if (pos >= text.size() || text[pos] != ':') throw std::runtime_error("Expected ':' in JSON object.");
+        ++pos;
+        ScalarValue fieldVal = json_parse_value(text, pos);
+        val.obj[key] = fieldVal;
+        json_skip_ws(text, pos);
+        if (pos < text.size() && text[pos] == ',') {
+            ++pos;
+            continue;
+        }
+        if (pos < text.size() && text[pos] == '}') {
+            ++pos;
+            break;
+        }
+        throw std::runtime_error("Invalid JSON object syntax.");
+    }
+    return val;
+}
+
+ScalarValue json_parse_array(const std::string& text, size_t& pos) {
+    ScalarValue val;
+    val.type = ScalarValue::Array;
+    ++pos;
+    json_skip_ws(text, pos);
+    if (pos < text.size() && text[pos] == ']') {
+        ++pos;
+        return val;
+    }
+    while (pos < text.size()) {
+        val.arr.push_back(json_parse_value(text, pos));
+        json_skip_ws(text, pos);
+        if (pos < text.size() && text[pos] == ',') {
+            ++pos;
+            continue;
+        }
+        if (pos < text.size() && text[pos] == ']') {
+            ++pos;
+            break;
+        }
+        throw std::runtime_error("Invalid JSON array syntax.");
+    }
+    return val;
+}
+
+ScalarValue json_parse_value(const std::string& text, size_t& pos) {
     json_skip_ws(text, pos);
     if (pos >= text.size()) {
         throw std::runtime_error("Unexpected end of JSON.");
     }
+    if (text[pos] == '{') return json_parse_object(text, pos);
+    if (text[pos] == '[') return json_parse_array(text, pos);
     if (text[pos] == '"') {
         return ScalarValue(json_parse_string(text, pos));
     }
@@ -188,6 +306,10 @@ ScalarValue json_parse_scalar(const std::string& text, size_t& pos) {
     const double number = std::stod(text.substr(pos, end - pos));
     pos = end;
     return ScalarValue(number);
+}
+
+ScalarValue json_parse_scalar(const std::string& text, size_t& pos) {
+    return json_parse_value(text, pos);
 }
 
 std::vector<ScalarValue> parse_args(const char* jsonArgs) {

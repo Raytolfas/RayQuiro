@@ -20,6 +20,8 @@
 #include "CEmitter.h"
 #include "LLVMEmitter.h"
 #include "LLVMToolchain.h"
+#include "TCCToolchain.h"
+#include "Repl.h"
 #include "Log.h"
 
 #ifdef _WIN32
@@ -63,7 +65,8 @@ enum class CliMode {
     PackageList,
     SelfUpdate,
     Help,
-    Version
+    Version,
+    Repl
 };
 
 struct CliOptions {
@@ -83,6 +86,8 @@ struct CliOptions {
     bool releaseMode = false;
     bool debugBuild  = false;
     bool noLLVM      = false;
+    bool useTCC      = false;
+    bool useLLVM     = false;
     std::string targetTriple;
     int  dapPort = 4711;
     std::vector<std::string> scriptArgs;
@@ -101,7 +106,11 @@ void printHelp() {
     std::cout << "\033[1;36mRayQuiro\033[0m " << kRayQuiroVersion << " — modern, fast programming language\n";
     std::cout << "\n\033[1mUsage:\033[0m\n";
     std::cout << "  rqio run <script.rq> [--watch]      Run script (Bytecode VM default, --watch for Hot Reload)\n";
-    std::cout << "  rqio build <script.rq> [-o out]     Compile to standalone native binary via LLVM\n";
+    std::cout << "  rqio repl                           Start interactive REPL\n";
+    std::cout << "  rqio                                Start REPL (or run project if in rqio.json folder)\n";
+    std::cout << "  rqio build <script.rq> [-o out]     Compile to standalone native binary via TinyCC/LLVM\n";
+    std::cout << "  rqio build <script.rq> --tcc        Compile via TinyCC (fast autonomous build)\n";
+    std::cout << "  rqio build <script.rq> --llvm       Compile via LLVM Clang\n";
     std::cout << "  rqio build <script.rq> --release    Compile with -O3 optimization\n";
     std::cout << "  rqio build <script.rq> --debug      Compile with -O0 -g debug symbols\n";
     std::cout << "  rqio build <script.rq> --target <T> Target triple (linux-x64, win-x64, macos-arm64)\n";
@@ -234,12 +243,12 @@ void createStarterProject(const std::filesystem::path& requestedRoot) {
         ? std::string("rayquiro-app")
         : projectRoot.filename().string();
 
-    const std::filesystem::path projectFile = projectRoot / "rqproject.json";
+    const std::filesystem::path projectFile = projectRoot / "rqio.json";
     const std::filesystem::path mainFile = projectRoot / "main.rq";
     const std::filesystem::path gitignoreFile = projectRoot / ".gitignore";
 
     if (std::filesystem::exists(projectFile) || std::filesystem::exists(mainFile)) {
-        throw std::runtime_error("The target already contains rqproject.json or main.rq. Choose an empty folder.");
+        throw std::runtime_error("The target already contains rqio.json or main.rq. Choose an empty folder.");
     }
 
     std::filesystem::create_directories(projectRoot / ".rq_modules");
@@ -249,7 +258,7 @@ void createStarterProject(const std::filesystem::path& requestedRoot) {
         projectFile,
         "{\n"
         "  \"name\": \"" + jsonEscape(projectName) + "\",\n"
-        "  \"version\": \"0.2.0\",\n"
+        "  \"version\": \"0.2.1\",\n"
         "  \"entry\": \"main.rq\",\n"
         "  \"build_dir\": \"build\"\n"
         "}\n");
@@ -273,7 +282,7 @@ void createStarterProject(const std::filesystem::path& requestedRoot) {
         "web.open(\"section\", \"hero\");\n"
         "web.text(\"RayQuiro Starter\", \"eyebrow\");\n"
         "web.h1(\"Build apps, installers and websites with one language.\", \"title\");\n"
-        "web.p(\"This starter already uses rqproject.json, build/ and live web mode on port 5274.\", \"lead\");\n"
+        "web.p(\"This starter already uses rqio.json, build/ and live web mode on port 5274.\", \"lead\");\n"
         "web.button(\"Open RayQuiro GitHub\", \"primary\", \"https://github.com/\");\n"
         "web.close(\"section\");\n"
         "web.close(\"main\");\n"
@@ -299,8 +308,16 @@ ProjectConfig loadProjectConfig(const std::filesystem::path& startPath) {
     }
 
     while (!cursor.empty()) {
-        const std::filesystem::path configPath = cursor / "rqproject.json";
-        if (std::filesystem::exists(configPath) && std::filesystem::is_regular_file(configPath)) {
+        const std::filesystem::path rqioConfig = cursor / "rqio.json";
+        const std::filesystem::path legacyConfig = cursor / "rqproject.json";
+        std::filesystem::path configPath;
+        if (std::filesystem::exists(rqioConfig) && std::filesystem::is_regular_file(rqioConfig)) {
+            configPath = rqioConfig;
+        } else if (std::filesystem::exists(legacyConfig) && std::filesystem::is_regular_file(legacyConfig)) {
+            configPath = legacyConfig;
+        }
+
+        if (!configPath.empty()) {
             ProjectConfig config;
             config.found = true;
             config.projectRoot = cursor;
@@ -340,6 +357,10 @@ CliOptions parseArguments(int argc, char* argv[]) {
     }
     if (first == "version" || first == "--version" || first == "-v") {
         options.mode = CliMode::Version;
+        return options;
+    }
+    if (first == "repl") {
+        options.mode = CliMode::Repl;
         return options;
     }
     if (first == "init") {
@@ -543,6 +564,14 @@ CliOptions parseArguments(int argc, char* argv[]) {
         }
         if (arg == "--no-llvm") {
             options.noLLVM = true;
+            continue;
+        }
+        if (arg == "--tcc") {
+            options.useTCC = true;
+            continue;
+        }
+        if (arg == "--llvm") {
+            options.useLLVM = true;
             continue;
         }
         if (arg == "--target" && i + 1 < argc) {
@@ -816,12 +845,29 @@ int main(int argc, char* argv[]) {
         ProjectConfig projectConfig = loadProjectConfig(
             cliOptions.inputPath.empty() ? std::filesystem::current_path() : cliOptions.inputPath);
 
+        if (cliOptions.mode == CliMode::Repl) {
+            Interpreter interpreter(
+                projectConfig.projectRoot, exePath, {}, {});
+            return Repl::run(interpreter);
+        }
+
+        if (argc < 2 && cliOptions.inputPath.empty()) {
+            if (projectConfig.found && std::filesystem::exists(projectConfig.entryPath) && std::filesystem::is_regular_file(projectConfig.entryPath)) {
+                cliOptions.mode = CliMode::Run;
+                cliOptions.inputPath = std::filesystem::absolute(projectConfig.entryPath);
+            } else {
+                Interpreter interpreter(
+                    projectConfig.projectRoot, exePath, {}, {});
+                return Repl::run(interpreter);
+            }
+        }
+
         if ((cliOptions.mode == CliMode::Run || cliOptions.mode == CliMode::Pack || cliOptions.mode == CliMode::Bundle || cliOptions.mode == CliMode::Build || cliOptions.mode == CliMode::Format) &&
             cliOptions.inputPath.empty()) {
             if (std::filesystem::exists(projectConfig.entryPath) && std::filesystem::is_regular_file(projectConfig.entryPath)) {
                 cliOptions.inputPath = std::filesystem::absolute(projectConfig.entryPath);
             } else {
-                throw std::runtime_error("No input script was provided and rqproject.json entry was not found.");
+                throw std::runtime_error("No input script was provided and rqio.json entry was not found.");
             }
         }
 
@@ -829,10 +875,6 @@ int main(int argc, char* argv[]) {
             projectConfig = loadProjectConfig(cliOptions.inputPath);
         }
 
-        if (argc < 2 && cliOptions.inputPath.empty() && !std::filesystem::exists(projectConfig.entryPath)) {
-            printHelp();
-            return 0;
-        }
         if (cliOptions.mode == CliMode::Help) {
             printHelp();
             return 0;
@@ -995,8 +1037,23 @@ int main(int argc, char* argv[]) {
 #endif
 
             std::string cc;
-            if (!cliOptions.noLLVM) {
+            if (cliOptions.useTCC) {
+                cc = TCCToolchain::resolveTcc(exePath);
+                if (cc.empty()) cc = "tcc";
+            } else if (cliOptions.useLLVM) {
                 cc = LLVMToolchain::resolveClang();
+            } else if (cliOptions.releaseMode) {
+                cc = LLVMToolchain::resolveClang();
+                if (cc.empty()) cc = TCCToolchain::resolveTcc(exePath);
+            } else {
+                cc = TCCToolchain::resolveTcc(exePath);
+                if (cc.empty() && !cliOptions.noLLVM) {
+                    cc = LLVMToolchain::resolveClang();
+                }
+            }
+
+            if (cc.empty()) {
+                cc = TCCToolchain::resolveTcc(exePath);
             }
             if (cc.empty()) {
 #ifdef _WIN32
@@ -1035,9 +1092,10 @@ int main(int argc, char* argv[]) {
             }
             bool isTCC = (cc.find("tcc") != std::string::npos);
             std::string targetFlag = (cliOptions.targetTriple.empty() || isTCC) ? "" : (" --target=" + cliOptions.targetTriple);
+            std::string mathFlag = isTargetWindows ? "" : " -lm ";
             std::string cmd = q(std::filesystem::path(cc))
                 + " " + optFlags + platformFlags + targetFlag
-                + " -lm "
+                + mathFlag
                 + " " + q(cFile)
                 + " -o " + q(outBin);
 

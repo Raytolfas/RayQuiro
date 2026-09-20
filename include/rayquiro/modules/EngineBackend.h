@@ -77,6 +77,11 @@ struct RTBackendState {
     RTMaterialState materialState = {};
     RTLightState lightState = {};
     RTPostFXState postfxState = {};
+    void* hostParentWindow = nullptr;
+    int hostX = 0;
+    int hostY = 0;
+    int hostW = 0;
+    int hostH = 0;
 };
 
 inline RTBackendKind rt_parse_backend_kind(const std::string& name) {

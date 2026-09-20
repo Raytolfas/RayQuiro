@@ -12,16 +12,52 @@
 #include <cstring>
 #include <stdexcept>
 #include <string>
-#include <variant>
+#include <unordered_map>
 #include <vector>
 
 namespace {
-struct ScalarValue {
-    std::variant<std::monostate, double, std::string, bool> data;
-    ScalarValue() : data(std::monostate{}) {}
-    ScalarValue(double value) : data(value) {}
-    ScalarValue(std::string value) : data(std::move(value)) {}
-    ScalarValue(bool value) : data(value) {}
+
+struct AppJsonValue {
+    enum Type { Null, Bool, Number, String, Array, Object } type = Null;
+    bool b = false;
+    double num = 0.0;
+    std::string str;
+    std::vector<AppJsonValue> arr;
+    std::unordered_map<std::string, AppJsonValue> obj;
+
+    std::string to_string() const {
+        if (type == String) return str;
+        if (type == Number) {
+            std::string s = std::to_string(num);
+            if (s.find('.') != std::string::npos) {
+                while (s.size() > 1 && s.back() == '0') s.pop_back();
+                if (!s.empty() && s.back() == '.') s.pop_back();
+            }
+            return s;
+        }
+        if (type == Bool) return b ? "true" : "false";
+        return "";
+    }
+
+    double to_number(double fallback = 0.0) const {
+        if (type == Number) return num;
+        if (type == Bool) return b ? 1.0 : 0.0;
+        if (type == String) {
+            try { return std::stod(str); } catch (...) { return fallback; }
+        }
+        return fallback;
+    }
+
+    int to_int(int fallback = 0) const {
+        return static_cast<int>(to_number(fallback));
+    }
+
+    bool to_bool(bool fallback = false) const {
+        if (type == Bool) return b;
+        if (type == Number) return num != 0.0;
+        if (type == String) return str == "true" || str == "1";
+        return fallback;
+    }
 };
 
 #ifdef _WIN32
@@ -62,13 +98,95 @@ std::string json_parse_string(const std::string& text, size_t& pos) {
     throw std::runtime_error("Unterminated JSON string.");
 }
 
-ScalarValue json_parse_scalar(const std::string& text, size_t& pos) {
+AppJsonValue json_parse_value(const std::string& text, size_t& pos);
+
+AppJsonValue json_parse_object(const std::string& text, size_t& pos) {
+    AppJsonValue val;
+    val.type = AppJsonValue::Object;
+    ++pos;
+    json_skip_ws(text, pos);
+    if (pos < text.size() && text[pos] == '}') {
+        ++pos;
+        return val;
+    }
+    while (pos < text.size()) {
+        json_skip_ws(text, pos);
+        std::string key = json_parse_string(text, pos);
+        json_skip_ws(text, pos);
+        if (pos >= text.size() || text[pos] != ':') throw std::runtime_error("Expected ':' in JSON object.");
+        ++pos;
+        AppJsonValue fieldVal = json_parse_value(text, pos);
+        val.obj[key] = fieldVal;
+        json_skip_ws(text, pos);
+        if (pos < text.size() && text[pos] == ',') {
+            ++pos;
+            continue;
+        }
+        if (pos < text.size() && text[pos] == '}') {
+            ++pos;
+            break;
+        }
+        throw std::runtime_error("Invalid JSON object syntax.");
+    }
+    return val;
+}
+
+AppJsonValue json_parse_array(const std::string& text, size_t& pos) {
+    AppJsonValue val;
+    val.type = AppJsonValue::Array;
+    ++pos;
+    json_skip_ws(text, pos);
+    if (pos < text.size() && text[pos] == ']') {
+        ++pos;
+        return val;
+    }
+    while (pos < text.size()) {
+        val.arr.push_back(json_parse_value(text, pos));
+        json_skip_ws(text, pos);
+        if (pos < text.size() && text[pos] == ',') {
+            ++pos;
+            continue;
+        }
+        if (pos < text.size() && text[pos] == ']') {
+            ++pos;
+            break;
+        }
+        throw std::runtime_error("Invalid JSON array syntax.");
+    }
+    return val;
+}
+
+AppJsonValue json_parse_value(const std::string& text, size_t& pos) {
     json_skip_ws(text, pos);
     if (pos >= text.size()) throw std::runtime_error("Unexpected end of JSON.");
-    if (text[pos] == '"') return ScalarValue(json_parse_string(text, pos));
-    if (text.compare(pos, 4, "true") == 0) { pos += 4; return ScalarValue(true); }
-    if (text.compare(pos, 5, "false") == 0) { pos += 5; return ScalarValue(false); }
-    if (text.compare(pos, 4, "null") == 0) { pos += 4; return ScalarValue(); }
+    if (text[pos] == '"') {
+        AppJsonValue val;
+        val.type = AppJsonValue::String;
+        val.str = json_parse_string(text, pos);
+        return val;
+    }
+    if (text[pos] == '{') return json_parse_object(text, pos);
+    if (text[pos] == '[') return json_parse_array(text, pos);
+    if (text.compare(pos, 4, "true") == 0) {
+        pos += 4;
+        AppJsonValue val;
+        val.type = AppJsonValue::Bool;
+        val.b = true;
+        return val;
+    }
+    if (text.compare(pos, 5, "false") == 0) {
+        pos += 5;
+        AppJsonValue val;
+        val.type = AppJsonValue::Bool;
+        val.b = false;
+        return val;
+    }
+    if (text.compare(pos, 4, "null") == 0) {
+        pos += 4;
+        AppJsonValue val;
+        val.type = AppJsonValue::Null;
+        return val;
+    }
     size_t end = pos;
     while (end < text.size()) {
         const char ch = text[end];
@@ -78,58 +196,35 @@ ScalarValue json_parse_scalar(const std::string& text, size_t& pos) {
     if (end == pos) throw std::runtime_error("Invalid JSON scalar.");
     const double number = std::stod(text.substr(pos, end - pos));
     pos = end;
-    return ScalarValue(number);
+    AppJsonValue val;
+    val.type = AppJsonValue::Number;
+    val.num = number;
+    return val;
 }
 
-std::vector<ScalarValue> parse_args(const char* jsonArgs) {
+std::vector<AppJsonValue> parse_args(const char* jsonArgs) {
     const std::string text = jsonArgs ? jsonArgs : "[]";
     size_t pos = 0;
     json_skip_ws(text, pos);
     if (pos >= text.size() || text[pos] != '[') throw std::runtime_error("Native module args must be a JSON array.");
-    ++pos;
-    std::vector<ScalarValue> result;
-    json_skip_ws(text, pos);
-    if (pos < text.size() && text[pos] == ']') { ++pos; return result; }
-    while (pos < text.size()) {
-        result.push_back(json_parse_scalar(text, pos));
-        json_skip_ws(text, pos);
-        if (pos < text.size() && text[pos] == ',') { ++pos; continue; }
-        if (pos < text.size() && text[pos] == ']') { ++pos; break; }
-        throw std::runtime_error("Invalid JSON array payload.");
-    }
-    return result;
+    AppJsonValue arr = json_parse_array(text, pos);
+    return arr.arr;
 }
 
-std::string to_string(const ScalarValue& value) {
-    if (std::holds_alternative<std::monostate>(value.data)) return "";
-    if (std::holds_alternative<std::string>(value.data)) return std::get<std::string>(value.data);
-    if (std::holds_alternative<bool>(value.data)) return std::get<bool>(value.data) ? "true" : "false";
-    return std::to_string(std::get<double>(value.data));
-}
-
-int to_int(const ScalarValue& value, int fallback = 0) {
-    if (std::holds_alternative<double>(value.data)) return static_cast<int>(std::get<double>(value.data));
-    if (std::holds_alternative<bool>(value.data)) return std::get<bool>(value.data) ? 1 : 0;
-    if (std::holds_alternative<std::string>(value.data)) {
-        try { return std::stoi(std::get<std::string>(value.data)); } catch (...) { return fallback; }
-    }
-    return fallback;
-}
-
-std::string dispatch(const std::string& functionName, const std::vector<ScalarValue>& args) {
+std::string dispatch(const std::string& functionName, const std::vector<AppJsonValue>& args) {
 #ifdef _WIN32
     if (functionName == "init") {
-        runtime().init(args.size() > 0 ? to_string(args[0]) : "RayQuiro", args.size() > 1 ? to_int(args[1], 920) : 920, args.size() > 2 ? to_int(args[2], 620) : 620);
+        runtime().init(args.size() > 0 ? args[0].to_string() : "RayQuiro", args.size() > 1 ? args[1].to_int(920) : 920, args.size() > 2 ? args[2].to_int(620) : 620);
         return "null";
     }
-    if (functionName == "style") { if (!args.empty()) runtime().style(to_string(args[0])); return "null"; }
-    if (functionName == "hero") { runtime().hero(args.size() > 0 ? to_string(args[0]) : "RayQuiro", args.size() > 1 ? to_string(args[1]) : ""); return "null"; }
-    if (functionName == "status") { runtime().status(args.size() > 0 ? to_string(args[0]) : "", args.size() > 1 ? to_string(args[1]) : ""); return "null"; }
-    if (functionName == "info") { runtime().info(args.size() > 0 ? to_string(args[0]) : "", args.size() > 1 ? to_string(args[1]) : ""); return "null"; }
-    if (functionName == "text") { runtime().text(args.size() > 0 ? to_string(args[0]) : "", args.size() > 1 ? to_string(args[1]) : "body"); return "null"; }
+    if (functionName == "style") { if (!args.empty()) runtime().style(args[0].to_string()); return "null"; }
+    if (functionName == "hero") { runtime().hero(args.size() > 0 ? args[0].to_string() : "RayQuiro", args.size() > 1 ? args[1].to_string() : ""); return "null"; }
+    if (functionName == "status") { runtime().status(args.size() > 0 ? args[0].to_string() : "", args.size() > 1 ? args[1].to_string() : ""); return "null"; }
+    if (functionName == "info") { runtime().info(args.size() > 0 ? args[0].to_string() : "", args.size() > 1 ? args[1].to_string() : ""); return "null"; }
+    if (functionName == "text") { runtime().text(args.size() > 0 ? args[0].to_string() : "", args.size() > 1 ? args[1].to_string() : "body"); return "null"; }
     if (functionName == "button" || functionName == "action") {
         if (args.size() < 2) return "null";
-        runtime().action(to_string(args[0]), to_string(args[1]), args.size() > 2 ? to_string(args[2]) : "primary");
+        runtime().action(args[0].to_string(), args[1].to_string(), args.size() > 2 ? args[2].to_string() : "primary");
         return "null";
     }
     if (functionName == "run") {
@@ -138,11 +233,12 @@ std::string dispatch(const std::string& functionName, const std::vector<ScalarVa
 #endif
     throw std::runtime_error("rayquiro.ui does not export ui." + functionName);
 }
+
 }
 
 int rqm_builtin_ui_invoke(const char* function_name, const char* json_args, char** json_result, char** error_message) {
     try {
-        const std::vector<ScalarValue> args = parse_args(json_args);
+        const std::vector<AppJsonValue> args = parse_args(json_args);
         const std::string result = dispatch(function_name == nullptr ? "" : std::string(function_name), args);
         if (json_result != nullptr) *json_result = duplicate_string(result);
         if (error_message != nullptr) *error_message = nullptr;
@@ -153,4 +249,3 @@ int rqm_builtin_ui_invoke(const char* function_name, const char* json_args, char
         return 1;
     }
 }
-

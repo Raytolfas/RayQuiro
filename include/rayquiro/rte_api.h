@@ -42,6 +42,22 @@ inline void rt_init(int width, int height, const char* title) {
     default:
 #if RAYQUIRO_HAS_RAYLIB
         raylib_backend::init(width, height, title);
+#ifdef _WIN32
+        if (rte::backendState.hostParentWindow != nullptr) {
+            HWND childHwnd = reinterpret_cast<HWND>(GetWindowHandle());
+            if (childHwnd != nullptr) {
+                LONG_PTR style = GetWindowLongPtrA(childHwnd, GWL_STYLE);
+                style &= ~(WS_POPUP | WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU);
+                style |= (WS_CHILD | WS_VISIBLE);
+                SetWindowLongPtrA(childHwnd, GWL_STYLE, style);
+                SetParent(childHwnd, reinterpret_cast<HWND>(rte::backendState.hostParentWindow));
+                SetWindowPos(childHwnd, nullptr, rte::backendState.hostX, rte::backendState.hostY,
+                             rte::backendState.hostW > 0 ? rte::backendState.hostW : width,
+                             rte::backendState.hostH > 0 ? rte::backendState.hostH : height,
+                             SWP_NOZORDER | SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+            }
+        }
+#endif
         return;
 #else
         (void)width;
@@ -53,33 +69,53 @@ inline void rt_init(int width, int height, const char* title) {
 }
 
 inline void rt_attach_host_window(void* parent_window, int x, int y, int width, int height, const char* title) {
+    rte::backendState.hostParentWindow = parent_window;
+    rte::backendState.hostX = x;
+    rte::backendState.hostY = y;
+    rte::backendState.hostW = width;
+    rte::backendState.hostH = height;
     switch (rte::backendState.requestedKind) {
     case RTBackendKind::Vulkan:
         vulkan_backend::attach_host_window(parent_window, x, y, width, height, title);
         return;
     case RTBackendKind::Raylib:
     default:
-        (void)parent_window;
-        (void)x;
-        (void)y;
-        (void)width;
-        (void)height;
-        (void)title;
+#if RAYQUIRO_HAS_RAYLIB && defined(_WIN32)
+        if (rte::backendState.windowReady && parent_window != nullptr) {
+            HWND childHwnd = reinterpret_cast<HWND>(GetWindowHandle());
+            if (childHwnd != nullptr) {
+                LONG_PTR style = GetWindowLongPtrA(childHwnd, GWL_STYLE);
+                style &= ~(WS_POPUP | WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU);
+                style |= (WS_CHILD | WS_VISIBLE);
+                SetWindowLongPtrA(childHwnd, GWL_STYLE, style);
+                SetParent(childHwnd, reinterpret_cast<HWND>(parent_window));
+                SetWindowPos(childHwnd, nullptr, x, y, width, height, SWP_NOZORDER | SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+            }
+        }
+#endif
         return;
     }
 }
 
 inline void rt_resize_host_window(int x, int y, int width, int height) {
+    rte::backendState.hostX = x;
+    rte::backendState.hostY = y;
+    rte::backendState.hostW = width;
+    rte::backendState.hostH = height;
     switch (rte::backendState.activeKind) {
     case RTBackendKind::Vulkan:
         vulkan_backend::resize_host_window(x, y, width, height);
         return;
     case RTBackendKind::Raylib:
     default:
-        (void)x;
-        (void)y;
-        (void)width;
-        (void)height;
+#if RAYQUIRO_HAS_RAYLIB && defined(_WIN32)
+        if (rte::backendState.hostParentWindow != nullptr && rte::backendState.windowReady) {
+            HWND childHwnd = reinterpret_cast<HWND>(GetWindowHandle());
+            if (childHwnd != nullptr) {
+                SetWindowPos(childHwnd, nullptr, x, y, width, height, SWP_NOZORDER);
+            }
+        }
+#endif
         return;
     }
 }

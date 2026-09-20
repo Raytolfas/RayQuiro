@@ -418,6 +418,10 @@ private:
             moduleName == "rayquiro.env" ||
             moduleName == "rayquiro.process" ||
             moduleName == "rayquiro.crypto" ||
+            moduleName == "rayquiro.random" ||
+            moduleName == "rayquiro.math" ||
+            moduleName == "rayquiro.datetime" ||
+            moduleName == "rayquiro.path" ||
             moduleName == "rayquiro.regex";
     }
 
@@ -439,6 +443,10 @@ private:
         if (moduleName == "rayquiro.env") return "env";
         if (moduleName == "rayquiro.process") return "process";
         if (moduleName == "rayquiro.crypto") return "crypto";
+        if (moduleName == "rayquiro.random" || moduleName == "random") return "random";
+        if (moduleName == "rayquiro.math" || moduleName == "math") return "math";
+        if (moduleName == "rayquiro.datetime" || moduleName == "datetime") return "datetime";
+        if (moduleName == "rayquiro.path" || moduleName == "path") return "path";
         if (moduleName == "rayquiro.regex") return "regex";
         if (isNativeRuntimeModule(moduleName)) {
             return moduleName.substr(std::string("rayquiro.").size());

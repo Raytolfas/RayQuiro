@@ -96,7 +96,17 @@ private:
         for (const auto& statement : functionStmt.body->statements) {
             compileStmt(statement.get(), function, scope, false);
         }
-        emit(function, OpCode::Null);
+        if (scope.locals.size() > functionStmt.params.size()) {
+            int count = 0;
+            for (const auto& pair : scope.locals) {
+                emit(function, OpCode::Constant, addConstant(function, VMValue(pair.first)));
+                emit(function, OpCode::GetLocal, pair.second);
+                count++;
+            }
+            emit(function, OpCode::BuildObject, count);
+        } else {
+            emit(function, OpCode::Null);
+        }
         emit(function, OpCode::Return);
         function.localCount = scope.nextSlot;
         return function;
@@ -106,13 +116,38 @@ private:
         if (!stmt) return true;
         if (dynamic_cast<ImportStmt*>(stmt) != nullptr) return false;
         if (dynamic_cast<FromImportStmt*>(stmt) != nullptr) return false;
-
+        if (auto vs = dynamic_cast<VarStmt*>(stmt)) return supportsExpr(vs->initializer.get());
+        if (auto es = dynamic_cast<ExprStmt*>(stmt)) return supportsExpr(es->expr.get());
+        if (auto bs = dynamic_cast<BlockStmt*>(stmt)) {
+            for (const auto& s : bs->statements) if (!supportsStmt(s.get())) return false;
+        }
+        if (auto ws = dynamic_cast<WhileStmt*>(stmt)) return supportsExpr(ws->condition.get()) && supportsStmt(ws->body.get());
+        if (auto is = dynamic_cast<IfStmt*>(stmt)) return supportsExpr(is->condition.get()) && supportsStmt(is->thenBranch.get()) && supportsStmt(is->elseBranch.get());
+        if (auto fs = dynamic_cast<FunctionStmt*>(stmt)) return supportsStmt(fs->body.get());
         return true;
     }
 
     bool supportsExpr(Expr* expr) const {
         if (!expr) return true;
-
+        if (auto call = dynamic_cast<CallExpr*>(expr)) {
+            if (call->callee.rfind("app.", 0) == 0 ||
+                call->callee.rfind("engine.", 0) == 0 ||
+                call->callee.rfind("ui.", 0) == 0 ||
+                call->callee.rfind("web.", 0) == 0) {
+                return false;
+            }
+            for (const auto& a : call->args) if (!supportsExpr(a.get())) return false;
+        }
+        if (auto be = dynamic_cast<BinaryExpr*>(expr)) return supportsExpr(be->left.get()) && supportsExpr(be->right.get());
+        if (auto ue = dynamic_cast<UnaryExpr*>(expr)) return supportsExpr(ue->right.get());
+        if (auto ae = dynamic_cast<AssignExpr*>(expr)) return supportsExpr(ae->value.get());
+        if (auto ie = dynamic_cast<IndexExpr*>(expr)) return supportsExpr(ie->target.get()) && supportsExpr(ie->index.get());
+        if (auto oe = dynamic_cast<ObjectExpr*>(expr)) {
+            for (const auto& f : oe->fields) if (!supportsExpr(f.second.get())) return false;
+        }
+        if (auto ar = dynamic_cast<ArrayExpr*>(expr)) {
+            for (const auto& e : ar->elements) if (!supportsExpr(e.get())) return false;
+        }
         return true;
     }
 
@@ -491,6 +526,17 @@ private:
         }
 
         if (auto identifier = dynamic_cast<IdentifierExpr*>(expr)) {
+            const size_t dot = identifier->name.find('.');
+            if (dot != std::string::npos) {
+                const std::string baseName = identifier->name.substr(0, dot);
+                const std::string propName = identifier->name.substr(dot + 1);
+                if (const auto local = localSlot(scope, baseName)) {
+                    emit(function, OpCode::GetLocal, *local);
+                    emit(function, OpCode::Constant, addConstant(function, VMValue(propName)));
+                    emit(function, OpCode::GetIndex);
+                    return;
+                }
+            }
             if (const auto local = localSlot(scope, identifier->name)) {
                 emit(function, OpCode::GetLocal, *local);
             } else {

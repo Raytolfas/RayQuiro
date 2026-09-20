@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cctype>
@@ -74,14 +75,7 @@ inline int closesocket(SOCKET socket) { return ::close(socket); }
 class Interpreter {
 public:
 
-    struct LambdaValue {
-        std::vector<std::string> paramNames;
-        std::vector<Expr*>       paramDefaults;
-        bool hasVariadic = false;
-        BlockStmt* body;
-        std::shared_ptr<void> closure;
-        bool isAsync = false;
-    };
+    struct LambdaValue;
 
     struct Value {
         using Arr = std::shared_ptr<std::vector<Value>>;
@@ -111,6 +105,33 @@ public:
         Fn  as_lambda() const { return std::get<Fn>(data); }
     };
 
+    struct LambdaValue {
+        std::vector<std::string> paramNames;
+        std::vector<Expr*>       paramDefaults;
+        bool hasVariadic = false;
+        BlockStmt* body = nullptr;
+        std::shared_ptr<void> closure = nullptr;
+        bool isAsync = false;
+        std::function<Value(const std::vector<Value>&)> nativeFn = nullptr;
+    };
+
+    struct HttpServerState {
+        int port = 8080;
+        std::atomic<bool> running{false};
+        std::unordered_map<std::string, Value> routes;
+        std::unordered_map<std::string, std::string> staticDirs;
+        SOCKET serverSocket = INVALID_SOCKET;
+        std::thread worker;
+    };
+    std::vector<std::shared_ptr<HttpServerState>> httpServers_;
+
+    bool hasRunningHttpServer() const {
+        for (const auto& s : httpServers_) {
+            if (s->running) return true;
+        }
+        return false;
+    }
+
     Interpreter(
         std::filesystem::path projectRoot,
         std::filesystem::path executablePath,
@@ -121,6 +142,12 @@ public:
           executablePath_(std::move(executablePath)),
           builtinNamespaceAliases_(std::move(builtinNamespaceAliases)),
           builtinSymbolAliases_(std::move(builtinSymbolAliases)) {}
+
+    static Value makeNativeFn(std::function<Value(const std::vector<Value>&)> fn) {
+        auto lv = std::make_shared<LambdaValue>();
+        lv->nativeFn = std::move(fn);
+        return Value(Value::Fn(lv));
+    }
 
     void setProcessArgs(std::vector<std::string> args) {
         processArgs_ = std::move(args);
@@ -157,7 +184,41 @@ public:
             execute(statement.get(), globals_);
         }
 
+        while (hasRunningHttpServer()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+
         return 0;
+    }
+
+    void initGlobals() {
+        if (!globals_) {
+            globals_ = std::make_shared<Environment>();
+            globals_->define("pi", Value(3.14159265358979323846), true);
+        }
+    }
+
+    std::optional<Value> executeReplStatement(Stmt* stmt) {
+        initGlobals();
+        if (!stmt) return std::nullopt;
+        if (auto functionStmt = dynamic_cast<FunctionStmt*>(stmt)) {
+            functions_[functionStmt->name] = functionStmt;
+            return std::nullopt;
+        }
+        if (auto exprStmt = dynamic_cast<ExprStmt*>(stmt)) {
+            return evaluate(exprStmt->expr.get(), globals_);
+        }
+        execute(stmt, globals_);
+        return std::nullopt;
+    }
+
+    static std::string formatReplValue(const Value& value) {
+        if (is_string(value)) return "\"" + std::get<std::string>(value.data) + "\"";
+        return to_string(value);
+    }
+
+    static bool isNull(const Value& value) {
+        return std::holds_alternative<std::monostate>(value.data);
     }
 
 private:
@@ -181,6 +242,27 @@ private:
             if (found != values.end()) {
                 return found->second.value;
             }
+            const size_t dot = name.find('.');
+            if (dot != std::string::npos) {
+                const std::string baseName = name.substr(0, dot);
+                const auto baseFound = values.find(baseName);
+                if (baseFound != values.end()) {
+                    Value cur = baseFound->second.value;
+                    std::string rem = name.substr(dot + 1);
+                    while (!rem.empty() && is_object(cur)) {
+                        size_t nextDot = rem.find('.');
+                        std::string seg = (nextDot == std::string::npos) ? rem : rem.substr(0, nextDot);
+                        rem = (nextDot == std::string::npos) ? "" : rem.substr(nextDot + 1);
+                        auto it = cur.as_object()->find(seg);
+                        if (it == cur.as_object()->end()) {
+                            cur = Value();
+                            break;
+                        }
+                        cur = it->second;
+                    }
+                    if (!is_null(cur)) return cur;
+                }
+            }
             if (parent) {
                 return parent->get(name);
             }
@@ -195,6 +277,27 @@ private:
                 }
                 found->second.value = value;
                 return;
+            }
+            const size_t dot = name.find('.');
+            if (dot != std::string::npos) {
+                const std::string baseName = name.substr(0, dot);
+                const auto baseFound = values.find(baseName);
+                if (baseFound != values.end() && is_object(baseFound->second.value)) {
+                    Value cur = baseFound->second.value;
+                    std::string rem = name.substr(dot + 1);
+                    while (is_object(cur)) {
+                        size_t nextDot = rem.find('.');
+                        if (nextDot == std::string::npos) {
+                            (*cur.as_object())[rem] = value;
+                            return;
+                        }
+                        std::string seg = rem.substr(0, nextDot);
+                        rem = rem.substr(nextDot + 1);
+                        auto it = cur.as_object()->find(seg);
+                        if (it == cur.as_object()->end() || !is_object(it->second)) break;
+                        cur = it->second;
+                    }
+                }
             }
             if (parent) {
                 parent->assign(name, value);
@@ -690,7 +793,7 @@ private:
             for (const auto& arg : call->args) {
                 args.push_back(evaluate(arg.get(), env));
             }
-            return callFunction(call->callee, args);
+            return callFunction(call->callee, args, env);
         }
 
         if (auto arrayExpr = dynamic_cast<ArrayExpr*>(expr)) {
@@ -1120,6 +1223,9 @@ private:
             throw std::runtime_error("Value is not callable");
         }
         auto lv = callee.as_lambda();
+        if (lv->nativeFn) {
+            return lv->nativeFn(args);
+        }
         auto closureEnv = std::static_pointer_cast<Environment>(lv->closure);
 
         auto bindParams = [&](std::shared_ptr<Environment> frame) {
@@ -1210,21 +1316,81 @@ private:
         try { globals_->assign(name, val); } catch (...) { globals_->define(name, val, false); }
     }
 
-    Value callFunction(const std::string& callee, const std::vector<Value>& args) {
+    Value callFunction(const std::string& callee, const std::vector<Value>& args, const std::shared_ptr<Environment>& callEnv = nullptr) {
         const std::string builtin = canonicalizeBuiltinName(callee);
+        if (const auto builtinResult = callBuiltin(builtin, args, callEnv ? callEnv : globals_)) {
+            return *builtinResult;
+        }
         if (const auto nativeResult = tryNativeModuleCall(builtin, args)) {
             return *nativeResult;
         }
-        if (const auto builtinResult = callBuiltin(builtin, args)) {
-            return *builtinResult;
+
+        const size_t dot = callee.find('.');
+        if (dot != std::string::npos) {
+            const std::string base = callee.substr(0, dot);
+            const std::string method = callee.substr(dot + 1);
+            try {
+                Value obj = (callEnv ? callEnv : globals_)->get(base);
+                if (is_object(obj)) {
+                    auto it = obj.as_object()->find(method);
+                    if (it != obj.as_object()->end() && is_lambda(it->second)) {
+                        return callLambda(it->second, args, callEnv ? callEnv : globals_);
+                    }
+                    auto tIt = obj.as_object()->find("__type__");
+                    if (tIt != obj.as_object()->end() && to_string(tIt->second) == "Window") {
+                        auto idIt = obj.as_object()->find("id");
+                        double winId = idIt != obj.as_object()->end() ? to_number(idIt->second) : 0.0;
+                        if (method == "isOpen" || method == "is_open") {
+                            auto res = tryNativeModuleCall("app.window_is_open", {Value(winId)});
+                            return res ? *res : Value(false);
+                        }
+                        if (method == "pollEvents" || method == "poll_events") {
+                            tryNativeModuleCall("app.window_poll_events", {Value(winId)});
+                            return Value();
+                        }
+                        if (method == "setTitle" || method == "set_title") {
+                            if (!args.empty()) tryNativeModuleCall("app.window_set_title", {Value(winId), args[0]});
+                            return Value();
+                        }
+                        if (method == "setSize" || method == "set_size") {
+                            if (args.size() >= 2) tryNativeModuleCall("app.window_set_size", {Value(winId), args[0], args[1]});
+                            return Value();
+                        }
+                        if (method == "close") {
+                            tryNativeModuleCall("app.window_close", {Value(winId)});
+                            return Value();
+                        }
+                    }
+                }
+                if (is_array(obj)) {
+                    if (method == "push") {
+                        for (const auto& a : args) obj.as_array()->push_back(a);
+                        return Value(static_cast<double>(obj.as_array()->size()));
+                    }
+                    if (method == "pop") {
+                        if (obj.as_array()->empty()) return Value();
+                        Value v = obj.as_array()->back();
+                        obj.as_array()->pop_back();
+                        return v;
+                    }
+                    if (method == "length" || method == "len") {
+                        return Value(static_cast<double>(obj.as_array()->size()));
+                    }
+                    if (method == "join") {
+                        std::vector<Value> jargs = {obj};
+                        jargs.insert(jargs.end(), args.begin(), args.end());
+                        return builtin_join(jargs);
+                    }
+                }
+            } catch (...) {}
         }
 
         const auto found = functions_.find(callee);
         if (found == functions_.end()) {
 
             try {
-                Value lval = globals_->get(callee);
-                if (is_lambda(lval)) return callLambda(lval, args, globals_);
+                Value lval = (callEnv ? callEnv : globals_)->get(callee);
+                if (is_lambda(lval)) return callLambda(lval, args, callEnv ? callEnv : globals_);
             } catch (...) {}
             throw std::runtime_error("Unknown function: " + callee);
         }
@@ -1290,10 +1456,18 @@ private:
             return signal.value;
         }
 
+        if (!frame->vars().empty()) {
+            Value obj = Value::object();
+            for (const auto& pair : frame->vars()) {
+                (*obj.as_object())[pair.first] = pair.second.value;
+            }
+            return obj;
+        }
+
         return Value();
     }
 
-    std::optional<Value> callBuiltin(const std::string& builtin, const std::vector<Value>& args) {
+    std::optional<Value> callBuiltin(const std::string& builtin, const std::vector<Value>& args, const std::shared_ptr<Environment>& callEnv = nullptr) {
         if (builtin == "print" || builtin == "log.info") return builtin_print(args);
         if (builtin == "len" || builtin == "length") return builtin_len(args);
         if (builtin == "str" || builtin == "to_string") return builtin_str(args);
@@ -1396,8 +1570,14 @@ private:
         if (builtin == "time.unix_ms") return builtin_time_unix_ms(args);
         if (builtin == "json.stringify") return builtin_json_stringify(args);
         if (builtin == "json.parse") return builtin_json_parse(args);
-        if (builtin == "random") return builtin_random(args);
-        if (builtin == "random.int") return builtin_random_int(args);
+        if (builtin == "random" || builtin == "random.random") return builtin_random(args);
+        if (builtin == "random.float") return builtin_random_float(args);
+        if (builtin == "random.int" || builtin == "random.randint") return builtin_random_int(args);
+        if (builtin == "random.choice") return builtin_random_choice(args);
+        if (builtin == "random.shuffle") return builtin_random_shuffle(args);
+        if (builtin == "random.range" || builtin == "random.randrange") return builtin_random_range(args);
+        if (builtin == "random.bool" || builtin == "random.boolean") return builtin_random_bool(args);
+        if (builtin == "random.seed") return builtin_random_seed(args);
         if (builtin == "fs.exists") return builtin_fs_exists(args);
         if (builtin == "fs.mkdir") return builtin_fs_mkdir(args);
         if (builtin == "fs.copy") return builtin_fs_copy(args);
@@ -1442,8 +1622,74 @@ private:
         if (builtin == "ui.status") return builtin_ui_status(args);
         if (builtin == "ui.info") return builtin_ui_info(args);
         if (builtin == "ui.text") return builtin_ui_text(args);
-        if (builtin == "ui.action" || builtin == "ui.button") return builtin_ui_action(args);
+        if (builtin == "ui.action") return builtin_ui_action(args);
+        if (builtin == "ui.label") {
+            Value node = Value::object();
+            (*node.as_object())["__type__"] = Value("UIComponent");
+            (*node.as_object())["type"] = Value("label");
+            (*node.as_object())["text"] = args.empty() ? Value("") : args[0];
+            return node;
+        }
+        if (builtin == "ui.row") {
+            Value node = Value::object();
+            (*node.as_object())["__type__"] = Value("UIComponent");
+            (*node.as_object())["type"] = Value("row");
+            (*node.as_object())["children"] = args.empty() ? array({}) : args[0];
+            return node;
+        }
+        if (builtin == "ui.column") {
+            Value node = Value::object();
+            (*node.as_object())["__type__"] = Value("UIComponent");
+            (*node.as_object())["type"] = Value("column");
+            (*node.as_object())["children"] = args.empty() ? array({}) : args[0];
+            return node;
+        }
+        if (builtin == "ui.textField" || builtin == "ui.text_field") {
+            Value node = Value::object();
+            (*node.as_object())["__type__"] = Value("UIComponent");
+            (*node.as_object())["type"] = Value("textField");
+            if (!args.empty() && is_object(args[0])) {
+                for (const auto& pair : *args[0].as_object()) {
+                    (*node.as_object())[pair.first] = pair.second;
+                }
+            }
+            return node;
+        }
+        if (builtin == "ui.checkbox") {
+            Value node = Value::object();
+            (*node.as_object())["__type__"] = Value("UIComponent");
+            (*node.as_object())["type"] = Value("checkbox");
+            (*node.as_object())["label"] = args.size() > 0 ? args[0] : Value("");
+            (*node.as_object())["checked"] = args.size() > 1 ? args[1] : Value(false);
+            if (args.size() > 2) (*node.as_object())["onChange"] = args[2];
+            return node;
+        }
+        if (builtin == "ui.slider") {
+            Value node = Value::object();
+            (*node.as_object())["__type__"] = Value("UIComponent");
+            (*node.as_object())["type"] = Value("slider");
+            (*node.as_object())["min"] = args.size() > 0 ? args[0] : Value(0.0);
+            (*node.as_object())["max"] = args.size() > 1 ? args[1] : Value(100.0);
+            (*node.as_object())["value"] = args.size() > 2 ? args[2] : Value(0.0);
+            if (args.size() > 3) (*node.as_object())["onChange"] = args[3];
+            return node;
+        }
+        if (builtin == "ui.button") {
+            if (args.size() >= 2 && !is_lambda(args[1]) && !is_null(args[1]) && is_string(args[1]) && !is_lambda(args[0])) {
+                return builtin_ui_action(args);
+            }
+            Value node = Value::object();
+            (*node.as_object())["__type__"] = Value("UIComponent");
+            (*node.as_object())["type"] = Value("button");
+            (*node.as_object())["text"] = args.size() > 0 ? args[0] : Value("Button");
+            if (args.size() > 1) (*node.as_object())["onClick"] = args[1];
+            return node;
+        }
+        if (builtin == "ui.render") {
+            return builtin_ui_render(args, callEnv ? callEnv : globals_);
+        }
         if (builtin == "ui.run") return builtin_ui_run(args);
+        if (builtin == "web.server") return builtin_web_server(args);
         if (builtin == "web.page") return builtin_web_page(args);
         if (builtin == "web.begin") return builtin_web_begin(args);
         if (builtin == "web.route") return builtin_web_route(args);
@@ -1461,14 +1707,20 @@ private:
         if (builtin == "web.raw" || builtin == "web.html") return builtin_web_raw(args);
         if (builtin == "web.end") return builtin_web_end(args);
         if (builtin == "engine.init") return builtin_engine_init(args);
-        if (builtin == "engine.shutdown") return builtin_engine_shutdown(args);
-        if (builtin == "engine.should_close") return builtin_engine_should_close(args);
-        if (builtin == "engine.begin") return builtin_engine_begin(args);
-        if (builtin == "engine.end") return builtin_engine_end(args);
+        if (builtin == "engine.shutdown" || builtin == "engine.close") return builtin_engine_shutdown(args);
+        if (builtin == "engine.should_close" || builtin == "engine.shouldClose") return builtin_engine_should_close(args);
+        if (builtin == "engine.begin" || builtin == "engine.beginDraw" || builtin == "engine.begin_draw" || builtin == "engine.frame_begin") return builtin_engine_begin(args);
+        if (builtin == "engine.end" || builtin == "engine.endDraw" || builtin == "engine.end_draw" || builtin == "engine.frame_end") return builtin_engine_end(args);
         if (builtin == "engine.clear") return builtin_engine_clear(args);
-        if (builtin == "engine.set_camera") return builtin_engine_set_camera(args);
-        if (builtin == "engine.target_fps") return builtin_engine_target_fps(args);
-        if (builtin == "engine.frame_time") return builtin_engine_frame_time(args);
+        if (builtin == "engine.set_camera" || builtin == "engine.setCamera") return builtin_engine_set_camera(args);
+        if (builtin == "engine.target_fps" || builtin == "engine.setFps" || builtin == "engine.set_fps") return builtin_engine_target_fps(args);
+        if (builtin == "engine.frame_time" || builtin == "engine.getFrameTime" || builtin == "engine.get_frame_time") return builtin_engine_frame_time(args);
+        if (builtin == "engine.getFps" || builtin == "engine.get_fps" || builtin == "engine.fps") return builtin_engine_get_fps(args);
+        if (builtin == "engine.drawCircle" || builtin == "engine.draw_circle") return builtin_engine_draw_circle(args);
+        if (builtin == "engine.drawText" || builtin == "engine.draw_text") return builtin_engine_draw_text(args);
+        if (builtin == "engine.drawRect" || builtin == "engine.draw_rect") return builtin_engine_draw_rect(args);
+        if (builtin == "engine.drawLine" || builtin == "engine.draw_line") return builtin_engine_draw_line(args);
+        if (builtin == "engine.drawPixel" || builtin == "engine.draw_pixel") return builtin_engine_draw_pixel(args);
         if (builtin == "engine.backend") return builtin_engine_backend(args);
         if (builtin == "engine.backend_info") return builtin_engine_backend_info(args);
         if (builtin == "engine.backend_name") return builtin_engine_backend_name(args);
@@ -2570,7 +2822,7 @@ private:
 
     static const std::unordered_set<std::string>& known_builtin_namespaces() {
         static const std::unordered_set<std::string> namespaces = {
-            "app", "ui", "web", "engine", "fs", "env", "process", "time", "json", "os", "net", "http", "db"
+            "app", "ui", "web", "engine", "fs", "env", "process", "time", "json", "os", "net", "http", "db", "random", "math", "datetime", "path"
         };
         return namespaces;
     }
@@ -3162,6 +3414,63 @@ private:
         if (max < min) std::swap(min, max);
         std::uniform_real_distribution<double> distribution(min, max);
         return Value(distribution(random_engine()));
+    }
+
+    static Value builtin_random_choice(const std::vector<Value>& args) {
+        if (args.empty() || !is_array(args[0]) || args[0].as_array()->empty()) return Value();
+        const auto& arr = *args[0].as_array();
+        std::uniform_int_distribution<size_t> dist(0, arr.size() - 1);
+        return arr[dist(random_engine())];
+    }
+
+    static Value builtin_random_shuffle(const std::vector<Value>& args) {
+        if (args.empty() || !is_array(args[0])) return Value::array();
+        auto arr = args[0].as_array();
+        std::shuffle(arr->begin(), arr->end(), random_engine());
+        return args[0];
+    }
+
+    static Value builtin_random_range(const std::vector<Value>& args) {
+        if (args.empty()) return Value(0.0);
+        int start = 0;
+        int stop = 0;
+        int step = 1;
+        if (args.size() == 1) {
+            stop = static_cast<int>(to_number(args[0]));
+        } else {
+            start = static_cast<int>(to_number(args[0]));
+            stop = static_cast<int>(to_number(args[1]));
+            if (args.size() > 2) step = static_cast<int>(to_number(args[2]));
+        }
+        if (step <= 0) step = 1;
+        if (start >= stop) return Value(static_cast<double>(start));
+        int count = (stop - start + step - 1) / step;
+        std::uniform_int_distribution<int> dist(0, count - 1);
+        return Value(static_cast<double>(start + dist(random_engine()) * step));
+    }
+
+    static Value builtin_random_bool(const std::vector<Value>& args) {
+        double prob = args.empty() ? 0.5 : to_number(args[0]);
+        std::bernoulli_distribution dist(std::clamp(prob, 0.0, 1.0));
+        return Value(dist(random_engine()));
+    }
+
+    static Value builtin_random_seed(const std::vector<Value>& args) {
+        unsigned int s = args.empty() ? 0 : static_cast<unsigned int>(to_number(args[0]));
+        random_engine().seed(s);
+        return Value();
+    }
+
+    static Value builtin_random_float(const std::vector<Value>& args) {
+        if (args.empty()) return builtin_random(args);
+        double minVal = 0.0;
+        double maxVal = to_number(args[0]);
+        if (args.size() >= 2) {
+            minVal = to_number(args[0]);
+            maxVal = to_number(args[1]);
+        }
+        std::uniform_real_distribution<double> dist(minVal, maxVal);
+        return Value(dist(random_engine()));
     }
 
     static Value builtin_random_int(const std::vector<Value>& args) {
@@ -3886,6 +4195,63 @@ private:
 #endif
     }
 
+    Value builtin_ui_render(const std::vector<Value>& args, const std::shared_ptr<Environment>& env) {
+#ifdef _WIN32
+        if (args.empty()) return Value();
+        uiRuntime_.init("RayQuiro Form", 720, 560);
+        std::unordered_map<std::string, Value> callbacks;
+        int btnCounter = 0;
+
+        std::function<void(const Value&)> walk = [&](const Value& item) {
+            if (!is_object(item)) return;
+            auto& m = *item.as_object();
+            std::string t = m.count("type") ? to_string(m["type"]) : "";
+            if (t == "label") {
+                std::string txt = m.count("text") ? to_string(m["text"]) : "";
+                uiRuntime_.text(txt, "body");
+            } else if (t == "button") {
+                std::string label = m.count("text") ? to_string(m["text"]) : "Button";
+                std::string id = "btn_" + std::to_string(++btnCounter);
+                if (m.count("onClick") && is_lambda(m["onClick"])) {
+                    callbacks[id] = m["onClick"];
+                }
+                uiRuntime_.action(id, label, "primary");
+            } else if (t == "textField") {
+                std::string ph = m.count("placeholder") ? to_string(m["placeholder"]) : "";
+                std::string val = m.count("value") ? to_string(m["value"]) : "";
+                uiRuntime_.info(ph.empty() ? "Input" : ph, val);
+            } else if (t == "checkbox") {
+                std::string lbl = m.count("label") ? to_string(m["label"]) : "";
+                bool chk = m.count("checked") ? truthy(m["checked"]) : false;
+                uiRuntime_.info(lbl, chk ? "Yes" : "No");
+            } else if (t == "slider") {
+                std::string minVal = m.count("min") ? to_string(m["min"]) : "0";
+                std::string maxVal = m.count("max") ? to_string(m["max"]) : "100";
+                std::string curVal = m.count("value") ? to_string(m["value"]) : "0";
+                uiRuntime_.info("Slider (" + minVal + " - " + maxVal + ")", curVal);
+            } else if (t == "row" || t == "column") {
+                if (m.count("children") && is_array(m["children"])) {
+                    for (const auto& ch : *m["children"].as_array()) {
+                        walk(ch);
+                    }
+                }
+            }
+        };
+
+        walk(args[0]);
+        std::string actionId = uiRuntime_.run();
+        auto it = callbacks.find(actionId);
+        if (it != callbacks.end()) {
+            callLambda(it->second, {}, env ? env : globals_);
+        }
+        return Value();
+#else
+        (void)args;
+        (void)env;
+        return Value();
+#endif
+    }
+
     static std::string web_default_css() {
         std::string css;
         css += "body{margin:0;background:linear-gradient(160deg,#edf4ff,#f6fbff);color:#10243a;font-family:'Segoe UI',sans-serif;}";
@@ -4477,6 +4843,217 @@ private:
         return Value();
     }
 
+    Value builtin_web_server(const std::vector<Value>& args) {
+        (void)args;
+        auto serverState = std::make_shared<HttpServerState>();
+        httpServers_.push_back(serverState);
+        Value app = Value::object();
+        auto m = app.as_object();
+
+        (*m)["get"] = makeNativeFn([serverState](const std::vector<Value>& a) -> Value {
+            if (a.size() >= 2) serverState->routes["GET:" + to_string(a[0])] = a[1];
+            return Value();
+        });
+        (*m)["post"] = makeNativeFn([serverState](const std::vector<Value>& a) -> Value {
+            if (a.size() >= 2) serverState->routes["POST:" + to_string(a[0])] = a[1];
+            return Value();
+        });
+        (*m)["put"] = makeNativeFn([serverState](const std::vector<Value>& a) -> Value {
+            if (a.size() >= 2) serverState->routes["PUT:" + to_string(a[0])] = a[1];
+            return Value();
+        });
+        (*m)["delete"] = makeNativeFn([serverState](const std::vector<Value>& a) -> Value {
+            if (a.size() >= 2) serverState->routes["DELETE:" + to_string(a[0])] = a[1];
+            return Value();
+        });
+        (*m)["static"] = makeNativeFn([serverState](const std::vector<Value>& a) -> Value {
+            if (a.size() >= 2) serverState->staticDirs[to_string(a[0])] = to_string(a[1]);
+            return Value();
+        });
+        (*m)["listen"] = makeNativeFn([this, serverState](const std::vector<Value>& a) -> Value {
+            int port = a.empty() ? 8080 : static_cast<int>(to_number(a[0]));
+            serverState->port = port;
+            serverState->running = true;
+
+#ifdef _WIN32
+            WSADATA wsa;
+            WSAStartup(MAKEWORD(2, 2), &wsa);
+#endif
+            SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+            if (s != INVALID_SOCKET) {
+                int opt = 1;
+                setsockopt(s, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&opt), sizeof(opt));
+                sockaddr_in addr{};
+                addr.sin_family = AF_INET;
+                addr.sin_addr.s_addr = htonl(INADDR_ANY);
+                addr.sin_port = htons(static_cast<u_short>(port));
+                if (bind(s, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != SOCKET_ERROR &&
+                    listen(s, SOMAXCONN) != SOCKET_ERROR) {
+                    serverState->serverSocket = s;
+                    serverState->worker = std::thread([this, serverState, s]() {
+                        while (serverState->running) {
+                            SOCKET client = accept(s, nullptr, nullptr);
+                            if (client == INVALID_SOCKET) {
+                                if (!serverState->running) break;
+                                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                                continue;
+                            }
+                            std::vector<char> buf(65536);
+                            int rec = recv(client, buf.data(), static_cast<int>(buf.size() - 1), 0);
+                            if (rec <= 0) {
+                                closesocket(client);
+                                continue;
+                            }
+                            buf[rec] = '\0';
+                            std::string raw(buf.data(), rec);
+                            std::istringstream reqStream(raw);
+                            std::string method, fullPath, proto;
+                            reqStream >> method >> fullPath >> proto;
+
+                            std::string path = fullPath;
+                            size_t q = path.find('?');
+                            std::string queryString = "";
+                            if (q != std::string::npos) {
+                                queryString = path.substr(q + 1);
+                                path = path.substr(0, q);
+                            }
+
+                            size_t dblCrLf = raw.find("\r\n\r\n");
+                            size_t headerLen = 4;
+                            if (dblCrLf == std::string::npos) {
+                                dblCrLf = raw.find("\n\n");
+                                headerLen = 2;
+                            }
+                            int contentLen = 0;
+                            size_t clPos = raw.find("Content-Length:");
+                            if (clPos == std::string::npos) clPos = raw.find("content-length:");
+                            if (clPos != std::string::npos) {
+                                size_t clValStart = clPos + 15;
+                                while (clValStart < raw.size() && (raw[clValStart] == ' ' || raw[clValStart] == '\t')) clValStart++;
+                                try {
+                                    contentLen = std::stoi(raw.substr(clValStart));
+                                } catch (...) {}
+                            }
+
+                            std::string body = "";
+                            if (dblCrLf != std::string::npos) {
+                                body = raw.substr(dblCrLf + headerLen);
+                            }
+                            while (contentLen > 0 && static_cast<int>(body.size()) < contentLen) {
+                                int needed = contentLen - static_cast<int>(body.size());
+                                std::vector<char> more(needed > 65536 ? 65536 : needed);
+                                int mrec = recv(client, more.data(), static_cast<int>(more.size()), 0);
+                                if (mrec <= 0) break;
+                                body.append(more.data(), mrec);
+                            }
+
+                            bool handled = false;
+                            for (const auto& sdir : serverState->staticDirs) {
+                                const std::string& prefix = sdir.first;
+                                if (path == prefix || path.rfind(prefix + "/", 0) == 0) {
+                                    std::string rel = (path == prefix) ? "" : path.substr(prefix.size() + 1);
+                                    std::filesystem::path fp = std::filesystem::path(sdir.second) / rel;
+                                    if (std::filesystem::is_directory(fp)) fp = fp / "index.html";
+                                    if (std::filesystem::exists(fp) && std::filesystem::is_regular_file(fp)) {
+                                        std::ifstream f(fp, std::ios::binary);
+                                        std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+                                        std::string ext = fp.extension().string();
+                                        std::string ct = "text/plain";
+                                        if (ext == ".html" || ext == ".htm") ct = "text/html; charset=utf-8";
+                                        else if (ext == ".css") ct = "text/css";
+                                        else if (ext == ".js") ct = "application/javascript";
+                                        else if (ext == ".json") ct = "application/json";
+                                        else if (ext == ".png") ct = "image/png";
+                                        else if (ext == ".jpg" || ext == ".jpeg") ct = "image/jpeg";
+                                        std::string resp = "HTTP/1.1 200 OK\r\nContent-Type: " + ct + "\r\nContent-Length: " + std::to_string(content.size()) + "\r\nConnection: close\r\n\r\n" + content;
+                                        send(client, resp.c_str(), static_cast<int>(resp.size()), 0);
+                                        closesocket(client);
+                                        handled = true;
+                                        break;
+                                    }
+                                }
+                            }
+                            if (handled) continue;
+
+                            std::string routeKey = method + ":" + path;
+                            auto it = serverState->routes.find(routeKey);
+                            if (it != serverState->routes.end()) {
+                                Value req = Value::object();
+                                auto reqObj = req.as_object();
+                                (*reqObj)["method"] = Value(method);
+                                (*reqObj)["url"] = Value(fullPath);
+                                (*reqObj)["path"] = Value(path);
+                                (*reqObj)["query"] = Value(queryString);
+                                (*reqObj)["body"] = Value(body);
+
+                                struct ResContext {
+                                    int status = 200;
+                                    bool responded = false;
+                                    SOCKET sock = INVALID_SOCKET;
+                                };
+                                auto resCtx = std::make_shared<ResContext>();
+                                resCtx->sock = client;
+
+                                Value res = Value::object();
+                                auto resObj = res.as_object();
+                                (*resObj)["status"] = makeNativeFn([resCtx](const std::vector<Value>& sa) {
+                                    if (!sa.empty()) resCtx->status = static_cast<int>(to_number(sa[0]));
+                                    return Value();
+                                });
+                                (*resObj)["json"] = makeNativeFn([this, resCtx](const std::vector<Value>& ja) {
+                                    if (resCtx->responded) return Value();
+                                    resCtx->responded = true;
+                                    std::string jsonStr = ja.empty() ? "{}" : json_stringify_value(ja[0]);
+                                    std::string statusText = (resCtx->status == 201) ? "201 Created" : (resCtx->status == 400 ? "400 Bad Request" : "200 OK");
+                                    std::string resp = "HTTP/1.1 " + statusText + "\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: " + std::to_string(jsonStr.size()) + "\r\nConnection: close\r\n\r\n" + jsonStr;
+                                    send(resCtx->sock, resp.c_str(), static_cast<int>(resp.size()), 0);
+                                    closesocket(resCtx->sock);
+                                    return Value();
+                                });
+                                (*resObj)["html"] = makeNativeFn([resCtx](const std::vector<Value>& ha) {
+                                    if (resCtx->responded) return Value();
+                                    resCtx->responded = true;
+                                    std::string html = ha.empty() ? "" : to_string(ha[0]);
+                                    std::string resp = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: " + std::to_string(html.size()) + "\r\nConnection: close\r\n\r\n" + html;
+                                    send(resCtx->sock, resp.c_str(), static_cast<int>(resp.size()), 0);
+                                    closesocket(resCtx->sock);
+                                    return Value();
+                                });
+                                (*resObj)["send"] = makeNativeFn([resCtx](const std::vector<Value>& ta) {
+                                    if (resCtx->responded) return Value();
+                                    resCtx->responded = true;
+                                    std::string txt = ta.empty() ? "" : to_string(ta[0]);
+                                    std::string resp = "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: " + std::to_string(txt.size()) + "\r\nConnection: close\r\n\r\n" + txt;
+                                    send(resCtx->sock, resp.c_str(), static_cast<int>(resp.size()), 0);
+                                    closesocket(resCtx->sock);
+                                    return Value();
+                                });
+
+                                try {
+                                    callLambda(it->second, {req, res}, globals_);
+                                } catch (const std::exception& e) {
+                                    if (!resCtx->responded) {
+                                        std::string errMsg = e.what();
+                                        std::string errResp = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: " + std::to_string(errMsg.size()) + "\r\nConnection: close\r\n\r\n" + errMsg;
+                                        send(client, errResp.c_str(), static_cast<int>(errResp.size()), 0);
+                                        closesocket(client);
+                                    }
+                                }
+                                continue;
+                            }
+
+                            std::string nf = "HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: close\r\n\r\nNot Found";
+                            send(client, nf.c_str(), static_cast<int>(nf.size()), 0);
+                            closesocket(client);
+                        }
+                    });
+                }
+            }
+            return Value();
+        });
+        return app;
+    }
+
     Value builtin_web_page(const std::vector<Value>& args) {
         webState_ = WebState{};
         webState_.defaultTitle = args.size() > 0 ? to_string(args[0]) : "RayQuiro";
@@ -4572,6 +5149,15 @@ private:
 
     static Value builtin_engine_clear(const std::vector<Value>& args) {
         if (args.empty()) return Value();
+        if (args.size() >= 3) {
+            RTColor color;
+            color.r = static_cast<unsigned char>(to_number(args[0]));
+            color.g = static_cast<unsigned char>(to_number(args[1]));
+            color.b = static_cast<unsigned char>(to_number(args[2]));
+            color.a = args.size() > 3 ? static_cast<unsigned char>(to_number(args[3])) : 255;
+            rt_clear(color);
+            return Value();
+        }
         rt_clear(value_to_color(args[0]));
         return Value();
     }
@@ -4807,15 +5393,29 @@ private:
     }
 
     static Value builtin_engine_draw_text(const std::vector<Value>& args) {
-        if (args.size() < 5) return Value();
+        if (args.size() < 4) return Value();
         const std::string text = to_string(args[0]);
-        rt_draw_text(
-            text.c_str(),
-            static_cast<int>(to_number(args[1])),
-            static_cast<int>(to_number(args[2])),
-            static_cast<int>(to_number(args[3])),
-            value_to_color(args[4]));
+        int x = static_cast<int>(to_number(args[1]));
+        int y = static_cast<int>(to_number(args[2]));
+        int sz = static_cast<int>(to_number(args[3]));
+        RTColor color{255, 255, 255, 255};
+        if (args.size() >= 7) {
+            color.r = static_cast<unsigned char>(to_number(args[4]));
+            color.g = static_cast<unsigned char>(to_number(args[5]));
+            color.b = static_cast<unsigned char>(to_number(args[6]));
+            color.a = args.size() > 7 ? static_cast<unsigned char>(to_number(args[7])) : 255;
+        } else if (args.size() >= 5) {
+            color = value_to_color(args[4]);
+        }
+        rt_draw_text(text.c_str(), x, y, sz, color);
         return Value();
+    }
+
+    static Value builtin_engine_get_fps(const std::vector<Value>& args) {
+        (void)args;
+        float dt = rt_get_frame_time();
+        int fps = (dt > 0.0001f) ? static_cast<int>(1.0f / dt) : rt_get_target_fps();
+        return Value(static_cast<double>(fps));
     }
 
     static Value builtin_engine_draw_fps(const std::vector<Value>& args) {
@@ -4841,9 +5441,20 @@ private:
     }
 
     static Value builtin_engine_draw_circle(const std::vector<Value>& args) {
-        if (args.size() < 4) return Value();
-        rt_draw_circle(static_cast<int>(to_number(args[0])), static_cast<int>(to_number(args[1])),
-                       static_cast<float>(to_number(args[2])), value_to_color(args[3]));
+        if (args.size() < 3) return Value();
+        int cx = static_cast<int>(to_number(args[0]));
+        int cy = static_cast<int>(to_number(args[1]));
+        float r = static_cast<float>(to_number(args[2]));
+        RTColor color{255, 255, 255, 255};
+        if (args.size() >= 6) {
+            color.r = static_cast<unsigned char>(to_number(args[3]));
+            color.g = static_cast<unsigned char>(to_number(args[4]));
+            color.b = static_cast<unsigned char>(to_number(args[5]));
+            color.a = args.size() > 6 ? static_cast<unsigned char>(to_number(args[6])) : 255;
+        } else if (args.size() >= 4) {
+            color = value_to_color(args[3]);
+        }
+        rt_draw_circle(cx, cy, r, color);
         return Value();
     }
 

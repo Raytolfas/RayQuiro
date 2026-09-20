@@ -1318,19 +1318,19 @@ std::string dispatch_module(EngineStore& store, const std::string& functionName,
         rt_init(width, height, title.c_str());
         return "true";
     }
-    if (functionName == "shutdown") {
+    if (functionName == "shutdown" || functionName == "close") {
         rt_shutdown();
         return "true";
     }
-    if (functionName == "should_close") {
+    if (functionName == "should_close" || functionName == "shouldClose") {
         return json_bool(rt_should_close() != 0);
     }
-    if (functionName == "begin") {
+    if (functionName == "begin" || functionName == "beginDraw" || functionName == "begin_draw") {
         tick_scene_hot_reload(store);
         rt_begin();
         return "true";
     }
-    if (functionName == "end") {
+    if (functionName == "end" || functionName == "endDraw" || functionName == "end_draw") {
         rt_end();
         return "true";
     }
@@ -1351,12 +1351,12 @@ std::string dispatch_module(EngineStore& store, const std::string& functionName,
         rt_set_camera(position.x, position.y, position.z, target.x, target.y, target.z, up.x, up.y, up.z, fov);
         return "true";
     }
-    if (functionName == "target_fps") {
+    if (functionName == "target_fps" || functionName == "setFps" || functionName == "set_fps") {
         const int fps = args.empty() ? 60 : static_cast<int>(to_number(args[0]));
         rt_set_target_fps(fps);
         return json_number(fps);
     }
-    if (functionName == "frame_time") {
+    if (functionName == "frame_time" || functionName == "getFrameTime" || functionName == "get_frame_time") {
         return json_number(rt_get_frame_time());
     }
     if (functionName == "camera_fov") {
