@@ -4,15 +4,19 @@
 #include <cctype>
 #include <cmath>
 #include <chrono>
+#include <cstdlib>
 #include <ctime>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <iostream>
 #include <optional>
 #include <random>
 #include <regex>
+#include <sstream>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -1223,6 +1227,421 @@ public:
             if (!args.empty())
                 return VMValue(std::string(1, static_cast<char>(static_cast<int>(toNumber(args[0])))));
             return VMValue(std::string(""));
+        }
+
+        if (name == "length") return callDefaultBuiltin("len", args);
+        if (name == "to_string") return callDefaultBuiltin("str", args);
+
+        if (name == "fs.exists") {
+            if (args.empty()) return VMValue(false);
+            std::error_code ec;
+            return VMValue(std::filesystem::exists(std::filesystem::path(toString(args[0])), ec));
+        }
+        if (name == "fs.mkdir") {
+            if (args.empty()) return VMValue(false);
+            std::error_code ec;
+            return VMValue(std::filesystem::create_directories(std::filesystem::path(toString(args[0])), ec));
+        }
+        if (name == "fs.remove") {
+            if (args.empty()) return VMValue(0.0);
+            std::error_code ec;
+            auto removed = std::filesystem::remove_all(std::filesystem::path(toString(args[0])), ec);
+            return VMValue(static_cast<double>(removed));
+        }
+        if (name == "fs.copy") {
+            if (args.size() < 2) return VMValue(false);
+            try {
+                std::filesystem::path src = std::filesystem::path(toString(args[0]));
+                std::filesystem::path dst = std::filesystem::path(toString(args[1]));
+                auto parent = dst.parent_path();
+                if (!parent.empty()) std::filesystem::create_directories(parent);
+                std::filesystem::copy_file(src, dst, std::filesystem::copy_options::overwrite_existing);
+                return VMValue(true);
+            } catch (...) {
+                return VMValue(false);
+            }
+        }
+        if (name == "fs.copy_tree") {
+            if (args.size() < 2) return VMValue(false);
+            try {
+                std::filesystem::path src = std::filesystem::path(toString(args[0]));
+                std::filesystem::path dst = std::filesystem::path(toString(args[1]));
+                std::filesystem::copy(src, dst, std::filesystem::copy_options::recursive | std::filesystem::copy_options::overwrite_existing);
+                return VMValue(true);
+            } catch (...) {
+                return VMValue(false);
+            }
+        }
+        if (name == "fs.read") {
+            if (args.empty()) return VMValue("");
+            try {
+                std::ifstream input(std::filesystem::path(toString(args[0])), std::ios::binary);
+                if (!input) return VMValue("");
+                std::ostringstream buf;
+                buf << input.rdbuf();
+                return VMValue(buf.str());
+            } catch (...) {
+                return VMValue("");
+            }
+        }
+        if (name == "fs.write") {
+            if (args.size() < 2) return VMValue(false);
+            try {
+                std::filesystem::path target = std::filesystem::path(toString(args[0]));
+                auto parent = target.parent_path();
+                if (!parent.empty()) std::filesystem::create_directories(parent);
+                std::ofstream output(target, std::ios::binary | std::ios::trunc);
+                if (!output) return VMValue(false);
+                output << toString(args[1]);
+                return VMValue(true);
+            } catch (...) {
+                return VMValue(false);
+            }
+        }
+
+        if (name == "time.sleep" || name == "sleep") {
+            int duration = args.empty() ? 0 : static_cast<int>(toNumber(args[0]));
+            std::this_thread::sleep_for(std::chrono::milliseconds(duration));
+            return VMValue();
+        }
+        if (name == "time.now_ms" || name == "clock.ms") {
+            auto now = std::chrono::steady_clock::now().time_since_epoch();
+            return VMValue(static_cast<double>(std::chrono::duration_cast<std::chrono::milliseconds>(now).count()));
+        }
+        if (name == "time.unix_ms") {
+            auto now = std::chrono::system_clock::now().time_since_epoch();
+            return VMValue(static_cast<double>(std::chrono::duration_cast<std::chrono::milliseconds>(now).count()));
+        }
+
+        if (name == "os.name") {
+#ifdef _WIN32
+            return VMValue("windows");
+#elif defined(__APPLE__)
+            return VMValue("macos");
+#elif defined(__linux__)
+            return VMValue("linux");
+#else
+            return VMValue("unknown");
+#endif
+        }
+        if (name == "os.arch") {
+#if defined(_M_X64) || defined(__x86_64__)
+            return VMValue("x86_64");
+#elif defined(_M_IX86) || defined(__i386__)
+            return VMValue("x86");
+#elif defined(_M_ARM64) || defined(__aarch64__)
+            return VMValue("arm64");
+#elif defined(_M_ARM) || defined(__arm__)
+            return VMValue("arm");
+#else
+            return VMValue("unknown");
+#endif
+        }
+        if (name == "os.cwd") {
+            return VMValue(std::filesystem::current_path().string());
+        }
+        if (name == "os.chdir") {
+            if (args.empty()) return VMValue(false);
+            std::error_code ec;
+            std::filesystem::current_path(std::filesystem::path(toString(args[0])), ec);
+            return VMValue(!ec);
+        }
+        if (name == "os.home") {
+#ifdef _WIN32
+            const char* home = std::getenv("USERPROFILE");
+            return VMValue(home ? std::string(home) : std::string());
+#else
+            const char* home = std::getenv("HOME");
+            return VMValue(home ? std::string(home) : std::string());
+#endif
+        }
+        if (name == "os.temp") {
+            return VMValue(std::filesystem::temp_directory_path().string());
+        }
+        if (name == "os.sep") {
+            return VMValue(std::string(1, std::filesystem::path::preferred_separator));
+        }
+        if (name == "os.exists") {
+            if (args.empty()) return VMValue(false);
+            std::error_code ec;
+            return VMValue(std::filesystem::exists(std::filesystem::path(toString(args[0])), ec));
+        }
+        if (name == "os.is_dir") {
+            if (args.empty()) return VMValue(false);
+            std::error_code ec;
+            auto p = std::filesystem::path(toString(args[0]));
+            return VMValue(std::filesystem::exists(p, ec) && std::filesystem::is_directory(p, ec));
+        }
+        if (name == "os.is_file") {
+            if (args.empty()) return VMValue(false);
+            std::error_code ec;
+            auto p = std::filesystem::path(toString(args[0]));
+            return VMValue(std::filesystem::exists(p, ec) && std::filesystem::is_regular_file(p, ec));
+        }
+
+        if (name == "env.get") {
+            if (args.empty()) return VMValue("");
+            const char* val = std::getenv(toString(args[0]).c_str());
+            return VMValue(val ? std::string(val) : std::string(""));
+        }
+        if (name == "env.has") {
+            if (args.empty()) return VMValue(false);
+            return VMValue(std::getenv(toString(args[0]).c_str()) != nullptr);
+        }
+        if (name == "env.set") {
+            if (args.size() < 2) return VMValue(false);
+#ifdef _WIN32
+            return VMValue(_putenv_s(toString(args[0]).c_str(), toString(args[1]).c_str()) == 0);
+#else
+            return VMValue(setenv(toString(args[0]).c_str(), toString(args[1]).c_str(), 1) == 0);
+#endif
+        }
+        if (name == "env.all") {
+            VMValue::Object all;
+#ifdef _WIN32
+            for (char** env = _environ; env && *env != nullptr; ++env) {
+                std::string entry = *env;
+                size_t eq = entry.find('=');
+                if (eq != std::string::npos) {
+                    all[entry.substr(0, eq)] = VMValue(entry.substr(eq + 1));
+                }
+            }
+#else
+            extern char** environ;
+            for (char** env = environ; env && *env != nullptr; ++env) {
+                std::string entry = *env;
+                size_t eq = entry.find('=');
+                if (eq != std::string::npos) {
+                    all[entry.substr(0, eq)] = VMValue(entry.substr(eq + 1));
+                }
+            }
+#endif
+            return VMValue(all);
+        }
+        if (name == "env.path_add") {
+            if (args.empty()) return VMValue(false);
+            std::string cand = std::filesystem::path(toString(args[0])).lexically_normal().string();
+            const char* cur = std::getenv("PATH");
+            std::string pathStr = cur ? cur : "";
+            if (pathStr.find(cand) == std::string::npos) {
+                pathStr = pathStr.empty() ? cand : pathStr + ";" + cand;
+#ifdef _WIN32
+                _putenv_s("PATH", pathStr.c_str());
+#else
+                setenv("PATH", pathStr.c_str(), 1);
+#endif
+            }
+            return VMValue(true);
+        }
+
+        if (name == "process.run") {
+            if (args.empty()) return VMValue(0.0);
+            return VMValue(static_cast<double>(std::system(toString(args[0]).c_str())));
+        }
+        if (name == "process.cwd") {
+            return VMValue(std::filesystem::current_path().string());
+        }
+        if (name == "process.pid") {
+#ifdef _WIN32
+            return VMValue(static_cast<double>(GetCurrentProcessId()));
+#else
+            return VMValue(static_cast<double>(getpid()));
+#endif
+        }
+        if (name == "process.exit") {
+            int code = args.empty() ? 0 : static_cast<int>(toNumber(args[0]));
+            std::exit(code);
+        }
+        if (name == "process.exe_dir") {
+            return VMValue(std::filesystem::current_path().string());
+        }
+
+        if (name == "random.float") {
+            double minVal = 0.0;
+            double maxVal = args.empty() ? 1.0 : toNumber(args[0]);
+            if (args.size() >= 2) {
+                minVal = toNumber(args[0]);
+                maxVal = toNumber(args[1]);
+            }
+            if (maxVal < minVal) std::swap(minVal, maxVal);
+            static std::mt19937 rng(static_cast<unsigned int>(std::chrono::high_resolution_clock::now().time_since_epoch().count()));
+            std::uniform_real_distribution<double> dist(minVal, maxVal);
+            return VMValue(dist(rng));
+        }
+        if (name == "random.choice") {
+            if (args.empty() || !std::holds_alternative<VMValue::Array>(args[0].data)) return VMValue();
+            const auto& arr = std::get<VMValue::Array>(args[0].data);
+            if (arr.empty()) return VMValue();
+            static std::mt19937 rng(static_cast<unsigned int>(std::chrono::high_resolution_clock::now().time_since_epoch().count()));
+            std::uniform_int_distribution<size_t> dist(0, arr.size() - 1);
+            return arr[dist(rng)];
+        }
+        if (name == "random.shuffle") {
+            if (args.empty() || !std::holds_alternative<VMValue::Array>(args[0].data)) return VMValue(VMValue::Array{});
+            VMValue::Array arr = std::get<VMValue::Array>(args[0].data);
+            static std::mt19937 rng(static_cast<unsigned int>(std::chrono::high_resolution_clock::now().time_since_epoch().count()));
+            std::shuffle(arr.begin(), arr.end(), rng);
+            return VMValue(arr);
+        }
+        if (name == "random.range") {
+            if (args.empty()) return VMValue(0.0);
+            int start = 0;
+            int stop = 0;
+            int step = 1;
+            if (args.size() == 1) {
+                stop = static_cast<int>(toNumber(args[0]));
+            } else {
+                start = static_cast<int>(toNumber(args[0]));
+                stop = static_cast<int>(toNumber(args[1]));
+                if (args.size() > 2) step = static_cast<int>(toNumber(args[2]));
+            }
+            if (step <= 0) step = 1;
+            if (start >= stop) return VMValue(static_cast<double>(start));
+            int count = (stop - start + step - 1) / step;
+            static std::mt19937 rng(static_cast<unsigned int>(std::chrono::high_resolution_clock::now().time_since_epoch().count()));
+            std::uniform_int_distribution<int> dist(0, count - 1);
+            return VMValue(static_cast<double>(start + dist(rng) * step));
+        }
+        if (name == "random.bool" || name == "random.boolean") {
+            double prob = args.empty() ? 0.5 : toNumber(args[0]);
+            static std::mt19937 rng(static_cast<unsigned int>(std::chrono::high_resolution_clock::now().time_since_epoch().count()));
+            std::bernoulli_distribution dist(std::clamp(prob, 0.0, 1.0));
+            return VMValue(dist(rng));
+        }
+        if (name == "random.seed") {
+            unsigned int s = args.empty() ? 0 : static_cast<unsigned int>(toNumber(args[0]));
+            static std::mt19937 rng(static_cast<unsigned int>(std::chrono::high_resolution_clock::now().time_since_epoch().count()));
+            rng.seed(s);
+            return VMValue();
+        }
+
+        if (name == "net.tcp_connect") {
+            if (args.size() < 2) return VMValue(0.0);
+            std::string host = toString(args[0]);
+            int port = static_cast<int>(toNumber(args[1]));
+#ifdef _WIN32
+            WSADATA wsaData;
+            WSAStartup(MAKEWORD(2, 2), &wsaData);
+#endif
+            SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+            if (sock == INVALID_SOCKET) return VMValue(0.0);
+            sockaddr_in address = {};
+            address.sin_family = AF_INET;
+            if (host == "localhost") address.sin_addr.s_addr = htonl(0x7F000001u);
+            else if (inet_pton(AF_INET, host.c_str(), &address.sin_addr) != 1) {
+                closesocket(sock);
+                return VMValue(0.0);
+            }
+            address.sin_port = htons(static_cast<u_short>(port));
+            if (connect(sock, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == SOCKET_ERROR) {
+                closesocket(sock);
+                return VMValue(0.0);
+            }
+            static std::unordered_map<int, SOCKET> vmSockets;
+            static int nextHandle = 1;
+            int handle = nextHandle++;
+            vmSockets[handle] = sock;
+            return VMValue(static_cast<double>(handle));
+        }
+        if (name == "net.tcp_send") {
+            if (args.size() < 2) return VMValue(false);
+            int handle = static_cast<int>(toNumber(args[0]));
+            SOCKET sock = static_cast<SOCKET>(handle);
+            if (sock == INVALID_SOCKET) return VMValue(false);
+            std::string text = toString(args[1]);
+            int sent = send(sock, text.c_str(), static_cast<int>(text.size()), 0);
+            return VMValue(sent != SOCKET_ERROR);
+        }
+        if (name == "net.tcp_recv") {
+            if (args.empty()) return VMValue("");
+            int handle = static_cast<int>(toNumber(args[0]));
+            SOCKET sock = static_cast<SOCKET>(handle);
+            if (sock == INVALID_SOCKET) return VMValue("");
+            int maxBytes = args.size() > 1 ? std::max(1, static_cast<int>(toNumber(args[1]))) : 65536;
+            std::string result(static_cast<size_t>(maxBytes), '\0');
+            int received = recv(sock, result.data(), maxBytes, 0);
+            if (received <= 0) return VMValue("");
+            result.resize(static_cast<size_t>(received));
+            return VMValue(result);
+        }
+        if (name == "net.tcp_close") {
+            if (args.empty()) return VMValue(false);
+            int handle = static_cast<int>(toNumber(args[0]));
+            SOCKET sock = static_cast<SOCKET>(handle);
+            closesocket(sock);
+            return VMValue(true);
+        }
+
+        if (name == "http.get" || name == "http.post") {
+            if (args.empty()) return VMValue(VMValue::Object{});
+            std::string url = toString(args[0]);
+            std::string method = (name == "http.post") ? "POST" : "GET";
+            std::string body = (args.size() > 1) ? toString(args[1]) : "";
+            std::string scheme = "http://";
+            if (url.rfind(scheme, 0) != 0) return VMValue(VMValue::Object{});
+            std::string rem = url.substr(scheme.size());
+            size_t slash = rem.find('/');
+            std::string hostPort = slash == std::string::npos ? rem : rem.substr(0, slash);
+            std::string path = slash == std::string::npos ? "/" : rem.substr(slash);
+            size_t colon = hostPort.find(':');
+            std::string host = colon == std::string::npos ? hostPort : hostPort.substr(0, colon);
+            int port = colon == std::string::npos ? 80 : std::atoi(hostPort.substr(colon + 1).c_str());
+            if (host.empty() || port <= 0) return VMValue(VMValue::Object{});
+
+#ifdef _WIN32
+            WSADATA wsaData;
+            WSAStartup(MAKEWORD(2, 2), &wsaData);
+#endif
+            SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+            if (sock == INVALID_SOCKET) return VMValue(VMValue::Object{});
+            sockaddr_in address = {};
+            address.sin_family = AF_INET;
+            if (host == "localhost") address.sin_addr.s_addr = htonl(0x7F000001u);
+            else if (inet_pton(AF_INET, host.c_str(), &address.sin_addr) != 1) {
+                closesocket(sock);
+                return VMValue(VMValue::Object{});
+            }
+            address.sin_port = htons(static_cast<u_short>(port));
+            if (connect(sock, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == SOCKET_ERROR) {
+                closesocket(sock);
+                return VMValue(VMValue::Object{});
+            }
+
+            std::ostringstream req;
+            req << method << " " << path << " HTTP/1.1\r\n";
+            req << "Host: " << host << "\r\n";
+            req << "Connection: close\r\n";
+            if (method == "POST") {
+                req << "Content-Type: text/plain; charset=utf-8\r\n";
+                req << "Content-Length: " << body.size() << "\r\n";
+            }
+            req << "\r\n";
+            if (method == "POST") req << body;
+            std::string payload = req.str();
+            if (send(sock, payload.c_str(), static_cast<int>(payload.size()), 0) == SOCKET_ERROR) {
+                closesocket(sock);
+                return VMValue(VMValue::Object{});
+            }
+            std::string response;
+            char buffer[4096];
+            while (true) {
+                int received = recv(sock, buffer, sizeof(buffer), 0);
+                if (received <= 0) break;
+                response.append(buffer, buffer + received);
+            }
+            closesocket(sock);
+
+            std::istringstream respStream(response);
+            std::string httpVer;
+            int statusCode = 0;
+            respStream >> httpVer >> statusCode;
+            size_t hEnd = response.find("\r\n\r\n");
+            std::string respBody = (hEnd != std::string::npos) ? response.substr(hEnd + 4) : "";
+
+            VMValue::Object res;
+            res["status"] = VMValue(static_cast<double>(statusCode));
+            res["body"] = VMValue(respBody);
+            return VMValue(res);
         }
 
         return std::nullopt;

@@ -1160,7 +1160,9 @@ int main(int argc, char* argv[]) {
                             resolved.builtinSymbolAliases);
                         return runVmProgram(program);
                     } catch (const std::exception& vmErr) {
-                        Log::warn(std::string("VM: ") + vmErr.what() + " - falling back to interpreter");
+                        if (cliOptions.debugBuild || std::getenv("RAYQUIRO_VERBOSE")) {
+                            Log::warn(std::string("VM: ") + vmErr.what() + " - falling back to interpreter");
+                        }
                     }
                 }
 
