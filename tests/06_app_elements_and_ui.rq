@@ -1,0 +1,38 @@
+import "rayquiro.app";
+import "rayquiro.ui";
+
+var btn = app.button("Нажми меня", { "id": "my_btn" });
+assert_eq(btn["tag"], "button");
+assert_eq(btn["text"], "Нажми меня");
+assert_eq(btn["id"], "my_btn");
+
+var styledBtn = ui.apply(btn, { "background": "#2563eb", "color": "#ffffff" });
+assert_eq(styledBtn["style"]["background"], "#2563eb");
+assert_eq(styledBtn["style"]["color"], "#ffffff");
+
+var txt = app.text("Привет мир!");
+assert_eq(txt["tag"], "text");
+
+var inp = app.input("Введите логин...", "admin");
+assert_eq(inp["tag"], "input");
+assert_eq(inp["props"]["placeholder"], "Введите логин...");
+
+var chk = app.checkbox("Сохранить пароль", true);
+assert_eq(chk["tag"], "checkbox");
+assert_eq(chk["props"]["checked"], true);
+
+var sld = app.slider(0, 100, 75);
+assert_eq(sld["tag"], "slider");
+assert_eq(sld["props"]["value"], 75);
+
+var prg = app.progress(30, 100);
+assert_eq(prg["tag"], "progress");
+
+var col = app.column([txt, inp, styledBtn]);
+assert_eq(col["tag"], "column");
+assert_eq(len(col["children"]), 3);
+
+var html = app.to_html(col);
+assert(len(html) > 0);
+
+print("06_app_elements_and_ui: PASS");

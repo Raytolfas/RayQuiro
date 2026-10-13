@@ -7,6 +7,8 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include <algorithm>
+#include <iomanip>
 
 #include "Compiler.h"
 #include "Interpreter.h"
@@ -30,7 +32,7 @@
 #endif
 
 namespace {
-const char* kRayQuiroVersion = "0.2.1";
+const char* kRayQuiroVersion = "0.2.2";
 
 std::string rebuildCommandLine(int argc, char* argv[]) {
     std::string cmd;
@@ -46,6 +48,36 @@ std::string rebuildCommandLine(int argc, char* argv[]) {
         }
     }
     return cmd;
+}
+
+std::filesystem::path getExecutablePath(const char* argv0) {
+#ifdef _WIN32
+    std::wstring buffer(MAX_PATH, L'\0');
+    DWORD length = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+    while (length >= buffer.size()) {
+        buffer.resize(buffer.size() * 2);
+        length = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+    }
+    if (length > 0) {
+        buffer.resize(length);
+        return std::filesystem::path(buffer);
+    }
+#elif defined(__linux__)
+    std::error_code ec;
+    auto p = std::filesystem::canonical("/proc/self/exe", ec);
+    if (!ec && !p.empty()) {
+        return p;
+    }
+#endif
+    if (argv0 != nullptr && argv0[0] != '\0') {
+        std::error_code ec;
+        auto p = std::filesystem::canonical(argv0, ec);
+        if (!ec && !p.empty()) {
+            return p;
+        }
+        return std::filesystem::absolute(argv0);
+    }
+    return std::filesystem::current_path() / "rqio.exe";
 }
 
 enum class CliMode {
@@ -66,7 +98,8 @@ enum class CliMode {
     SelfUpdate,
     Help,
     Version,
-    Repl
+    Repl,
+    Test
 };
 
 struct CliOptions {
@@ -106,6 +139,7 @@ void printHelp() {
     std::cout << "\033[1;36mRayQuiro\033[0m " << kRayQuiroVersion << " — modern, fast programming language\n";
     std::cout << "\n\033[1mUsage:\033[0m\n";
     std::cout << "  rqio run <script.rq> [--watch]      Run script (Bytecode VM default, --watch for Hot Reload)\n";
+    std::cout << "  rqio test [path]                    Run test suite (*_test.rq or tests/)\n";
     std::cout << "  rqio repl                           Start interactive REPL\n";
     std::cout << "  rqio                                Start REPL (or run project if in rqio.json folder)\n";
     std::cout << "  rqio build <script.rq> [-o out]     Compile to standalone native binary via TinyCC/LLVM\n";
@@ -258,7 +292,7 @@ void createStarterProject(const std::filesystem::path& requestedRoot) {
         projectFile,
         "{\n"
         "  \"name\": \"" + jsonEscape(projectName) + "\",\n"
-        "  \"version\": \"0.2.1\",\n"
+        "  \"version\": \"0.2.2\",\n"
         "  \"entry\": \"main.rq\",\n"
         "  \"build_dir\": \"build\"\n"
         "}\n");
@@ -372,6 +406,14 @@ CliOptions parseArguments(int argc, char* argv[]) {
         } else {
 
             options.mode = CliMode::PackageInit;
+        }
+        return options;
+    }
+    if (first == "test") {
+        options.mode = CliMode::Test;
+        ++index;
+        if (index < argc) {
+            options.inputPath = argv[index];
         }
         return options;
     }
@@ -827,13 +869,151 @@ int runExecutable(const std::filesystem::path& exePath, const std::filesystem::p
     return code;
 #endif
 }
+
+int runTestSuite(const CliOptions& cliOptions, const ProjectConfig& projectConfig, const std::filesystem::path& exePath) {
+    std::vector<std::filesystem::path> testFiles;
+
+    if (!cliOptions.inputPath.empty()) {
+        std::filesystem::path target = std::filesystem::absolute(cliOptions.inputPath);
+        if (std::filesystem::is_regular_file(target)) {
+            testFiles.push_back(target);
+        } else if (std::filesystem::is_directory(target)) {
+            for (const auto& entry : std::filesystem::recursive_directory_iterator(target)) {
+                if (entry.is_regular_file() && entry.path().extension() == ".rq") {
+                    std::string fname = entry.path().filename().string();
+                    if (fname.find("_test.rq") != std::string::npos || fname.find("test_") != std::string::npos || target.filename() == "tests") {
+                        testFiles.push_back(entry.path());
+                    }
+                }
+            }
+        } else {
+            throw std::runtime_error("Test target path does not exist: " + target.string());
+        }
+    } else {
+        std::filesystem::path testsDir = projectConfig.projectRoot / "tests";
+        if (std::filesystem::exists(testsDir) && std::filesystem::is_directory(testsDir)) {
+            for (const auto& entry : std::filesystem::recursive_directory_iterator(testsDir)) {
+                if (entry.is_regular_file() && entry.path().extension() == ".rq") {
+                    testFiles.push_back(entry.path());
+                }
+            }
+        } else {
+            for (const auto& entry : std::filesystem::recursive_directory_iterator(projectConfig.projectRoot)) {
+                if (entry.is_regular_file() && entry.path().extension() == ".rq") {
+                    std::string fname = entry.path().filename().string();
+                    if (fname.find("_test.rq") != std::string::npos || fname.find("test_") != std::string::npos) {
+                        testFiles.push_back(entry.path());
+                    }
+                }
+            }
+        }
+    }
+
+    std::sort(testFiles.begin(), testFiles.end());
+
+    std::cout << "\033[1;36m[RayQuiro Test Runner v" << kRayQuiroVersion << "]\033[0m\n";
+    if (testFiles.empty()) {
+        std::cout << "No tests found.\n";
+        return 0;
+    }
+
+    std::cout << "Discovered " << testFiles.size() << " test file(s):\n\n";
+
+    size_t passed = 0;
+    size_t failed = 0;
+    auto totalStart = std::chrono::high_resolution_clock::now();
+
+    for (const auto& testFile : testFiles) {
+        std::filesystem::path relPath;
+        try {
+            relPath = std::filesystem::relative(testFile, projectConfig.projectRoot);
+        } catch (...) {
+            relPath = testFile;
+        }
+
+        auto start = std::chrono::high_resolution_clock::now();
+        bool ok = true;
+        std::string errorMsg;
+
+        try {
+            auto resolved = Compiler::resolveForExecution(testFile);
+            if (!cliOptions.legacyMode &&
+                BytecodeCompiler::supports(
+                    *resolved.program,
+                    resolved.builtinNamespaceAliases,
+                    resolved.builtinSymbolAliases)) {
+                try {
+                    const auto program = BytecodeCompiler::compile(
+                        *resolved.program,
+                        resolved.builtinNamespaceAliases,
+                        resolved.builtinSymbolAliases);
+                    int vmCode = runVmProgram(program);
+                    if (vmCode != 0) {
+                        throw std::runtime_error("Test exited with status code " + std::to_string(vmCode));
+                    }
+                } catch (const std::exception& vmErr) {
+                    Interpreter interpreter(
+                        projectConfig.projectRoot,
+                        exePath,
+                        resolved.builtinNamespaceAliases,
+                        resolved.builtinSymbolAliases);
+                    int code = interpreter.run(*resolved.program);
+                    if (code != 0) {
+                        throw std::runtime_error("Test exited with status code " + std::to_string(code));
+                    }
+                }
+            } else {
+                Interpreter interpreter(
+                    projectConfig.projectRoot,
+                    exePath,
+                    resolved.builtinNamespaceAliases,
+                    resolved.builtinSymbolAliases);
+                int code = interpreter.run(*resolved.program);
+                if (code != 0) {
+                    throw std::runtime_error("Test exited with status code " + std::to_string(code));
+                }
+            }
+        } catch (const std::exception& e) {
+            ok = false;
+            errorMsg = e.what();
+        } catch (...) {
+            ok = false;
+            errorMsg = "Unknown error occurred during test execution";
+        }
+
+        auto end = std::chrono::high_resolution_clock::now();
+        double elapsedMs = std::chrono::duration<double, std::milli>(end - start).count();
+
+        if (ok) {
+            std::cout << "  \033[1;32m[PASS]\033[0m " << relPath.string() << " (" << std::fixed << std::setprecision(1) << elapsedMs << "ms)\n";
+            passed++;
+        } else {
+            std::cout << "  \033[1;31m[FAIL]\033[0m " << relPath.string() << " (" << std::fixed << std::setprecision(1) << elapsedMs << "ms)\n";
+            std::cout << "         \033[31m" << errorMsg << "\033[0m\n";
+            failed++;
+        }
+    }
+
+    auto totalEnd = std::chrono::high_resolution_clock::now();
+    double totalMs = std::chrono::duration<double, std::milli>(totalEnd - totalStart).count();
+
+    std::cout << "\n============================================================\n";
+    if (failed == 0) {
+        std::cout << "\033[1;32mTESTS PASSED:\033[0m " << passed << " passed, 0 failed (total " << testFiles.size() << ") in " << std::fixed << std::setprecision(1) << totalMs << "ms\n";
+    } else {
+        std::cout << "\033[1;31mTESTS FAILED:\033[0m " << passed << " passed, " << failed << " failed (total " << testFiles.size() << ") in " << std::fixed << std::setprecision(1) << totalMs << "ms\n";
+    }
+    std::cout << "============================================================\n";
+
+    return failed > 0 ? 1 : 0;
+}
 }
 
 int main(int argc, char* argv[]) {
     Log::init();
     CliOptions cliOptions;
     try {
-        const std::filesystem::path exePath = std::filesystem::absolute(std::filesystem::path(argv[0]));
+        const std::filesystem::path exePath = getExecutablePath(argv[0]);
         const std::filesystem::path exeRoot = exePath.parent_path();
         cliOptions = parseArguments(argc, argv);
         if (argc < 2 && cliOptions.inputPath.empty()) {
@@ -968,7 +1148,7 @@ int main(int argc, char* argv[]) {
         }
         if (cliOptions.mode == CliMode::SelfUpdate) {
             return RayQuiroCliServices::selfUpdate(
-                std::filesystem::absolute(std::filesystem::path(argv[0])),
+                exePath,
                 kRayQuiroVersion,
                 cliOptions.checkOnly);
         }
@@ -980,6 +1160,9 @@ int main(int argc, char* argv[]) {
         if (cliOptions.mode == CliMode::Lsp) {
             LSPServer lsp;
             return lsp.run();
+        }
+        if (cliOptions.mode == CliMode::Test) {
+            return runTestSuite(cliOptions, projectConfig, exePath);
         }
 
         if (cliOptions.mode == CliMode::Build) {

@@ -76,6 +76,7 @@ private:
         else if (match({TokenType::WHILE}))        node = parseWhile();
         else if (match({TokenType::FOR}))          node = parseFor();
         else if (match({TokenType::SWITCH}))       node = parseSwitch();
+        else if (match({TokenType::MATCH}))        node = parseMatch();
         else if (match({TokenType::RETURN}))       node = parseReturn();
         else if (match({TokenType::BREAK}))        node = parseBreak();
         else if (match({TokenType::CONTINUE}))     node = parseContinue();
@@ -339,6 +340,36 @@ private:
             node->cases.push_back(std::move(clause));
         }
         expect(TokenType::RBRACE, "Expected '}' after switch body");
+        return node;
+    }
+
+    std::unique_ptr<Stmt> parseMatch() {
+        bool hasParen = match({TokenType::LPAREN});
+        auto subject = parseExpression();
+        if (hasParen) {
+            expect(TokenType::RPAREN, "Expected ')' after match subject");
+        }
+        expect(TokenType::LBRACE, "Expected '{' after match subject");
+        auto node = std::make_unique<MatchStmt>();
+        node->subject = std::move(subject);
+        while (!check(TokenType::RBRACE) && !isAtEnd()) {
+            MatchArm arm;
+            match({TokenType::CASE});
+            if (check(TokenType::IDENTIFIER) && peek().value == "_") {
+                advance();
+                arm.pattern = nullptr;
+            } else if (match({TokenType::DEFAULT})) {
+                arm.pattern = nullptr;
+            } else {
+                arm.pattern = parseExpression();
+            }
+            expect(TokenType::ARROW_LOG, "Expected '=>' after match pattern");
+            arm.body = parseStatement();
+            match({TokenType::COMMA});
+            match({TokenType::SEMICOLON});
+            node->arms.push_back(std::move(arm));
+        }
+        expect(TokenType::RBRACE, "Expected '}' after match body");
         return node;
     }
 

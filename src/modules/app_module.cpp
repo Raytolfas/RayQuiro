@@ -5,8 +5,8 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
-#include "Framework.h"
 #endif
+#include "Framework.h"
 
 #include <cctype>
 #include <cstring>
@@ -217,11 +217,152 @@ std::vector<AppJsonValue> parse_args(const char* jsonArgs) {
     return arr.arr;
 }
 
-#ifdef _WIN32
-RayQuiroApp& runtime() {
-    static RayQuiroApp app;
-    return app;
+std::string serialize_json_val(const AppJsonValue& val) {
+    if (val.type == AppJsonValue::String) return "\"" + escape_json(val.str) + "\"";
+    if (val.type == AppJsonValue::Number) return val.to_string();
+    if (val.type == AppJsonValue::Bool) return val.b ? "true" : "false";
+    if (val.type == AppJsonValue::Null) return "null";
+    if (val.type == AppJsonValue::Array) {
+        std::string s = "[";
+        for (size_t i = 0; i < val.arr.size(); ++i) {
+            if (i > 0) s += ",";
+            s += serialize_json_val(val.arr[i]);
+        }
+        s += "]";
+        return s;
+    }
+    if (val.type == AppJsonValue::Object) {
+        std::string s = "{";
+        bool first = true;
+        for (const auto& pair : val.obj) {
+            if (!first) s += ",";
+            first = false;
+            s += "\"" + escape_json(pair.first) + "\":" + serialize_json_val(pair.second);
+        }
+        s += "}";
+        return s;
+    }
+    return "null";
 }
+
+static int g_elementIdCounter = 1;
+
+static std::string make_element(
+    const std::string& tag,
+    const std::string& text,
+    const AppJsonValue& props,
+    const std::vector<AppJsonValue>& children,
+    const std::string& defaultStyleJson
+) {
+    std::string id = tag + "_" + std::to_string(g_elementIdCounter++);
+    if (props.type == AppJsonValue::Object) {
+        auto it = props.obj.find("id");
+        if (it != props.obj.end() && !it->second.to_string().empty()) {
+            id = it->second.to_string();
+        }
+    }
+
+    std::string out = "{\"__type__\":\"Element\",\"tag\":\"" + escape_json(tag) + "\",\"id\":\"" + escape_json(id) + "\",\"text\":\"" + escape_json(text) + "\"";
+
+    out += ",\"props\":{";
+    bool firstP = true;
+    if (props.type == AppJsonValue::Object) {
+        for (const auto& pair : props.obj) {
+            if (pair.first == "id" || pair.first == "style") continue;
+            if (!firstP) out += ",";
+            firstP = false;
+            out += "\"" + escape_json(pair.first) + "\":" + serialize_json_val(pair.second);
+        }
+    }
+    out += "}";
+
+    out += ",\"style\":";
+    if (props.type == AppJsonValue::Object && props.obj.find("style") != props.obj.end()) {
+        out += serialize_json_val(props.obj.at("style"));
+    } else {
+        out += defaultStyleJson;
+    }
+
+    out += ",\"children\":[";
+    for (size_t i = 0; i < children.size(); ++i) {
+        if (i > 0) out += ",";
+        out += serialize_json_val(children[i]);
+    }
+    out += "]}";
+
+    return out;
+}
+
+static std::string style_to_inline_css(const AppJsonValue& style) {
+    if (style.type != AppJsonValue::Object) return "";
+    std::string css;
+    for (const auto& pair : style.obj) {
+        css += pair.first + ":" + pair.second.to_string() + ";";
+    }
+    return css;
+}
+
+static std::string render_html(const AppJsonValue& el) {
+    if (el.type != AppJsonValue::Object) return "";
+    std::string tag = "div";
+    auto itTag = el.obj.find("tag");
+    if (itTag != el.obj.end()) tag = itTag->second.to_string();
+
+    std::string text;
+    auto itText = el.obj.find("text");
+    if (itText != el.obj.end()) text = itText->second.to_string();
+
+    std::string id;
+    auto itId = el.obj.find("id");
+    if (itId != el.obj.end()) id = itId->second.to_string();
+
+    std::string styleAttr;
+    auto itStyle = el.obj.find("style");
+    if (itStyle != el.obj.end()) {
+        std::string inlineCss = style_to_inline_css(itStyle->second);
+        if (!inlineCss.empty()) styleAttr = " style=\"" + inlineCss + "\"";
+    }
+
+    std::string propsAttr;
+    auto itProps = el.obj.find("props");
+    if (itProps != el.obj.end() && itProps->second.type == AppJsonValue::Object) {
+        for (const auto& pair : itProps->second.obj) {
+            propsAttr += " " + pair.first + "=\"" + pair.second.to_string() + "\"";
+        }
+    }
+
+    if (tag == "hr") return "<hr" + styleAttr + " />";
+    if (tag == "input") return "<input" + propsAttr + styleAttr + " />";
+    if (tag == "textarea") return "<textarea" + propsAttr + styleAttr + ">" + text + "</textarea>";
+    if (tag == "image") {
+        std::string src;
+        if (itProps != el.obj.end() && itProps->second.type == AppJsonValue::Object) {
+            auto itSrc = itProps->second.obj.find("src");
+            if (itSrc != itProps->second.obj.end()) src = itSrc->second.to_string();
+        }
+        return "<img src=\"" + src + "\"" + styleAttr + " />";
+    }
+
+    std::string inner = text;
+    auto itChildren = el.obj.find("children");
+    if (itChildren != el.obj.end() && itChildren->second.type == AppJsonValue::Array) {
+        for (const auto& child : itChildren->second.arr) {
+            inner += render_html(child);
+        }
+    }
+
+    std::string htmlTag = tag;
+    if (tag == "text" || tag == "label") htmlTag = "span";
+    else if (tag == "row" || tag == "column" || tag == "box" || tag == "card") htmlTag = "div";
+
+    return "<" + htmlTag + (!id.empty() ? (" id=\"" + id + "\"") : "") + propsAttr + styleAttr + ">" + inner + "</" + htmlTag + ">";
+}
+
+RayQuiroApp& runtime() {
+    return RayQuiroApp::instance();
+}
+
+#ifdef _WIN32
 
 struct NativeAppWindow {
     HWND hwnd = nullptr;
@@ -263,7 +404,7 @@ static void ensure_window_class() {
     wc.lpfnWndProc = RayQuiroWindowProc;
     wc.hInstance = GetModuleHandleA(NULL);
     wc.lpszClassName = "RayQuiroNativeWindowClass";
-    wc.hCursor = LoadCursorA(NULL, IDC_ARROW);
+    wc.hCursor = LoadCursor(NULL, IDC_ARROW);
     wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
     RegisterClassA(&wc);
     g_classRegistered = true;
@@ -281,6 +422,161 @@ static int extract_window_id(const std::vector<AppJsonValue>& args) {
 #endif
 
 std::string dispatch(const std::string& functionName, const std::vector<AppJsonValue>& args) {
+    if (functionName == "button") {
+        std::string text = args.size() > 0 ? args[0].to_string() : "Button";
+        int bx = args.size() > 1 && args[1].type == AppJsonValue::Number ? args[1].to_int(-1) : -1;
+        int by = args.size() > 2 && args[2].type == AppJsonValue::Number ? args[2].to_int(-1) : -1;
+        int bw = args.size() > 3 && args[3].type == AppJsonValue::Number ? args[3].to_int(-1) : -1;
+        int bh = args.size() > 4 && args[4].type == AppJsonValue::Number ? args[4].to_int(-1) : -1;
+        runtime().add_button(text, bx, by, bw, bh);
+        AppJsonValue opts = args.size() > 1 ? args[1] : AppJsonValue{};
+        return make_element("button", text, opts, {}, "{\"background\":\"#f4f4f5\",\"color\":\"#18181b\",\"border\":\"1px solid #d4d4d8\",\"radius\":4,\"padding\":\"6px 12px\",\"cursor\":\"pointer\"}");
+    }
+    if (functionName == "text" || functionName == "label") {
+        std::string text = args.size() > 0 ? args[0].to_string() : "";
+        int tx = args.size() > 1 && args[1].type == AppJsonValue::Number ? args[1].to_int(-1) : -1;
+        int ty = args.size() > 2 && args[2].type == AppJsonValue::Number ? args[2].to_int(-1) : -1;
+        int tw = args.size() > 3 && args[3].type == AppJsonValue::Number ? args[3].to_int(-1) : -1;
+        int th = args.size() > 4 && args[4].type == AppJsonValue::Number ? args[4].to_int(-1) : -1;
+        runtime().add_text(text, tx, ty, tw, th);
+        AppJsonValue opts = args.size() > 1 ? args[1] : AppJsonValue{};
+        return make_element(functionName, text, opts, {}, "{\"color\":\"#18181b\",\"fontSize\":14}");
+    }
+    if (functionName == "input" || functionName == "text_input" || functionName == "textInput") {
+        std::string placeholder = args.size() > 0 ? args[0].to_string() : "";
+        std::string val = args.size() > 1 ? args[1].to_string() : "";
+        int ix = args.size() > 1 && args[1].type == AppJsonValue::Number ? args[1].to_int(-1) : -1;
+        int iy = args.size() > 2 && args[2].type == AppJsonValue::Number ? args[2].to_int(-1) : -1;
+        int iw = args.size() > 3 && args[3].type == AppJsonValue::Number ? args[3].to_int(-1) : -1;
+        int ih = args.size() > 4 && args[4].type == AppJsonValue::Number ? args[4].to_int(-1) : -1;
+        runtime().add_input(placeholder, ix, iy, iw, ih);
+        AppJsonValue opts = args.size() > 2 ? args[2] : AppJsonValue{};
+        opts.type = AppJsonValue::Object;
+        opts.obj["placeholder"] = AppJsonValue{AppJsonValue::String, false, 0.0, placeholder, {}, {}};
+        opts.obj["value"] = AppJsonValue{AppJsonValue::String, false, 0.0, val, {}, {}};
+        return make_element("input", "", opts, {}, "{\"background\":\"#ffffff\",\"color\":\"#18181b\",\"border\":\"1px solid #d4d4d8\",\"radius\":4,\"padding\":\"6px 8px\"}");
+    }
+    if (functionName == "textarea") {
+        std::string placeholder = args.size() > 0 ? args[0].to_string() : "";
+        std::string val = args.size() > 1 ? args[1].to_string() : "";
+        AppJsonValue opts = args.size() > 2 ? args[2] : AppJsonValue{};
+        opts.type = AppJsonValue::Object;
+        opts.obj["placeholder"] = AppJsonValue{AppJsonValue::String, false, 0.0, placeholder, {}, {}};
+        return make_element("textarea", val, opts, {}, "{\"background\":\"#ffffff\",\"color\":\"#18181b\",\"border\":\"1px solid #d4d4d8\",\"radius\":4,\"padding\":\"8px\"}");
+    }
+    if (functionName == "checkbox") {
+        std::string label = args.size() > 0 ? args[0].to_string() : "";
+        bool checked = args.size() > 1 ? args[1].to_bool(false) : false;
+        int cx = args.size() > 2 && args[2].type == AppJsonValue::Number ? args[2].to_int(-1) : -1;
+        int cy = args.size() > 3 && args[3].type == AppJsonValue::Number ? args[3].to_int(-1) : -1;
+        int cw = args.size() > 4 && args[4].type == AppJsonValue::Number ? args[4].to_int(-1) : -1;
+        int ch = args.size() > 5 && args[5].type == AppJsonValue::Number ? args[5].to_int(-1) : -1;
+        runtime().add_checkbox(label, checked, cx, cy, cw, ch);
+        AppJsonValue opts = args.size() > 2 ? args[2] : AppJsonValue{};
+        opts.type = AppJsonValue::Object;
+        opts.obj["label"] = AppJsonValue{AppJsonValue::String, false, 0.0, label, {}, {}};
+        opts.obj["checked"] = AppJsonValue{AppJsonValue::Bool, checked, 0.0, "", {}, {}};
+        return make_element("checkbox", label, opts, {}, "{\"display\":\"inline-flex\",\"alignItems\":\"center\",\"gap\":\"6px\"}");
+    }
+    if (functionName == "radio") {
+        std::string label = args.size() > 0 ? args[0].to_string() : "";
+        std::string group = args.size() > 1 ? args[1].to_string() : "";
+        bool checked = args.size() > 2 ? args[2].to_bool(false) : false;
+        AppJsonValue opts = args.size() > 3 ? args[3] : AppJsonValue{};
+        opts.type = AppJsonValue::Object;
+        opts.obj["label"] = AppJsonValue{AppJsonValue::String, false, 0.0, label, {}, {}};
+        opts.obj["group"] = AppJsonValue{AppJsonValue::String, false, 0.0, group, {}, {}};
+        opts.obj["checked"] = AppJsonValue{AppJsonValue::Bool, checked, 0.0, "", {}, {}};
+        return make_element("radio", label, opts, {}, "{\"display\":\"inline-flex\",\"alignItems\":\"center\",\"gap\":\"6px\"}");
+    }
+    if (functionName == "slider") {
+        double minVal = args.size() > 0 ? args[0].to_number(0.0) : 0.0;
+        double maxVal = args.size() > 1 ? args[1].to_number(100.0) : 100.0;
+        double curVal = args.size() > 2 ? args[2].to_number(50.0) : 50.0;
+        AppJsonValue opts = args.size() > 3 ? args[3] : AppJsonValue{};
+        opts.type = AppJsonValue::Object;
+        opts.obj["min"] = AppJsonValue{AppJsonValue::Number, false, minVal, "", {}, {}};
+        opts.obj["max"] = AppJsonValue{AppJsonValue::Number, false, maxVal, "", {}, {}};
+        opts.obj["value"] = AppJsonValue{AppJsonValue::Number, false, curVal, "", {}, {}};
+        return make_element("slider", "", opts, {}, "{\"width\":\"100%\",\"accentColor\":\"#3b82f6\"}");
+    }
+    if (functionName == "progress") {
+        double curVal = args.size() > 0 ? args[0].to_number(0.0) : 0.0;
+        double maxVal = args.size() > 1 ? args[1].to_number(100.0) : 100.0;
+        AppJsonValue opts = args.size() > 2 ? args[2] : AppJsonValue{};
+        opts.type = AppJsonValue::Object;
+        opts.obj["value"] = AppJsonValue{AppJsonValue::Number, false, curVal, "", {}, {}};
+        opts.obj["max"] = AppJsonValue{AppJsonValue::Number, false, maxVal, "", {}, {}};
+        return make_element("progress", "", opts, {}, "{\"width\":\"100%\",\"height\":\"12px\",\"radius\":6}");
+    }
+    if (functionName == "select") {
+        AppJsonValue optionsList = args.size() > 0 ? args[0] : AppJsonValue{};
+        int selIdx = args.size() > 1 ? args[1].to_int(0) : 0;
+        AppJsonValue opts = args.size() > 2 ? args[2] : AppJsonValue{};
+        opts.type = AppJsonValue::Object;
+        opts.obj["options"] = optionsList;
+        opts.obj["selectedIndex"] = AppJsonValue{AppJsonValue::Number, false, static_cast<double>(selIdx), "", {}, {}};
+        return make_element("select", "", opts, {}, "{\"background\":\"#ffffff\",\"border\":\"1px solid #d4d4d8\",\"radius\":4,\"padding\":\"6px 10px\"}");
+    }
+    if (functionName == "image") {
+        std::string src = args.size() > 0 ? args[0].to_string() : "";
+        AppJsonValue opts = args.size() > 1 ? args[1] : AppJsonValue{};
+        opts.type = AppJsonValue::Object;
+        opts.obj["src"] = AppJsonValue{AppJsonValue::String, false, 0.0, src, {}, {}};
+        return make_element("image", "", opts, {}, "{\"maxWidth\":\"100%\",\"display\":\"block\"}");
+    }
+    if (functionName == "link") {
+        std::string href = args.size() > 0 ? args[0].to_string() : "#";
+        std::string text = args.size() > 1 ? args[1].to_string() : href;
+        AppJsonValue opts = args.size() > 2 ? args[2] : AppJsonValue{};
+        opts.type = AppJsonValue::Object;
+        opts.obj["href"] = AppJsonValue{AppJsonValue::String, false, 0.0, href, {}, {}};
+        return make_element("link", text, opts, {}, "{\"color\":\"#2563eb\",\"textDecoration\":\"underline\"}");
+    }
+    if (functionName == "heading" || functionName == "header") {
+        std::string text = args.size() > 0 ? args[0].to_string() : "";
+        int level = args.size() > 1 ? args[1].to_int(1) : 1;
+        if (level < 1) level = 1;
+        if (level > 6) level = 6;
+        AppJsonValue opts = args.size() > 2 ? args[2] : AppJsonValue{};
+        return make_element("h" + std::to_string(level), text, opts, {}, "{\"margin\":\"0\",\"fontWeight\":\"bold\"}");
+    }
+    if (functionName == "divider" || functionName == "separator") {
+        AppJsonValue opts = args.size() > 0 ? args[0] : AppJsonValue{};
+        return make_element("hr", "", opts, {}, "{\"border\":\"none\",\"borderTop\":\"1px solid #e4e4e7\",\"margin\":\"12px 0\"}");
+    }
+    if (functionName == "row") {
+        std::vector<AppJsonValue> children;
+        if (args.size() > 0 && args[0].type == AppJsonValue::Array) children = args[0].arr;
+        AppJsonValue opts = args.size() > 1 ? args[1] : AppJsonValue{};
+        return make_element("row", "", opts, children, "{\"display\":\"flex\",\"flexDirection\":\"row\",\"gap\":\"8px\"}");
+    }
+    if (functionName == "column") {
+        std::vector<AppJsonValue> children;
+        if (args.size() > 0 && args[0].type == AppJsonValue::Array) children = args[0].arr;
+        AppJsonValue opts = args.size() > 1 ? args[1] : AppJsonValue{};
+        return make_element("column", "", opts, children, "{\"display\":\"flex\",\"flexDirection\":\"column\",\"gap\":\"8px\"}");
+    }
+    if (functionName == "box" || functionName == "card" || functionName == "div") {
+        std::vector<AppJsonValue> children;
+        if (args.size() > 0 && args[0].type == AppJsonValue::Array) children = args[0].arr;
+        AppJsonValue opts = args.size() > 1 ? args[1] : AppJsonValue{};
+        return make_element("box", "", opts, children, "{\"background\":\"#ffffff\",\"border\":\"1px solid #e4e4e7\",\"radius\":6,\"padding\":\"16px\"}");
+    }
+    if (functionName == "element") {
+        std::string tag = args.size() > 0 ? args[0].to_string() : "div";
+        AppJsonValue props = args.size() > 1 ? args[1] : AppJsonValue{};
+        std::vector<AppJsonValue> children;
+        if (args.size() > 2 && args[2].type == AppJsonValue::Array) children = args[2].arr;
+        std::string style = "{}";
+        if (args.size() > 3) style = serialize_json_val(args[3]);
+        return make_element(tag, "", props, children, style);
+    }
+    if (functionName == "to_html" || functionName == "toHtml") {
+        if (args.empty()) return "\"\"";
+        return "\"" + escape_json(render_html(args[0])) + "\"";
+    }
+
 #ifdef _WIN32
     if (functionName == "window") {
         std::string title = "RayQuiro";
@@ -385,25 +681,6 @@ std::string dispatch(const std::string& functionName, const std::vector<AppJsonV
         PostQuitMessage(0);
         return "null";
     }
-    if (functionName == "init") {
-        runtime().init(args.size() > 0 ? args[0].to_string() : "RayQuiro", args.size() > 1 ? args[1].to_int(900) : 900, args.size() > 2 ? args[2].to_int(600) : 600);
-        return "null";
-    }
-    if (functionName == "run") { runtime().run(); return "null"; }
-    if (functionName == "button") {
-        if (args.size() < 5) return "null";
-        runtime().add_button(args[0].to_string(), args[1].to_int(), args[2].to_int(), args[3].to_int(), args[4].to_int());
-        return "null";
-    }
-    if (functionName == "text") {
-        if (args.size() < 5) return "null";
-        runtime().add_text(args[0].to_string(), args[1].to_int(), args[2].to_int(), args[3].to_int(), args[4].to_int());
-        return "null";
-    }
-    if (functionName == "msg") {
-        RayQuiroApp::show_message(args.size() > 0 ? args[0].to_string() : "RayQuiro", args.size() > 1 ? args[1].to_string() : "");
-        return "null";
-    }
 #else
     if (functionName == "window") {
         return "{\"__type__\":\"Window\",\"id\":1,\"title\":\"RayQuiro\",\"width\":800,\"height\":600,\"open\":true}";
@@ -413,8 +690,40 @@ std::string dispatch(const std::string& functionName, const std::vector<AppJsonV
     if (functionName == "window_set_title" || functionName == "setTitle") return "null";
     if (functionName == "window_set_size" || functionName == "setSize") return "null";
     if (functionName == "window_close" || functionName == "close") return "null";
-    if (functionName == "quit") return "null";
+    if (functionName == "quit") {
+        runtime().close();
+        return "null";
+    }
 #endif
+
+    if (functionName == "init") {
+        runtime().init(args.size() > 0 ? args[0].to_string() : "RayQuiro", args.size() > 1 ? args[1].to_int(900) : 900, args.size() > 2 ? args[2].to_int(600) : 600);
+        return "null";
+    }
+    if (functionName == "run") { runtime().run(); return "null"; }
+    if (functionName == "style") {
+        if (!args.empty()) runtime().set_style(args[0].to_string());
+        return "null";
+    }
+    if (functionName == "theme" || functionName == "set_theme" || functionName == "setTheme") {
+        if (!args.empty()) runtime().set_theme(args[0].to_string());
+        return "null";
+    }
+    if (functionName == "native_button") {
+        if (args.size() < 5) return "null";
+        runtime().add_button(args[0].to_string(), args[1].to_int(), args[2].to_int(), args[3].to_int(), args[4].to_int());
+        return "null";
+    }
+    if (functionName == "native_text") {
+        if (args.size() < 5) return "null";
+        runtime().add_text(args[0].to_string(), args[1].to_int(), args[2].to_int(), args[3].to_int(), args[4].to_int());
+        return "null";
+    }
+    if (functionName == "msg") {
+        RayQuiroApp::show_message(args.size() > 0 ? args[0].to_string() : "RayQuiro", args.size() > 1 ? args[1].to_string() : "");
+        return "null";
+    }
+
     throw std::runtime_error("rayquiro.app does not export app." + functionName);
 }
 

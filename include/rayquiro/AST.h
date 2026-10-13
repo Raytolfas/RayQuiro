@@ -226,6 +226,16 @@ struct SwitchStmt : public Stmt {
     std::vector<CaseClause> cases;
 };
 
+struct MatchArm {
+    std::unique_ptr<Expr> pattern;
+    std::unique_ptr<Stmt> body;
+};
+
+struct MatchStmt : public Stmt {
+    std::unique_ptr<Expr> subject;
+    std::vector<MatchArm> arms;
+};
+
 struct LogStmt : public Stmt { std::unique_ptr<Expr> message; };
 
 struct ProgramNode {

@@ -124,7 +124,7 @@ public:
 #ifdef _WIN32
             command += " -lgdi32 -luser32";
 #else
-            throw std::runtime_error("rayquiro.app native build is currently supported on Windows only.");
+            command += " -lraylib -lGL -lm -lpthread -ldl -lrt -lX11";
 #endif
         }
 
@@ -132,7 +132,7 @@ public:
 #ifdef _WIN32
             command += " -lgdi32 -luser32";
 #else
-            throw std::runtime_error("rayquiro.ui native build is currently supported on Windows only.");
+            command += " -lraylib -lGL -lm -lpthread -ldl -lrt -lX11";
 #endif
         }
 

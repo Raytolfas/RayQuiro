@@ -114,8 +114,8 @@ private:
 
     bool supportsStmt(Stmt* stmt) const {
         if (!stmt) return true;
-        if (dynamic_cast<ImportStmt*>(stmt) != nullptr) return false;
-        if (dynamic_cast<FromImportStmt*>(stmt) != nullptr) return false;
+        if (dynamic_cast<ImportStmt*>(stmt) != nullptr) return true;
+        if (dynamic_cast<FromImportStmt*>(stmt) != nullptr) return true;
         if (auto vs = dynamic_cast<VarStmt*>(stmt)) return supportsExpr(vs->initializer.get());
         if (auto es = dynamic_cast<ExprStmt*>(stmt)) return supportsExpr(es->expr.get());
         if (auto bs = dynamic_cast<BlockStmt*>(stmt)) {
@@ -130,9 +130,7 @@ private:
     bool supportsExpr(Expr* expr) const {
         if (!expr) return true;
         if (auto call = dynamic_cast<CallExpr*>(expr)) {
-            if (call->callee.rfind("app.", 0) == 0 ||
-                call->callee.rfind("engine.", 0) == 0 ||
-                call->callee.rfind("ui.", 0) == 0 ||
+            if (call->callee.rfind("engine.", 0) == 0 ||
                 call->callee.rfind("web.", 0) == 0) {
                 return false;
             }
@@ -207,7 +205,35 @@ private:
             name == "regex.match" ||
             name == "regex.replace" ||
             name == "regex.split" ||
-            name == "__optional_get";
+            name == "assert" ||
+            name == "assert_eq" ||
+            name == "assert_ne" ||
+            name == "assert_true" ||
+            name == "assert_false" ||
+            name == "assert_null" ||
+            name == "__optional_get" ||
+            name == "app.init" ||
+            name == "app.run" ||
+            name == "app.button" ||
+            name == "app.text" ||
+            name == "app.label" ||
+            name == "app.input" ||
+            name == "app.checkbox" ||
+            name == "app.style" ||
+            name == "app.theme" ||
+            name == "app.set_theme" ||
+            name == "app.close" ||
+            name == "app.quit" ||
+            name == "app.msg" ||
+            name == "ui.style" ||
+            name == "ui.theme" ||
+            name == "ui.set_theme" ||
+            name == "ui.dark" ||
+            name == "ui.light" ||
+            name == "ui.rgb" ||
+            name == "ui.rgba" ||
+            name == "ui.hex" ||
+            name == "ui.apply";
     }
 
     static bool isFrameworkNamespace(const std::string& name) {
@@ -215,6 +241,7 @@ private:
             name == "ui" ||
             name == "web" ||
             name == "engine" ||
+            name == "audio" ||
             name == "fs" ||
             name == "env" ||
             name == "process" ||
@@ -270,7 +297,9 @@ private:
             return;
         }
 
-        if (dynamic_cast<FunctionStmt*>(stmt) != nullptr) {
+        if (dynamic_cast<FunctionStmt*>(stmt) != nullptr ||
+            dynamic_cast<ImportStmt*>(stmt) != nullptr ||
+            dynamic_cast<FromImportStmt*>(stmt) != nullptr) {
             return;
         }
 

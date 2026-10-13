@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "Bytecode.h"
+#include "Framework.h"
 
 class VM {
 public:
@@ -1151,6 +1152,56 @@ public:
             }
             return result;
         }
+        if (name == "assert") {
+            if (args.empty() || !isTruthy(args[0])) {
+                std::string msg = args.size() > 1 ? toString(args[1]) : "Assertion failed";
+                throw std::runtime_error(msg);
+            }
+            return VMValue(true);
+        }
+        if (name == "assert_eq") {
+            if (args.size() < 2) throw std::runtime_error("assert_eq requires at least 2 arguments");
+            if (toString(args[0]) != toString(args[1])) {
+                std::string msg = args.size() > 2 ? toString(args[2]) : ("Assertion failed: expected " + toString(args[1]) + ", got " + toString(args[0]));
+                throw std::runtime_error(msg);
+            }
+            return VMValue(true);
+        }
+        if (name == "assert_ne") {
+            if (args.size() < 2) throw std::runtime_error("assert_ne requires at least 2 arguments");
+            if (toString(args[0]) == toString(args[1])) {
+                std::string msg = args.size() > 2 ? toString(args[2]) : ("Assertion failed: values are equal: " + toString(args[0]));
+                throw std::runtime_error(msg);
+            }
+            return VMValue(true);
+        }
+        if (name == "assert_true") {
+            if (args.empty() || !isTruthy(args[0])) {
+                std::string msg = args.size() > 1 ? toString(args[1]) : "Assertion failed: expected true";
+                throw std::runtime_error(msg);
+            }
+            return VMValue(true);
+        }
+        if (name == "assert_false") {
+            if (args.empty() || isTruthy(args[0])) {
+                std::string msg = args.size() > 1 ? toString(args[1]) : "Assertion failed: expected false";
+                throw std::runtime_error(msg);
+            }
+            return VMValue(true);
+        }
+        if (name == "assert_null") {
+            if (args.empty() || !std::holds_alternative<std::monostate>(args[0].data)) {
+                std::string msg = args.size() > 1 ? toString(args[1]) : "Assertion failed: expected null";
+                throw std::runtime_error(msg);
+            }
+            return VMValue(true);
+        }
+        if (name == "audio.init" || name == "engine.init_audio") {
+#if RAYQUIRO_HAS_RAYLIB
+            InitAudioDevice();
+#endif
+            return VMValue();
+        }
         if (name == "random" || name == "random.int") {
             static std::mt19937 engine(static_cast<unsigned int>(
                 std::chrono::high_resolution_clock::now().time_since_epoch().count()));
@@ -1642,6 +1693,81 @@ public:
             res["status"] = VMValue(static_cast<double>(statusCode));
             res["body"] = VMValue(respBody);
             return VMValue(res);
+        }
+
+        if (name == "app.init") {
+            const std::string title = args.size() > 0 ? toString(args[0]) : "RayQuiro";
+            const int width = args.size() > 1 ? static_cast<int>(toNumber(args[1])) : 900;
+            const int height = args.size() > 2 ? static_cast<int>(toNumber(args[2])) : 600;
+            RayQuiroApp::instance().init(title, width, height);
+            return VMValue();
+        }
+        if (name == "app.run") {
+            RayQuiroApp::instance().run();
+            return VMValue();
+        }
+        if (name == "app.button") {
+            const std::string txt = args.size() > 0 ? toString(args[0]) : "Button";
+            const int x = args.size() > 1 ? static_cast<int>(toNumber(args[1])) : -1;
+            const int y = args.size() > 2 ? static_cast<int>(toNumber(args[2])) : -1;
+            const int w = args.size() > 3 ? static_cast<int>(toNumber(args[3])) : -1;
+            const int h = args.size() > 4 ? static_cast<int>(toNumber(args[4])) : -1;
+            RayQuiroApp::instance().add_button(txt, x, y, w, h);
+            return VMValue();
+        }
+        if (name == "app.text" || name == "app.label") {
+            const std::string txt = args.size() > 0 ? toString(args[0]) : "";
+            const int x = args.size() > 1 ? static_cast<int>(toNumber(args[1])) : -1;
+            const int y = args.size() > 2 ? static_cast<int>(toNumber(args[2])) : -1;
+            const int w = args.size() > 3 ? static_cast<int>(toNumber(args[3])) : -1;
+            const int h = args.size() > 4 ? static_cast<int>(toNumber(args[4])) : -1;
+            RayQuiroApp::instance().add_text(txt, x, y, w, h);
+            return VMValue();
+        }
+        if (name == "app.input") {
+            const std::string ph = args.size() > 0 ? toString(args[0]) : "";
+            const int x = args.size() > 1 ? static_cast<int>(toNumber(args[1])) : -1;
+            const int y = args.size() > 2 ? static_cast<int>(toNumber(args[2])) : -1;
+            const int w = args.size() > 3 ? static_cast<int>(toNumber(args[3])) : -1;
+            const int h = args.size() > 4 ? static_cast<int>(toNumber(args[4])) : -1;
+            RayQuiroApp::instance().add_input(ph, x, y, w, h);
+            return VMValue();
+        }
+        if (name == "app.checkbox") {
+            const std::string lbl = args.size() > 0 ? toString(args[0]) : "";
+            const bool chk = args.size() > 1 ? isTruthy(args[1]) : false;
+            const int x = args.size() > 2 ? static_cast<int>(toNumber(args[2])) : -1;
+            const int y = args.size() > 3 ? static_cast<int>(toNumber(args[3])) : -1;
+            const int w = args.size() > 4 ? static_cast<int>(toNumber(args[4])) : -1;
+            const int h = args.size() > 5 ? static_cast<int>(toNumber(args[5])) : -1;
+            RayQuiroApp::instance().add_checkbox(lbl, chk, x, y, w, h);
+            return VMValue();
+        }
+        if (name == "app.style") {
+            if (!args.empty()) RayQuiroApp::instance().set_style(toString(args[0]));
+            return VMValue();
+        }
+        if (name == "app.theme" || name == "app.set_theme") {
+            if (!args.empty()) RayQuiroApp::instance().set_theme(toString(args[0]));
+            return VMValue();
+        }
+        if (name == "app.close" || name == "app.quit") {
+            RayQuiroApp::instance().close();
+            return VMValue();
+        }
+        if (name == "app.msg") {
+            const std::string title = args.size() > 0 ? toString(args[0]) : "RayQuiro";
+            const std::string text = args.size() > 1 ? toString(args[1]) : "";
+            RayQuiroApp::show_message(title, text);
+            return VMValue();
+        }
+        if (name == "ui.style") {
+            if (!args.empty()) RayQuiroApp::instance().set_style(toString(args[0]));
+            return VMValue();
+        }
+        if (name == "ui.set_theme" || name == "ui.theme") {
+            if (!args.empty()) RayQuiroApp::instance().set_theme(toString(args[0]));
+            return VMValue();
         }
 
         return std::nullopt;

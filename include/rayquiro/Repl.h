@@ -11,7 +11,7 @@
 class Repl {
 public:
     static int run(Interpreter& interpreter) {
-        std::cout << "\033[1;36mRayQuiro\033[0m 0.2.1 REPL\n";
+        std::cout << "\033[1;36mRayQuiro\033[0m 0.2.2 REPL\n";
         std::cout << "Type \"exit\" or press Ctrl+C to quit.\n\n";
 
         interpreter.initGlobals();

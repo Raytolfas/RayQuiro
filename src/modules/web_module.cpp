@@ -606,7 +606,6 @@ void write_output(const WebState& web) {
     }
 }
 
-#ifdef _WIN32
 std::string content_type_for(const std::filesystem::path& requested) {
     const std::string extension = requested.extension().string();
     if (extension == ".css") return "text/css; charset=utf-8";
@@ -690,15 +689,19 @@ void handle_client(SOCKET client, const WebState& web) {
 }
 
 void serve_forever(const WebState& web) {
+#ifdef _WIN32
     WSADATA data;
     if (WSAStartup(MAKEWORD(2, 2), &data) != 0) {
         std::cerr << "[web] Failed to start Winsock for web.live()." << std::endl;
         return;
     }
+#endif
 
     SOCKET server = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (server == INVALID_SOCKET) {
+#ifdef _WIN32
         WSACleanup();
+#endif
         return;
     }
 
@@ -710,13 +713,17 @@ void serve_forever(const WebState& web) {
     if (bind(server, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == SOCKET_ERROR) {
         std::cerr << "[web] Port " << web.livePort << " is busy." << std::endl;
         closesocket(server);
+#ifdef _WIN32
         WSACleanup();
+#endif
         return;
     }
 
     if (listen(server, SOMAXCONN) == SOCKET_ERROR) {
         closesocket(server);
+#ifdef _WIN32
         WSACleanup();
+#endif
         return;
     }
 
@@ -731,9 +738,10 @@ void serve_forever(const WebState& web) {
     }
 
     closesocket(server);
+#ifdef _WIN32
     WSACleanup();
-}
 #endif
+}
 
 ScalarValue call_begin(const std::vector<ScalarValue>& args) {
     auto& web = state();
@@ -876,9 +884,7 @@ ScalarValue call_end(const std::vector<ScalarValue>&) {
     }
     write_output(web);
     web.active = false;
-#ifdef _WIN32
     if (web.liveMode) serve_forever(web);
-#endif
     return {};
 }
 

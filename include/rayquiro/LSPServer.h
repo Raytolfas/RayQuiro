@@ -330,26 +330,58 @@ class LSPServer {
         }
 
         if (importedModule == "rayquiro.ui" || target == "ui") {
-            items.push_back(makeCompletionItem("label", 3, "ui.label(text) -> UIElement", "Create a static text label"));
-            items.push_back(makeCompletionItem("row", 3, "ui.row(children) -> UIElement", "Create horizontal flex container"));
-            items.push_back(makeCompletionItem("column", 3, "ui.column(children) -> UIElement", "Create vertical stack container"));
-            items.push_back(makeCompletionItem("textField", 3, "ui.textField(options) -> UIElement", "Create text input field with placeholder & onChange"));
-            items.push_back(makeCompletionItem("text_field", 3, "ui.text_field(options) -> UIElement", "Create text input field"));
-            items.push_back(makeCompletionItem("checkbox", 3, "ui.checkbox(label, checked, onChange) -> UIElement", "Create toggle checkbox"));
-            items.push_back(makeCompletionItem("slider", 3, "ui.slider(min, max, val, onChange) -> UIElement", "Create numeric slider"));
-            items.push_back(makeCompletionItem("button", 3, "ui.button(text, onClick) -> UIElement", "Create interactive action button"));
-            items.push_back(makeCompletionItem("render", 3, "ui.render(root) -> null", "Render declarative component tree"));
+            items.push_back(makeCompletionItem("theme", 3, "ui.theme(name) -> Object", "Get preconfigured theme: dark, light, nord, dracula, cyberpunk, midnight"));
+            items.push_back(makeCompletionItem("dark", 3, "ui.dark() -> Object", "Get dark theme palette"));
+            items.push_back(makeCompletionItem("light", 3, "ui.light() -> Object", "Get light theme palette"));
+            items.push_back(makeCompletionItem("nord", 3, "ui.nord() -> Object", "Get Nord theme palette"));
+            items.push_back(makeCompletionItem("dracula", 3, "ui.dracula() -> Object", "Get Dracula theme palette"));
+            items.push_back(makeCompletionItem("cyberpunk", 3, "ui.cyberpunk() -> Object", "Get Cyberpunk theme palette"));
+            items.push_back(makeCompletionItem("midnight", 3, "ui.midnight() -> Object", "Get Midnight theme palette"));
+            items.push_back(makeCompletionItem("create_theme", 3, "ui.create_theme(options) -> Object", "Create custom theme extending a base palette"));
+            items.push_back(makeCompletionItem("rgb", 3, "ui.rgb(r, g, b) -> String", "Create hex color from RGB integers"));
+            items.push_back(makeCompletionItem("rgba", 3, "ui.rgba(r, g, b, a) -> String", "Create rgba color string"));
+            items.push_back(makeCompletionItem("hex", 3, "ui.hex(color) -> String", "Normalize hex color string"));
+            items.push_back(makeCompletionItem("blend", 3, "ui.blend(c1, c2, factor) -> String", "Linear blend between two colors"));
+            items.push_back(makeCompletionItem("lighten", 3, "ui.lighten(color, percent) -> String", "Lighten color by percentage"));
+            items.push_back(makeCompletionItem("darken", 3, "ui.darken(color, percent) -> String", "Darken color by percentage"));
+            items.push_back(makeCompletionItem("alpha", 3, "ui.alpha(color, opacity) -> String", "Set color opacity"));
+            items.push_back(makeCompletionItem("button_style", 3, "ui.button_style(variant, options) -> Object", "Get styled button configuration"));
+            items.push_back(makeCompletionItem("card_style", 3, "ui.card_style(options) -> Object", "Get styled card container configuration"));
+            items.push_back(makeCompletionItem("text_style", 3, "ui.text_style(role, options) -> Object", "Get typography text style configuration"));
+            items.push_back(makeCompletionItem("badge_style", 3, "ui.badge_style(variant, options) -> Object", "Get badge styling configuration"));
+            items.push_back(makeCompletionItem("input_style", 3, "ui.input_style(options) -> Object", "Get input control styling configuration"));
+            items.push_back(makeCompletionItem("parse", 3, "ui.parse(cssString) -> Object", "Parse CSS-like stylesheet into object"));
+            items.push_back(makeCompletionItem("stringify", 3, "ui.stringify(styleObject) -> String", "Format style object as CSS stylesheet"));
+            items.push_back(makeCompletionItem("style", 3, "ui.style(cssString) -> String", "Set active UI stylesheet"));
+            items.push_back(makeCompletionItem("apply", 3, "ui.apply(element, style) -> Element", "Apply style dictionary or CSS to element"));
+            items.push_back(makeCompletionItem("default_style", 3, "ui.default_style(tag) -> Object", "Get clean default CSS style for element tag"));
+            items.push_back(makeCompletionItem("minimal", 3, "ui.minimal() -> Object", "Get clean minimal CSS design tokens"));
             return items;
         }
 
         if (importedModule == "rayquiro.app" || target == "app") {
             items.push_back(makeCompletionItem("window", 3, "app.window(options) -> Window", "Create desktop application window"));
-            items.push_back(makeCompletionItem("show_message", 3, "app.show_message(title, text) -> null", "Show native message box"));
-            items.push_back(makeCompletionItem("init", 3, "app.init(w, h, title) -> null", "Initialize application shell"));
-            items.push_back(makeCompletionItem("run", 3, "app.run() -> null", "Start application message loop"));
-            items.push_back(makeCompletionItem("button", 3, "app.button(id, text, x, y, w, h) -> null", "Add native button control"));
-            items.push_back(makeCompletionItem("text", 3, "app.text(id, text, x, y, w, h) -> null", "Add native static text control"));
-            items.push_back(makeCompletionItem("msg", 3, "app.msg(title, text) -> null", "Display native message box"));
+            items.push_back(makeCompletionItem("button", 3, "app.button(text, options) -> Element", "Create button UI element (HTML button)"));
+            items.push_back(makeCompletionItem("text", 3, "app.text(text, options) -> Element", "Create text/span UI element"));
+            items.push_back(makeCompletionItem("label", 3, "app.label(text, options) -> Element", "Create label UI element"));
+            items.push_back(makeCompletionItem("input", 3, "app.input(placeholder, value, options) -> Element", "Create text input element"));
+            items.push_back(makeCompletionItem("textarea", 3, "app.textarea(placeholder, value, options) -> Element", "Create textarea multiline element"));
+            items.push_back(makeCompletionItem("checkbox", 3, "app.checkbox(label, checked, options) -> Element", "Create checkbox element"));
+            items.push_back(makeCompletionItem("radio", 3, "app.radio(label, group, checked, options) -> Element", "Create radio button element"));
+            items.push_back(makeCompletionItem("slider", 3, "app.slider(min, max, value, options) -> Element", "Create numeric range slider"));
+            items.push_back(makeCompletionItem("progress", 3, "app.progress(value, max, options) -> Element", "Create progress bar"));
+            items.push_back(makeCompletionItem("select", 3, "app.select(options, selectedIndex, options) -> Element", "Create dropdown select"));
+            items.push_back(makeCompletionItem("image", 3, "app.image(src, options) -> Element", "Create image element"));
+            items.push_back(makeCompletionItem("link", 3, "app.link(url, text, options) -> Element", "Create hyperlink element"));
+            items.push_back(makeCompletionItem("heading", 3, "app.heading(text, level, options) -> Element", "Create heading h1-h6 element"));
+            items.push_back(makeCompletionItem("divider", 3, "app.divider(options) -> Element", "Create divider line hr element"));
+            items.push_back(makeCompletionItem("row", 3, "app.row(children, options) -> Element", "Create horizontal flex container"));
+            items.push_back(makeCompletionItem("column", 3, "app.column(children, options) -> Element", "Create vertical flex container"));
+            items.push_back(makeCompletionItem("box", 3, "app.box(children, options) -> Element", "Create container box / card"));
+            items.push_back(makeCompletionItem("card", 3, "app.card(children, options) -> Element", "Create styled card container"));
+            items.push_back(makeCompletionItem("element", 3, "app.element(tag, props, children, style) -> Element", "Create generic custom DOM element"));
+            items.push_back(makeCompletionItem("to_html", 3, "app.to_html(element) -> String", "Serialize UI element tree to HTML string"));
+            items.push_back(makeCompletionItem("quit", 3, "app.quit() -> null", "Quit application loop"));
             return items;
         }
 
@@ -669,7 +701,7 @@ public:
 
                 dap::json serverInfo;
                 serverInfo["name"] = "rayquiro-lsp";
-                serverInfo["version"] = "0.2.1";
+                serverInfo["version"] = "0.2.2";
                 result["serverInfo"] = serverInfo;
 
                 sendResponse(id, result);

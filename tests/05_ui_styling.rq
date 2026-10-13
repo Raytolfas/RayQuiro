@@ -1,0 +1,41 @@
+import "rayquiro.ui";
+
+var dark = ui.dark();
+assert_eq(dark["name"], "dark");
+assert_eq(dark["primary"], "#3b82f6");
+
+var nord = ui.theme("nord");
+assert_eq(nord["name"], "nord");
+assert_eq(nord["background"], "#2e3440");
+
+var custom = ui.create_theme({
+    "base": "dark",
+    "primary": "#ff5500",
+    "radius": 16
+});
+assert_eq(custom["primary"], "#ff5500");
+assert_eq(custom["radius"], 16);
+
+var hex = ui.rgb(255, 0, 128);
+assert_eq(hex, "#ff0080");
+
+var blended = ui.blend("#000000", "#ffffff", 0.5);
+assert_eq(blended, "#7f7f7f");
+
+var btn = ui.button_style("danger");
+assert_eq(btn["variant"], "danger");
+assert_eq(btn["background"], "#ef4444");
+
+var card = ui.card_style({ "radius": 24 });
+assert_eq(card["radius"], 24);
+
+var text = ui.text_style("title");
+assert_eq(text["role"], "title");
+assert_eq(text["size"], 28);
+
+var parsed = ui.parse(".btn { background: #3b82f6; radius: 8px; }");
+assert(parsed[".btn"] != null);
+assert_eq(parsed[".btn"]["background"], "#3b82f6");
+assert_eq(parsed[".btn"]["radius"], "8px");
+
+print("05_ui_styling: PASS");

@@ -1118,6 +1118,24 @@ private:
             return;
         }
 
+        if (auto matchStmt = dynamic_cast<MatchStmt*>(stmt)) {
+            Value subject = evaluate(matchStmt->subject.get(), env);
+            for (auto& arm : matchStmt->arms) {
+                bool matched = false;
+                if (!arm.pattern) {
+                    matched = true;
+                } else {
+                    Value patVal = evaluate(arm.pattern.get(), env);
+                    matched = (to_string(subject) == to_string(patVal));
+                }
+                if (matched) {
+                    execute(arm.body.get(), env);
+                    break;
+                }
+            }
+            return;
+        }
+
         if (auto throwStmt = dynamic_cast<ThrowStmt*>(stmt)) {
             Value v = evaluate(throwStmt->value.get(), env);
             throw std::runtime_error(to_string(v));
@@ -1570,6 +1588,59 @@ private:
         if (builtin == "time.unix_ms") return builtin_time_unix_ms(args);
         if (builtin == "json.stringify") return builtin_json_stringify(args);
         if (builtin == "json.parse") return builtin_json_parse(args);
+        if (builtin == "assert") {
+            if (args.empty() || !truthy(args[0])) {
+                std::string msg = args.size() > 1 ? to_string(args[1]) : "Assertion failed";
+                throw std::runtime_error(msg);
+            }
+            return Value(true);
+        }
+        if (builtin == "assert_eq") {
+            if (args.size() < 2) throw std::runtime_error("assert_eq requires at least 2 arguments");
+            if (to_string(args[0]) != to_string(args[1])) {
+                std::string msg = args.size() > 2 ? to_string(args[2]) : ("Assertion failed: expected " + to_string(args[1]) + ", got " + to_string(args[0]));
+                throw std::runtime_error(msg);
+            }
+            return Value(true);
+        }
+        if (builtin == "assert_ne") {
+            if (args.size() < 2) throw std::runtime_error("assert_ne requires at least 2 arguments");
+            if (to_string(args[0]) == to_string(args[1])) {
+                std::string msg = args.size() > 2 ? to_string(args[2]) : ("Assertion failed: values are equal: " + to_string(args[0]));
+                throw std::runtime_error(msg);
+            }
+            return Value(true);
+        }
+        if (builtin == "assert_true") {
+            if (args.empty() || !truthy(args[0])) {
+                std::string msg = args.size() > 1 ? to_string(args[1]) : "Assertion failed: expected true";
+                throw std::runtime_error(msg);
+            }
+            return Value(true);
+        }
+        if (builtin == "assert_false") {
+            if (args.empty() || truthy(args[0])) {
+                std::string msg = args.size() > 1 ? to_string(args[1]) : "Assertion failed: expected false";
+                throw std::runtime_error(msg);
+            }
+            return Value(true);
+        }
+        if (builtin == "assert_null") {
+            if (args.empty() || !is_null(args[0])) {
+                std::string msg = args.size() > 1 ? to_string(args[1]) : "Assertion failed: expected null";
+                throw std::runtime_error(msg);
+            }
+            return Value(true);
+        }
+        if (builtin == "audio.init") return callBuiltin("engine.init_audio", args);
+        if (builtin == "audio.load_sound") return callBuiltin("engine.load_sound", args);
+        if (builtin == "audio.play_sound" || builtin == "audio.play") return callBuiltin("engine.play_sound", args);
+        if (builtin == "audio.stop_sound" || builtin == "audio.stop") return callBuiltin("engine.stop_sound", args);
+        if (builtin == "audio.set_volume") return callBuiltin("engine.set_sound_volume", args);
+        if (builtin == "audio.load_music") return callBuiltin("engine.load_music", args);
+        if (builtin == "audio.play_music") return callBuiltin("engine.play_music", args);
+        if (builtin == "audio.stop_music") return callBuiltin("engine.stop_music", args);
+        if (builtin == "audio.update_music") return callBuiltin("engine.update_music", args);
         if (builtin == "random" || builtin == "random.random") return builtin_random(args);
         if (builtin == "random.float") return builtin_random_float(args);
         if (builtin == "random.int" || builtin == "random.randint") return builtin_random_int(args);
@@ -1613,82 +1684,17 @@ private:
         if (builtin == "db.close") return builtin_db_close(args);
         if (builtin == "app.init") return builtin_app_init(args);
         if (builtin == "app.run") return builtin_app_run(args);
-        if (builtin == "app.button") return builtin_app_button(args);
-        if (builtin == "app.text") return builtin_app_text(args);
+        if (builtin == "app.style") return builtin_app_style(args);
+        if (builtin == "app.theme" || builtin == "app.set_theme") return builtin_app_theme(args);
+        if (builtin == "app.close" || builtin == "app.quit") return builtin_app_close(args);
         if (builtin == "app.msg") return builtin_app_msg(args);
-        if (builtin == "ui.init") return builtin_ui_init(args);
         if (builtin == "ui.style") return builtin_ui_style(args);
+        if (builtin == "ui.set_theme" || builtin == "ui.setTheme") return builtin_ui_theme(args);
+        if (builtin == "ui.init") return builtin_ui_init(args);
         if (builtin == "ui.hero") return builtin_ui_hero(args);
         if (builtin == "ui.status") return builtin_ui_status(args);
         if (builtin == "ui.info") return builtin_ui_info(args);
-        if (builtin == "ui.text") return builtin_ui_text(args);
         if (builtin == "ui.action") return builtin_ui_action(args);
-        if (builtin == "ui.label") {
-            Value node = Value::object();
-            (*node.as_object())["__type__"] = Value("UIComponent");
-            (*node.as_object())["type"] = Value("label");
-            (*node.as_object())["text"] = args.empty() ? Value("") : args[0];
-            return node;
-        }
-        if (builtin == "ui.row") {
-            Value node = Value::object();
-            (*node.as_object())["__type__"] = Value("UIComponent");
-            (*node.as_object())["type"] = Value("row");
-            (*node.as_object())["children"] = args.empty() ? array({}) : args[0];
-            return node;
-        }
-        if (builtin == "ui.column") {
-            Value node = Value::object();
-            (*node.as_object())["__type__"] = Value("UIComponent");
-            (*node.as_object())["type"] = Value("column");
-            (*node.as_object())["children"] = args.empty() ? array({}) : args[0];
-            return node;
-        }
-        if (builtin == "ui.textField" || builtin == "ui.text_field") {
-            Value node = Value::object();
-            (*node.as_object())["__type__"] = Value("UIComponent");
-            (*node.as_object())["type"] = Value("textField");
-            if (!args.empty() && is_object(args[0])) {
-                for (const auto& pair : *args[0].as_object()) {
-                    (*node.as_object())[pair.first] = pair.second;
-                }
-            }
-            return node;
-        }
-        if (builtin == "ui.checkbox") {
-            Value node = Value::object();
-            (*node.as_object())["__type__"] = Value("UIComponent");
-            (*node.as_object())["type"] = Value("checkbox");
-            (*node.as_object())["label"] = args.size() > 0 ? args[0] : Value("");
-            (*node.as_object())["checked"] = args.size() > 1 ? args[1] : Value(false);
-            if (args.size() > 2) (*node.as_object())["onChange"] = args[2];
-            return node;
-        }
-        if (builtin == "ui.slider") {
-            Value node = Value::object();
-            (*node.as_object())["__type__"] = Value("UIComponent");
-            (*node.as_object())["type"] = Value("slider");
-            (*node.as_object())["min"] = args.size() > 0 ? args[0] : Value(0.0);
-            (*node.as_object())["max"] = args.size() > 1 ? args[1] : Value(100.0);
-            (*node.as_object())["value"] = args.size() > 2 ? args[2] : Value(0.0);
-            if (args.size() > 3) (*node.as_object())["onChange"] = args[3];
-            return node;
-        }
-        if (builtin == "ui.button") {
-            if (args.size() >= 2 && !is_lambda(args[1]) && !is_null(args[1]) && is_string(args[1]) && !is_lambda(args[0])) {
-                return builtin_ui_action(args);
-            }
-            Value node = Value::object();
-            (*node.as_object())["__type__"] = Value("UIComponent");
-            (*node.as_object())["type"] = Value("button");
-            (*node.as_object())["text"] = args.size() > 0 ? args[0] : Value("Button");
-            if (args.size() > 1) (*node.as_object())["onClick"] = args[1];
-            return node;
-        }
-        if (builtin == "ui.render") {
-            return builtin_ui_render(args, callEnv ? callEnv : globals_);
-        }
-        if (builtin == "ui.run") return builtin_ui_run(args);
         if (builtin == "web.server") return builtin_web_server(args);
         if (builtin == "web.page") return builtin_web_page(args);
         if (builtin == "web.begin") return builtin_web_begin(args);
@@ -4039,7 +4045,7 @@ private:
         const std::string title = args.size() > 0 ? to_string(args[0]) : "RayQuiro";
         const int width = args.size() > 1 ? static_cast<int>(to_number(args[1])) : 900;
         const int height = args.size() > 2 ? static_cast<int>(to_number(args[2])) : 600;
-        appRuntime_.init(title, width, height);
+        RayQuiroApp::instance().init(title, width, height);
         return Value();
 #else
         (void)args;
@@ -4050,7 +4056,7 @@ private:
     Value builtin_app_run(const std::vector<Value>& args) {
 #ifdef _WIN32
         (void)args;
-        appRuntime_.run();
+        RayQuiroApp::instance().run();
         return Value();
 #else
         (void)args;
@@ -4060,13 +4066,12 @@ private:
 
     Value builtin_app_button(const std::vector<Value>& args) {
 #ifdef _WIN32
-        if (args.size() < 5) return Value();
-        appRuntime_.add_button(
-            to_string(args[0]),
-            static_cast<int>(to_number(args[1])),
-            static_cast<int>(to_number(args[2])),
-            static_cast<int>(to_number(args[3])),
-            static_cast<int>(to_number(args[4])));
+        const std::string txt = args.size() > 0 ? to_string(args[0]) : "Button";
+        const int x = args.size() > 1 ? static_cast<int>(to_number(args[1])) : -1;
+        const int y = args.size() > 2 ? static_cast<int>(to_number(args[2])) : -1;
+        const int w = args.size() > 3 ? static_cast<int>(to_number(args[3])) : -1;
+        const int h = args.size() > 4 ? static_cast<int>(to_number(args[4])) : -1;
+        RayQuiroApp::instance().add_button(txt, x, y, w, h);
         return Value();
 #else
         (void)args;
@@ -4076,13 +4081,74 @@ private:
 
     Value builtin_app_text(const std::vector<Value>& args) {
 #ifdef _WIN32
-        if (args.size() < 5) return Value();
-        appRuntime_.add_text(
-            to_string(args[0]),
-            static_cast<int>(to_number(args[1])),
-            static_cast<int>(to_number(args[2])),
-            static_cast<int>(to_number(args[3])),
-            static_cast<int>(to_number(args[4])));
+        const std::string txt = args.size() > 0 ? to_string(args[0]) : "";
+        const int x = args.size() > 1 ? static_cast<int>(to_number(args[1])) : -1;
+        const int y = args.size() > 2 ? static_cast<int>(to_number(args[2])) : -1;
+        const int w = args.size() > 3 ? static_cast<int>(to_number(args[3])) : -1;
+        const int h = args.size() > 4 ? static_cast<int>(to_number(args[4])) : -1;
+        RayQuiroApp::instance().add_text(txt, x, y, w, h);
+        return Value();
+#else
+        (void)args;
+        return Value();
+#endif
+    }
+
+    Value builtin_app_input(const std::vector<Value>& args) {
+#ifdef _WIN32
+        const std::string ph = args.size() > 0 ? to_string(args[0]) : "";
+        const int x = args.size() > 1 ? static_cast<int>(to_number(args[1])) : -1;
+        const int y = args.size() > 2 ? static_cast<int>(to_number(args[2])) : -1;
+        const int w = args.size() > 3 ? static_cast<int>(to_number(args[3])) : -1;
+        const int h = args.size() > 4 ? static_cast<int>(to_number(args[4])) : -1;
+        RayQuiroApp::instance().add_input(ph, x, y, w, h);
+        return Value();
+#else
+        (void)args;
+        return Value();
+#endif
+    }
+
+    Value builtin_app_checkbox(const std::vector<Value>& args) {
+#ifdef _WIN32
+        const std::string lbl = args.size() > 0 ? to_string(args[0]) : "";
+        const bool chk = args.size() > 1 ? truthy(args[1]) : false;
+        const int x = args.size() > 2 ? static_cast<int>(to_number(args[2])) : -1;
+        const int y = args.size() > 3 ? static_cast<int>(to_number(args[3])) : -1;
+        const int w = args.size() > 4 ? static_cast<int>(to_number(args[4])) : -1;
+        const int h = args.size() > 5 ? static_cast<int>(to_number(args[5])) : -1;
+        RayQuiroApp::instance().add_checkbox(lbl, chk, x, y, w, h);
+        return Value();
+#else
+        (void)args;
+        return Value();
+#endif
+    }
+
+    Value builtin_app_style(const std::vector<Value>& args) {
+#ifdef _WIN32
+        if (!args.empty()) RayQuiroApp::instance().set_style(to_string(args[0]));
+        return Value();
+#else
+        (void)args;
+        return Value();
+#endif
+    }
+
+    Value builtin_app_theme(const std::vector<Value>& args) {
+#ifdef _WIN32
+        if (!args.empty()) RayQuiroApp::instance().set_theme(to_string(args[0]));
+        return Value();
+#else
+        (void)args;
+        return Value();
+#endif
+    }
+
+    Value builtin_app_close(const std::vector<Value>& args) {
+#ifdef _WIN32
+        (void)args;
+        RayQuiroApp::instance().close();
         return Value();
 #else
         (void)args;
@@ -4117,7 +4183,24 @@ private:
 
     Value builtin_ui_style(const std::vector<Value>& args) {
 #ifdef _WIN32
-        if (!args.empty()) uiRuntime_.style(to_string(args[0]));
+        if (!args.empty()) {
+            const std::string s = to_string(args[0]);
+            RayQuiroApp::instance().set_style(s);
+            uiRuntime_.style(s);
+        }
+        return Value();
+#else
+        (void)args;
+        return Value();
+#endif
+    }
+
+    Value builtin_ui_theme(const std::vector<Value>& args) {
+#ifdef _WIN32
+        if (!args.empty()) {
+            const std::string t = to_string(args[0]);
+            RayQuiroApp::instance().set_theme(t);
+        }
         return Value();
 #else
         (void)args;
@@ -4497,7 +4580,6 @@ private:
         }
     }
 
-#ifdef _WIN32
     static std::string web_content_type_for(const std::filesystem::path& requested) {
         const std::string extension = requested.extension().string();
         if (extension == ".css") return "text/css; charset=utf-8";
@@ -4674,7 +4756,6 @@ private:
         closesocket(server);
 #endif
     }
-#endif
 
     Value builtin_web_begin(const std::vector<Value>& args) {
         webState_ = WebState{};
@@ -4834,11 +4915,7 @@ private:
         web_write_output();
         webState_.active = false;
         if (webState_.liveMode) {
-#ifdef _WIN32
             web_serve_forever();
-#else
-            std::cout << "[RayQuiro] web.live() currently falls back to writing into " << webState_.outputRoot << " on this platform." << std::endl;
-#endif
         }
         return Value();
     }

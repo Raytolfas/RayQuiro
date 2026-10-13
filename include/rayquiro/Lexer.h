@@ -128,6 +128,47 @@ public:
                 continue;
             }
 
+            if (c == 'f' && (peekNext() == '"' || peekNext() == '\'')) {
+                advance();
+                char quote = advance();
+                std::string raw;
+                bool closed = false;
+                while (pos < src.size()) {
+                    char ch = advance();
+                    if (ch == quote) {
+                        closed = true;
+                        break;
+                    }
+                    if (ch == '\\' && pos < src.size()) {
+                        char next = advance();
+                        if (next == quote) raw += quote;
+                        else if (next == '{') raw += '{';
+                        else if (next == '}') raw += '}';
+                        else {
+                            raw += '\\';
+                            raw += next;
+                        }
+                    } else if (ch == '{') {
+                        raw += "${";
+                        int depth = 1;
+                        while (pos < src.size() && depth > 0) {
+                            char ech = advance();
+                            if (ech == '{') depth++;
+                            else if (ech == '}') depth--;
+                            if (depth > 0) raw += ech;
+                        }
+                        raw += "}";
+                    } else {
+                        raw += ch;
+                    }
+                }
+                if (!closed) {
+                    throw std::runtime_error("Unterminated f-string at " + std::to_string(startLine) + ":" + std::to_string(startCol));
+                }
+                addToken(tokens, TokenType::TEMPLATE_STRING, raw, startLine, startCol);
+                continue;
+            }
+
             if (std::isdigit(static_cast<unsigned char>(c))) {
                 std::string n;
                 while (std::isdigit(static_cast<unsigned char>(peek()))) n += advance();
@@ -172,6 +213,7 @@ public:
                 else if (s == "await") addToken(tokens, TokenType::AWAIT, s, startLine, startCol);
                 else if (s == "in") addToken(tokens, TokenType::IN, s, startLine, startCol);
                 else if (s == "switch") addToken(tokens, TokenType::SWITCH, s, startLine, startCol);
+                else if (s == "match") addToken(tokens, TokenType::MATCH, s, startLine, startCol);
                 else if (s == "case") addToken(tokens, TokenType::CASE, s, startLine, startCol);
                 else if (s == "default") addToken(tokens, TokenType::DEFAULT, s, startLine, startCol);
                 else if (s == "throw") addToken(tokens, TokenType::THROW, s, startLine, startCol);
