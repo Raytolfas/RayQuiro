@@ -12,9 +12,13 @@ if [ -z "$CC" ]; then echo 'Error: no C compiler found.' >&2; exit 1; fi
 
 OS=$(uname -s)
 COMMON_CXX_FLAGS='-O2 -DNDEBUG -fvisibility=hidden -ffunction-sections -fdata-sections -fno-ident -std=c++17'
-if [ "$OS" = Darwin ]; then LINK_FLAGS=-dead_strip; else LINK_FLAGS=-Wl,--gc-sections; fi
-
-RAYLIB_C_FLAGS='-D_GNU_SOURCE -D_GLFW_X11 -DPLATFORM_DESKTOP_GLFW -DGRAPHICS_API_OPENGL_33 -Wno-missing-braces -fno-strict-aliasing -std=c99 -O2 -Ithird_party/raylib/src -Ithird_party/raylib/src/external/glfw/include -DNDEBUG -fvisibility=hidden -fno-ident'
+if [ "$OS" = Darwin ]; then
+    LINK_FLAGS='-Wl,-dead_strip'
+    RAYLIB_C_FLAGS='-DPLATFORM_DESKTOP_GLFW -DGRAPHICS_API_OPENGL_33 -Wno-missing-braces -Wno-deprecated-declarations -fno-strict-aliasing -std=c99 -O2 -fPIC -Ithird_party/raylib/src -Ithird_party/raylib/src/external/glfw/include -DNDEBUG -fvisibility=hidden -fno-ident'
+else
+    LINK_FLAGS='-Wl,--gc-sections'
+    RAYLIB_C_FLAGS='-D_GNU_SOURCE -D_GLFW_X11 -DPLATFORM_DESKTOP_GLFW -DGRAPHICS_API_OPENGL_33 -Wno-missing-braces -fno-strict-aliasing -std=c99 -O2 -fPIC -Ithird_party/raylib/src -Ithird_party/raylib/src/external/glfw/include -DNDEBUG -fvisibility=hidden -fno-ident'
+fi
 
 RAYLIB_SOURCES=(
     third_party/raylib/src/rcore.c
@@ -34,7 +38,11 @@ for SRC in "${RAYLIB_SOURCES[@]}"; do
     BASE=$(basename "${SRC%.c}")
     OBJ="$CACHE_DIR/$BASE.o"
     RAYLIB_OBJECTS+=("$OBJ")
-    $CC $RAYLIB_C_FLAGS -c "$SRC" -o "$OBJ"
+    if [ "$OS" = Darwin ] && [ "$BASE" = "rglfw" ]; then
+        $CC $RAYLIB_C_FLAGS -x objective-c -c "$SRC" -o "$OBJ"
+    else
+        $CC $RAYLIB_C_FLAGS -c "$SRC" -o "$OBJ"
+    fi
 done
 
 MODULE_SOURCES=(
@@ -64,7 +72,11 @@ $CXX $COMMON_CXX_FLAGS $LINK_FLAGS \
     $PLAT_LIBS -o "$OUTPUT"
 
 echo "Built $OUTPUT"
-command -v strip >/dev/null 2>&1 && strip "$OUTPUT" 2>/dev/null || true
+if [ "$OS" = Darwin ]; then
+    command -v strip >/dev/null 2>&1 && strip -x "$OUTPUT" 2>/dev/null || true
+else
+    command -v strip >/dev/null 2>&1 && strip "$OUTPUT" 2>/dev/null || true
+fi
 
 echo "Building $CORE_OUTPUT..."
 $CXX $COMMON_CXX_FLAGS $LINK_FLAGS -shared -fPIC \
@@ -73,7 +85,11 @@ $CXX $COMMON_CXX_FLAGS $LINK_FLAGS -shared -fPIC \
     $PLAT_LIBS -o "$CORE_OUTPUT"
 
 echo "Built $CORE_OUTPUT"
-command -v strip >/dev/null 2>&1 && strip "$CORE_OUTPUT" 2>/dev/null || true
+if [ "$OS" = Darwin ]; then
+    command -v strip >/dev/null 2>&1 && strip -x "$CORE_OUTPUT" 2>/dev/null || true
+else
+    command -v strip >/dev/null 2>&1 && strip "$CORE_OUTPUT" 2>/dev/null || true
+fi
 rm -rf "$CACHE_DIR"
 rmdir .cache 2>/dev/null || true
 echo "Done."

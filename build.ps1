@@ -1,30 +1,40 @@
-$cxxCompiler = "clang++"
-if (-not (Get-Command $cxxCompiler -ErrorAction SilentlyContinue)) {
+$targetIsWindows = $IsWindows -or ($PSVersionTable.PSEdition -eq "Desktop") -or ([System.Environment]::OSVersion.Platform -eq "Win32NT")
+$targetIsLinux   = $IsLinux
+$targetIsMacOS   = $IsMacOS
+
+if ($targetIsWindows) {
     $cxxCompiler = "g++"
-}
-
-$cCompiler = "clang"
-if (-not (Get-Command $cCompiler -ErrorAction SilentlyContinue)) {
+    if (-not (Get-Command $cxxCompiler -ErrorAction SilentlyContinue)) {
+        $cxxCompiler = "clang++"
+    }
     $cCompiler = "gcc"
+    if (-not (Get-Command $cCompiler -ErrorAction SilentlyContinue)) {
+        $cCompiler = "clang"
+    }
+} else {
+    $cxxCompiler = "clang++"
+    if (-not (Get-Command $cxxCompiler -ErrorAction SilentlyContinue)) {
+        $cxxCompiler = "g++"
+    }
+    $cCompiler = "clang"
+    if (-not (Get-Command $cCompiler -ErrorAction SilentlyContinue)) {
+        $cCompiler = "gcc"
+    }
 }
 
-$isWindows = $IsWindows -or ($PSVersionTable.PSEdition -eq "Desktop") -or ([System.Environment]::OSVersion.Platform -eq "Win32NT")
-$isLinux   = $IsLinux
-$isMacOS   = $IsMacOS
-
-if ($isWindows) {
+if ($targetIsWindows) {
     $platformName  = "windows"
     $output        = "rqio-next.exe"
     $coreOutput    = "rqio_core.dll"
     $platformLibs  = @("-lopengl32", "-lgdi32", "-lwinmm", "-lws2_32", "-ladvapi32", "-luser32")
     $sharedFlag    = "-shared"
-} elseif ($isLinux) {
+} elseif ($targetIsLinux) {
     $platformName  = "linux"
     $output        = "rqio"
     $coreOutput    = "rqio_core.so"
     $platformLibs  = @("-lGL", "-lX11", "-lXrandr", "-lXinerama", "-lXi", "-lXcursor", "-lpthread", "-lm", "-ldl")
     $sharedFlag    = "-shared"
-} elseif ($isMacOS) {
+} elseif ($targetIsMacOS) {
     $platformName  = "macos"
     $output        = "rqio"
     $coreOutput    = "rqio_core.dylib"
@@ -36,7 +46,7 @@ if ($isWindows) {
 }
 
 $vulkanSdkBin = $null
-if ($isWindows) {
+if ($targetIsWindows) {
     if ($env:VULKAN_SDK) {
         $candidate = Join-Path $env:VULKAN_SDK "Bin"
         if (Test-Path $candidate) {
@@ -100,7 +110,7 @@ if ($supportsLto) {
     $commonNativeCompileFlags += "-flto"
 }
 
-if ($isWindows) {
+if ($targetIsWindows) {
     $commonNativeLinkFlags = @(
         "-s",
         "-static",
@@ -112,8 +122,8 @@ if ($isWindows) {
         "-Wl,--nxcompat",
         "-Wl,--high-entropy-va"
     )
-} elseif ($isMacOS) {
-    $commonNativeLinkFlags = @("-dead_strip")
+} elseif ($targetIsMacOS) {
+    $commonNativeLinkFlags = @("-Wl,-dead_strip")
 } else {
     $commonNativeLinkFlags = @("-s", "-Wl,--gc-sections", "-Wl,--strip-all")
 }
@@ -207,7 +217,7 @@ foreach ($source in $raylibSources) {
 }
 
 $resourceObject = $null
-if (Get-Command windres -ErrorAction SilentlyContinue) {
+if ((Get-Command windres -ErrorAction SilentlyContinue) -and (Test-Path "src/resources.rc") -and (Test-Path "assets/img/logo.ico")) {
     if (Test-Path "scripts/logo_converter.py") {
         & python scripts/logo_converter.py
     }
@@ -255,7 +265,7 @@ if ($exitCode -ne 0) {
 
 Invoke-OptionalStrip $output
 
-if ($isWindows) {
+if ($targetIsWindows) {
     try {
         Copy-Item $output "rqio.exe" -Force
         Remove-Item $output -Force -ErrorAction SilentlyContinue
