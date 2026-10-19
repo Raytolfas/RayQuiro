@@ -75,6 +75,7 @@ struct AwaitExpr : public Expr {
 
 struct FuncParam {
     std::string name;
+    std::string typeAnnotation;
     std::unique_ptr<Expr> defaultValue;
     bool isVariadic = false;
 };
@@ -106,6 +107,17 @@ struct OptionalChainExpr : public Expr {
     std::unique_ptr<Expr> index;
 };
 
+struct RangeExpr : public Expr {
+    std::unique_ptr<Expr> start;
+    std::unique_ptr<Expr> end;
+};
+
+struct SliceExpr : public Expr {
+    std::unique_ptr<Expr> target;
+    std::unique_ptr<Expr> start;
+    std::unique_ptr<Expr> end;
+};
+
 struct Stmt {
     virtual ~Stmt() = default;
     int line = 0;
@@ -128,8 +140,14 @@ struct FromImportStmt : public Stmt {
 
 struct VarStmt : public Stmt {
     std::string name;
+    std::string typeAnnotation;
     bool isLet = false;
+    bool isConst = false;
     std::unique_ptr<Expr> initializer;
+};
+
+struct SpawnStmt : public Stmt {
+    std::unique_ptr<Expr> callExpr;
 };
 
 struct ArrayDestructureStmt : public Stmt {
@@ -177,6 +195,7 @@ struct ThrowStmt : public Stmt {
 
 struct FunctionStmt : public Stmt {
     std::string name;
+    std::string returnType;
     std::vector<FuncParam> params;
     std::unique_ptr<BlockStmt> body;
     bool isAsync = false;
@@ -228,12 +247,26 @@ struct SwitchStmt : public Stmt {
 
 struct MatchArm {
     std::unique_ptr<Expr> pattern;
+    std::unique_ptr<Expr> guard;
     std::unique_ptr<Stmt> body;
 };
 
 struct MatchStmt : public Stmt {
     std::unique_ptr<Expr> subject;
     std::vector<MatchArm> arms;
+};
+
+struct DeferStmt : public Stmt {
+    std::unique_ptr<Stmt> statement;
+};
+
+struct TestStmt : public Stmt {
+    std::string name;
+    std::unique_ptr<BlockStmt> body;
+};
+
+struct ExportStmt : public Stmt {
+    std::unique_ptr<Stmt> declaration;
 };
 
 struct LogStmt : public Stmt { std::unique_ptr<Expr> message; };

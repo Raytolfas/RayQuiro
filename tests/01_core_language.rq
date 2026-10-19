@@ -1,0 +1,134 @@
+// Constants and types
+const PI_VAL: number = 3.14159265;
+var totalCount: int = 0;
+
+// Functions
+fn add(a, b = 10) {
+    return a + b;
+}
+
+fn divmod(a, b) {
+    return floor(a / b), a % b;
+}
+
+fn sumAll(...items) {
+    var acc = 0;
+    for (var i = 0; i < len(items); i = i + 1) {
+        acc = acc + items[i];
+    }
+    return acc;
+}
+
+fn makeMultiplier(factor) {
+    return fn(x) {
+        return x * factor;
+    };
+}
+
+// Function calls
+var x = 5;
+var y = add(x);
+var z = add(x, 20);
+assert_eq(y, 15);
+assert_eq(z, 25);
+
+// Multiple return values
+var [q, r] = divmod(10, 3);
+assert_eq(q, 3);
+assert_eq(r, 1);
+
+// Variadic arguments
+var totalSum = sumAll(1, 2, 3, 4, 5);
+assert_eq(totalSum, 15);
+
+// Closures
+var mult3 = makeMultiplier(3);
+assert_eq(mult3(10), 30);
+
+// Loops
+var loopSum = 0;
+for (var i = 1; i <= 5; i = i + 1) {
+    loopSum = loopSum + i;
+}
+assert_eq(loopSum, 15);
+
+var whileCount = 0;
+while (whileCount < 5) {
+    whileCount = whileCount + 1;
+}
+assert_eq(whileCount, 5);
+
+// Collections
+var list = [10, 20, 30];
+list[1] = 99;
+assert_eq(list[1], 99);
+
+var dict = {"name": "RayQuiro", "lang": "rq"};
+dict["version"] = "1.0.0";
+assert_eq(dict["version"], "1.0.0");
+
+// Destructuring
+var [first, second, third] = [1, 2, 3];
+assert_eq(first, 1);
+assert_eq(second, 2);
+assert_eq(third, 3);
+
+var {name: langName, version: ver} = dict;
+assert_eq(langName, "RayQuiro");
+assert_eq(ver, "1.0.0");
+
+// Null safety
+var missing = null;
+var fallback = missing ?? "default_val";
+var safeAccess = dict?.["lang"];
+var nullAccess = missing?.["field"];
+assert_eq(fallback, "default_val");
+assert_eq(safeAccess, "rq");
+assert_null(nullAccess);
+
+// String interpolation
+var name = "RayQuiro";
+var interpolated = f"Language: {name} v{ver}";
+assert_eq(interpolated, "Language: RayQuiro v1.0.0");
+var backtickStr = `Hello ${name}!`;
+assert_eq(backtickStr, "Hello RayQuiro!");
+
+// Defer
+var deferLog = [];
+fn testDeferLifecycle() {
+    defer push(deferLog, 1);
+    defer push(deferLog, 2);
+    defer push(deferLog, 3);
+    push(deferLog, 0);
+}
+testDeferLifecycle();
+assert_eq(len(deferLog), 4);
+assert_eq(deferLog[0], 0);
+assert_eq(deferLog[1], 3);
+assert_eq(deferLog[2], 2);
+assert_eq(deferLog[3], 1);
+
+var earlyLog = [];
+fn testDeferEarlyExit() {
+    defer push(earlyLog, "exited");
+    if (true) {
+        defer push(earlyLog, "inner");
+        return 42;
+    }
+    push(earlyLog, "unreachable");
+    return 0;
+}
+var exitRes = testDeferEarlyExit();
+assert_eq(exitRes, 42);
+assert_eq(len(earlyLog), 2);
+assert_eq(earlyLog[0], "inner");
+assert_eq(earlyLog[1], "exited");
+
+// Test blocks
+test "core language test block" {
+    var localA = 100;
+    var localB = 200;
+    assert(localA + localB == 300);
+}
+
+print("01_core_language: PASS");

@@ -116,6 +116,25 @@ class LSPServer {
             if (errLine < 0) errLine = 0;
             if (errCol < 0) errCol = 0;
 
+            int endCol = errCol + 1;
+            std::istringstream stream(text);
+            std::string lineContent;
+            int curL = 0;
+            while (std::getline(stream, lineContent)) {
+                if (curL == errLine) {
+                    if (errCol >= 0 && errCol < static_cast<int>(lineContent.size())) {
+                        int pos = errCol;
+                        while (pos < static_cast<int>(lineContent.size()) &&
+                               (std::isalnum(static_cast<unsigned char>(lineContent[pos])) || lineContent[pos] == '_')) {
+                            pos++;
+                        }
+                        if (pos > errCol) endCol = pos;
+                    }
+                    break;
+                }
+                curL++;
+            }
+
             dap::json diag;
             dap::json range;
             dap::json startPos;
@@ -123,7 +142,7 @@ class LSPServer {
             startPos["character"] = errCol;
             dap::json endPos;
             endPos["line"] = errLine;
-            endPos["character"] = errCol + 1;
+            endPos["character"] = endCol;
             range["start"] = startPos;
             range["end"] = endPos;
             diag["range"] = range;
@@ -455,6 +474,73 @@ class LSPServer {
             return items;
         }
 
+        if (target == "ffi") {
+            items.push_back(makeCompletionItem("load", 3, "ffi.load(path) -> object", "Load dynamic library (.dll / .so / .dylib)"));
+            items.push_back(makeCompletionItem("call", 3, "ffi.call(lib, fnName, ...args) -> value", "Call C symbol with automatic marshalling"));
+            items.push_back(makeCompletionItem("sym", 3, "ffi.sym(lib, fnName) -> bool", "Check if symbol exists in library"));
+            items.push_back(makeCompletionItem("close", 3, "ffi.close(lib) -> bool", "Unload dynamic library handle"));
+            items.push_back(makeCompletionItem("callback", 3, "ffi.callback(fn, arity) -> number", "Create native C function pointer from closure"));
+            return items;
+        }
+
+        if (target == "buffer") {
+            items.push_back(makeCompletionItem("alloc", 3, "buffer.alloc(size) -> object", "Allocate zeroed byte buffer"));
+            items.push_back(makeCompletionItem("from_string", 3, "buffer.from_string(str) -> object", "Create buffer from UTF-8 string"));
+            items.push_back(makeCompletionItem("to_string", 3, "buffer.to_string(buf) -> string", "Convert buffer to string"));
+            items.push_back(makeCompletionItem("size", 3, "buffer.size(buf) -> number", "Buffer size in bytes"));
+            items.push_back(makeCompletionItem("slice", 3, "buffer.slice(buf, start, [end]) -> object", "Create sub-buffer slice"));
+            items.push_back(makeCompletionItem("get_u8", 3, "buffer.get_u8(buf, offset) -> number", "Read unsigned 8-bit byte"));
+            items.push_back(makeCompletionItem("set_u8", 3, "buffer.set_u8(buf, offset, val)", "Write unsigned 8-bit byte"));
+            items.push_back(makeCompletionItem("get_i32", 3, "buffer.get_i32(buf, offset) -> number", "Read signed 32-bit int"));
+            items.push_back(makeCompletionItem("set_i32", 3, "buffer.set_i32(buf, offset, val)", "Write signed 32-bit int"));
+            items.push_back(makeCompletionItem("get_f64", 3, "buffer.get_f64(buf, offset) -> number", "Read 64-bit float"));
+            items.push_back(makeCompletionItem("set_f64", 3, "buffer.set_f64(buf, offset, val)", "Write 64-bit float"));
+            return items;
+        }
+
+        if (target == "struct") {
+            items.push_back(makeCompletionItem("pack", 3, "struct.pack(fmt, ...vals) -> Buffer", "Pack values into binary Buffer according to format string"));
+            items.push_back(makeCompletionItem("unpack", 3, "struct.unpack(fmt, buf, [offset]) -> array", "Unpack binary Buffer according to format string"));
+            items.push_back(makeCompletionItem("calcsize", 3, "struct.calcsize(fmt) -> number", "Compute byte size of binary format string"));
+            return items;
+        }
+
+        if (target == "crypto") {
+            items.push_back(makeCompletionItem("sha256", 3, "crypto.sha256(str) -> string", "Compute SHA-256 hex digest"));
+            items.push_back(makeCompletionItem("sha1", 3, "crypto.sha1(str) -> string", "Compute SHA-1 hex digest"));
+            items.push_back(makeCompletionItem("md5", 3, "crypto.md5(str) -> string", "Compute MD5 hex digest"));
+            items.push_back(makeCompletionItem("base64_encode", 3, "crypto.base64_encode(str) -> string", "Encode string to Base64"));
+            items.push_back(makeCompletionItem("base64_decode", 3, "crypto.base64_decode(b64) -> string", "Decode Base64 string"));
+            items.push_back(makeCompletionItem("uuid", 3, "crypto.uuid() -> string", "Generate UUID v4"));
+            items.push_back(makeCompletionItem("hmac_sha256", 3, "crypto.hmac_sha256(msg, key) -> string", "Compute HMAC-SHA256 hex digest"));
+            items.push_back(makeCompletionItem("random_bytes", 3, "crypto.random_bytes(n) -> string", "Generate random hex bytes"));
+            return items;
+        }
+
+        if (target == "process") {
+            items.push_back(makeCompletionItem("cwd", 3, "process.cwd() -> string", "Current working directory"));
+            items.push_back(makeCompletionItem("pid", 3, "process.pid() -> number", "Current process ID"));
+            items.push_back(makeCompletionItem("args", 3, "process.args() -> array", "Command-line arguments"));
+            items.push_back(makeCompletionItem("exit", 3, "process.exit([code]) -> null", "Terminate process with exit code"));
+            return items;
+        }
+
+        if (target == "env") {
+            items.push_back(makeCompletionItem("get", 3, "env.get(name, [default]) -> string", "Get environment variable"));
+            items.push_back(makeCompletionItem("set", 3, "env.set(name, value) -> bool", "Set environment variable"));
+            items.push_back(makeCompletionItem("has", 3, "env.has(name) -> bool", "Check if environment variable exists"));
+            items.push_back(makeCompletionItem("all", 3, "env.all() -> object", "Get all environment variables"));
+            return items;
+        }
+
+        if (target == "os") {
+            items.push_back(makeCompletionItem("platform", 3, "os.platform() -> string", "Operating system name"));
+            items.push_back(makeCompletionItem("arch", 3, "os.arch() -> string", "CPU architecture"));
+            items.push_back(makeCompletionItem("cpus", 3, "os.cpus() -> number", "Hardware concurrency count"));
+            items.push_back(makeCompletionItem("exec", 3, "os.exec(cmd) -> string", "Execute shell command and capture output"));
+            return items;
+        }
+
         if (target == "datetime") {
             items.push_back(makeCompletionItem("now", 3, "datetime.now() -> object", "Current datetime"));
             items.push_back(makeCompletionItem("timestamp", 3, "datetime.timestamp() -> number", "UNIX timestamp"));
@@ -469,6 +555,7 @@ class LSPServer {
             items.push_back(makeCompletionItem("ext", 3, "path.ext(p) -> string", "File extension"));
             items.push_back(makeCompletionItem("stem", 3, "path.stem(p) -> string", "File stem"));
             items.push_back(makeCompletionItem("exists", 3, "path.exists(p) -> bool", "Check path exists"));
+            items.push_back(makeCompletionItem("abs", 3, "path.abs(p) -> string", "Absolute path"));
             return items;
         }
 
@@ -554,21 +641,48 @@ class LSPServer {
         }
 
         std::vector<std::string> keywords = {
-            "fn", "var", "let", "struct", "try", "catch", "finally",
-            "throw", "if", "else", "while", "for", "in", "break",
-            "continue", "return", "import", "as", "null", "true", "false"
+            "fn", "var", "let", "const", "spawn", "struct", "enum", "interface", "impl",
+            "try", "catch", "finally", "throw", "if", "else", "while", "for", "in",
+            "break", "continue", "return", "import", "from", "export", "as", "null", "true", "false",
+            "switch", "case", "default", "match", "defer", "test", "async", "await"
         };
         for (const auto& kw : keywords) {
             items.push_back(makeCompletionItem(kw, 14, "keyword"));
         }
 
+        std::vector<std::string> types = {
+            "int", "float", "number", "string", "bool", "void", "any"
+        };
+        for (const auto& t : types) {
+            items.push_back(makeCompletionItem(t, 25, "Type"));
+        }
+
         std::vector<std::pair<std::string, std::string>> globals = {
             {"print", "print(val) -> null"},
             {"len", "len(val) -> number"},
+            {"slice", "slice(target, start, [end]) -> value"},
             {"str", "str(val) -> string"},
             {"num", "num(val) -> number"},
             {"bool", "bool(val) -> bool"},
             {"type", "type(val) -> string"},
+            {"assert", "assert(cond, [msg]) -> bool"},
+            {"assert_eq", "assert_eq(a, b, [msg]) -> bool"},
+            {"assert_ne", "assert_ne(a, b, [msg]) -> bool"},
+            {"channel", "channel() -> Channel"},
+            {"channel_send", "channel_send(ch, val)"},
+            {"channel_recv", "channel_recv(ch) -> value"},
+            {"channel_close", "channel_close(ch)"},
+            {"vec2", "vec2(x, y) -> {x, y}"},
+            {"vec3", "vec3(x, y, z) -> {x, y, z}"},
+            {"vec_add", "vec_add(a, b) -> vec"},
+            {"vec_sub", "vec_sub(a, b) -> vec"},
+            {"vec_mul", "vec_mul(v, s) -> vec"},
+            {"vec_dot", "vec_dot(a, b) -> number"},
+            {"vec_len", "vec_len(v) -> number"},
+            {"vec_normalize", "vec_normalize(v) -> vec"},
+            {"vec_dist", "vec_dist(a, b) -> number"},
+            {"vec_lerp", "vec_lerp(a, b, t) -> vec"},
+            {"vec_cross", "vec_cross(a, b) -> vec3"},
             {"sqrt", "sqrt(x) -> number"},
             {"abs", "abs(x) -> number"},
             {"pow", "pow(x, y) -> number"},
@@ -592,6 +706,15 @@ class LSPServer {
                         std::string sym = docText.substr(idStart, pos - idStart);
                         userSyms[sym] = 3;
                     }
+                } else if (pos + 6 <= docText.size() && docText.substr(pos, 6) == "const ") {
+                    pos += 6;
+                    while (pos < docText.size() && std::isspace(static_cast<unsigned char>(docText[pos]))) pos++;
+                    size_t idStart = pos;
+                    while (pos < docText.size() && (std::isalnum(static_cast<unsigned char>(docText[pos])) || docText[pos] == '_')) pos++;
+                    if (pos > idStart) {
+                        std::string sym = docText.substr(idStart, pos - idStart);
+                        userSyms[sym] = 21;
+                    }
                 } else if (pos + 4 <= docText.size() && (docText.substr(pos, 4) == "var " || docText.substr(pos, 4) == "let ")) {
                     pos += 4;
                     while (pos < docText.size() && std::isspace(static_cast<unsigned char>(docText[pos]))) pos++;
@@ -610,18 +733,30 @@ class LSPServer {
                         std::string sym = docText.substr(idStart, pos - idStart);
                         userSyms[sym] = 22;
                     }
+                } else if (pos + 5 <= docText.size() && docText.substr(pos, 5) == "enum ") {
+                    pos += 5;
+                    while (pos < docText.size() && std::isspace(static_cast<unsigned char>(docText[pos]))) pos++;
+                    size_t idStart = pos;
+                    while (pos < docText.size() && (std::isalnum(static_cast<unsigned char>(docText[pos])) || docText[pos] == '_')) pos++;
+                    if (pos > idStart) {
+                        std::string sym = docText.substr(idStart, pos - idStart);
+                        userSyms[sym] = 13;
+                    }
                 } else {
                     pos++;
                 }
             }
             for (const auto& pair : userSyms) {
-                std::string desc = (pair.second == 3) ? "User function" : ((pair.second == 22) ? "User struct" : "User variable");
+                std::string desc = (pair.second == 3) ? "User function" :
+                                   ((pair.second == 22) ? "User struct" :
+                                   ((pair.second == 13) ? "User enum" :
+                                   ((pair.second == 21) ? "User constant" : "User variable")));
                 items.push_back(makeCompletionItem(pair.first, pair.second, desc));
             }
         }
 
         std::vector<std::string> namespaces = {
-            "math", "random", "web", "json", "fs", "datetime", "path", "env", "process", "crypto", "engine"
+            "math", "random", "web", "json", "fs", "datetime", "path", "env", "process", "os", "crypto", "engine", "ffi", "buffer", "struct"
         };
         for (const auto& ns : namespaces) {
             items.push_back(makeCompletionItem(ns, 9, "Built-in namespace"));
@@ -638,13 +773,22 @@ class LSPServer {
         if (word.empty()) return dap::json();
 
         std::string doc;
-        if (word == "fn") doc = "**fn** keyword\n\nDeclares a named function or lambda expression with optional default parameters.\n\n```rq\nfn add(a, b = 10) {\n    return a + b;\n}\n```";
-        else if (word == "struct") doc = "**struct** keyword\n\nDefines a user-defined structured value type with default field initializers.\n\n```rq\nstruct Point {\n    x: 0,\n    y: 0\n}\n```";
-        else if (word == "var" || word == "let") doc = "**var / let** keyword\n\nDeclares a new variable in the current scope with optional destructuring.\n\n```rq\nvar [first, second] = list;\nvar {name, version} = info;\n```";
+        if (word == "fn") doc = "**fn** keyword\n\nDeclares a named function or closure with optional default parameters and variadic `...rest`.\n\n```rq\nfn add(a, b = 10) {\n    return a + b;\n}\n```";
+        else if (word == "struct") doc = "**struct** keyword / binary packing namespace\n\nDefines a structured value type with default field initializers, or packs/unpacks binary buffers (`struct.pack`, `struct.unpack`, `struct.calcsize`).\n\n```rq\nstruct Point {\n    x: 0,\n    y: 0\n}\n```";
+        else if (word == "defer") doc = "**defer** statement\n\nSchedules a statement or block to execute in LIFO order when the enclosing scope exits (including early `return` or `throw`).\n\n```rq\ndefer ffi.close(lib);\n```";
+        else if (word == "match") doc = "**match** statement\n\nPattern matching over literals, inclusive ranges (`a..b`), multiple alternatives (`|`), wildcard `_`, and `if` guards.\n\n```rq\nmatch (code) {\n    200..299 => print(\"OK\"),\n    x if code == 404 => print(\"Not Found\"),\n    _ => print(\"Error\")\n}\n```";
+        else if (word == "test") doc = "**test** block\n\nDeclares a native unit test executed via `rqio test`.\n\n```rq\ntest \"math check\" {\n    assert_eq(2 + 2, 4);\n}\n```";
+        else if (word == "spawn") doc = "**spawn** statement\n\nSpawns a concurrent worker thread executing the given call or block.\n\n```rq\nspawn worker(ch, 1);\n```";
+        else if (word == "channel") doc = "**channel**() -> Channel\n\nCreates a thread-safe CSP channel supporting `.send(val)`, `.recv()`, and `.close()`.";
+        else if (word == "buffer" || word == "buffer.alloc") doc = "**buffer** namespace\n\nRaw memory buffer operations (`alloc`, `from_string`, `to_string`, `size`, `slice`, `get_u8`, `set_u8`, `get_i32`, `set_i32`, `get_f64`, `set_f64`).";
+        else if (word == "ffi" || word == "ffi.load" || word == "ffi.call") doc = "**ffi** namespace\n\nZero-overhead Foreign Function Interface (`ffi.load`, `ffi.call`, `ffi.sym`, `ffi.callback`, `ffi.close`).";
+        else if (word == "var" || word == "let") doc = "**var / let** keyword\n\nDeclares a mutable variable in the current scope with optional array or object destructuring.\n\n```rq\nvar [first, second] = list;\nvar {name, version} = info;\n```";
         else if (word == "try" || word == "catch" || word == "finally") doc = "**try-catch-finally** block\n\nHandles runtime exceptions and errors thrown by `throw`.\n\n```rq\ntry {\n    throw \"error\";\n} catch (e) {\n    print(e);\n} finally {\n    print(\"cleanup\");\n}\n```";
-        else if (word == "import") doc = "**import** statement\n\nImports a built-in module, external package, or local `.rq` file.\n\n```rq\nimport \"rayquiro.engine\" as engine;\nimport \"./utils.rq\" as utils;\n```";
+        else if (word == "import" || word == "export") doc = "**import / export** module system\n\nImports or exports symbols across `.rq` modules and built-in namespaces.\n\n```rq\nimport { sum, PI } from \"./math.rq\";\nexport fn calculate(x) { return x * 2; }\n```";
         else if (word == "print") doc = "**print**(value) -> null\n\nPrints a string representation of the given value to standard output.";
-        else if (word == "len") doc = "**len**(val) -> number\n\nReturns the length of a string, array, or number of keys in an object.";
+        else if (word == "len") doc = "**len**(val) -> number\n\nReturns the length of a string, array, buffer, or number of keys in an object.";
+        else if (word == "slice") doc = "**slice**(target, start, [end]) -> value\n\nExtracts a slice from an array, string, or raw memory buffer.";
+        else if (word == "assert" || word == "assert_eq" || word == "assert_ne") doc = "**assert / assert_eq / assert_ne**\n\nBuilt-in runtime assertions that throw an error when the condition fails.";
         else if (word == "sqrt") doc = "**sqrt**(x) -> number\n\nReturns the square root of number `x`.";
         else if (word == "pow") doc = "**pow**(base, exp) -> number\n\nReturns `base` raised to the power of `exp`.";
         else if (word == "abs") doc = "**abs**(x) -> number\n\nReturns the absolute value of `x`.";
@@ -701,7 +845,7 @@ public:
 
                 dap::json serverInfo;
                 serverInfo["name"] = "rayquiro-lsp";
-                serverInfo["version"] = "0.2.2";
+                serverInfo["version"] = "1.0";
                 result["serverInfo"] = serverInfo;
 
                 sendResponse(id, result);

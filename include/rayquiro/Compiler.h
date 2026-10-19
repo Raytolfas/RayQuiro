@@ -630,14 +630,29 @@ private:
 
     static std::unordered_map<std::string, ModuleExport> collectTopLevelExports(const ProgramNode& program) {
         std::unordered_map<std::string, ModuleExport> exports;
+        bool hasExplicitExport = false;
         for (const auto& statement : program.statements) {
-            if (auto varStmt = dynamic_cast<VarStmt*>(statement.get())) {
-                exports[varStmt->name] = ModuleExport{false, varStmt->isLet, {}};
-            } else if (auto functionStmt = dynamic_cast<FunctionStmt*>(statement.get())) {
+            if (dynamic_cast<ExportStmt*>(statement.get()) != nullptr) {
+                hasExplicitExport = true;
+                break;
+            }
+        }
 
+        auto processStmt = [&](Stmt* s) {
+            if (auto varStmt = dynamic_cast<VarStmt*>(s)) {
+                exports[varStmt->name] = ModuleExport{false, varStmt->isLet, {}};
+            } else if (auto functionStmt = dynamic_cast<FunctionStmt*>(s)) {
                 std::vector<std::string> paramNames;
                 for (const auto& p : functionStmt->params) paramNames.push_back(p.name);
                 exports[functionStmt->name] = ModuleExport{true, false, paramNames};
+            }
+        };
+
+        for (const auto& statement : program.statements) {
+            if (auto exp = dynamic_cast<ExportStmt*>(statement.get())) {
+                processStmt(exp->declaration.get());
+            } else if (!hasExplicitExport) {
+                processStmt(statement.get());
             }
         }
         return exports;
@@ -702,9 +717,11 @@ private:
     static std::unordered_set<std::string> collectTopLevelSymbols(const ProgramNode& program) {
         std::unordered_set<std::string> symbols;
         for (const auto& statement : program.statements) {
-            if (auto varStmt = dynamic_cast<VarStmt*>(statement.get())) {
+            Stmt* s = statement.get();
+            if (auto exp = dynamic_cast<ExportStmt*>(s)) s = exp->declaration.get();
+            if (auto varStmt = dynamic_cast<VarStmt*>(s)) {
                 symbols.insert(varStmt->name);
-            } else if (auto functionStmt = dynamic_cast<FunctionStmt*>(statement.get())) {
+            } else if (auto functionStmt = dynamic_cast<FunctionStmt*>(s)) {
                 symbols.insert(functionStmt->name);
             }
         }
@@ -796,6 +813,11 @@ private:
         bool isTopLevel
     ) {
         if (!stmt) {
+            return;
+        }
+
+        if (auto exp = dynamic_cast<ExportStmt*>(stmt)) {
+            namespaceStmt(exp->declaration.get(), alias, topLevelSymbols, scopes, isTopLevel);
             return;
         }
 

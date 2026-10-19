@@ -4,18 +4,116 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include <cstdlib>
+
+#ifdef _WIN32
+#include <windows.h>
+#include <conio.h>
+#else
+#include <termios.h>
+#include <unistd.h>
+#endif
+
 #include "Lexer.h"
 #include "Parser.h"
 #include "Interpreter.h"
 
 class Repl {
+private:
+    static std::string readLineWithHistory(const std::string& prompt, std::vector<std::string>& history) {
+        std::cout << prompt;
+        std::cout.flush();
+
+#ifdef _WIN32
+        std::string current;
+        int historyIndex = static_cast<int>(history.size());
+        size_t cursor = 0;
+
+        auto redraw = [&](const std::string& line, size_t pos) {
+            std::cout << "\r\033[K" << prompt << line;
+            if (line.size() > pos) {
+                std::cout << "\033[" << (line.size() - pos) << "D";
+            }
+            std::cout.flush();
+        };
+
+        while (true) {
+            int ch = _getch();
+            if (ch == 0 || ch == 224) {
+                int code = _getch();
+                if (code == 72) {
+                    if (!history.empty() && historyIndex > 0) {
+                        historyIndex--;
+                        current = history[historyIndex];
+                        cursor = current.size();
+                        redraw(current, cursor);
+                    }
+                } else if (code == 80) {
+                    if (historyIndex + 1 < static_cast<int>(history.size())) {
+                        historyIndex++;
+                        current = history[historyIndex];
+                        cursor = current.size();
+                        redraw(current, cursor);
+                    } else if (historyIndex + 1 == static_cast<int>(history.size())) {
+                        historyIndex++;
+                        current.clear();
+                        cursor = 0;
+                        redraw(current, cursor);
+                    }
+                } else if (code == 75) {
+                    if (cursor > 0) {
+                        cursor--;
+                        std::cout << "\033[1D";
+                        std::cout.flush();
+                    }
+                } else if (code == 77) {
+                    if (cursor < current.size()) {
+                        cursor++;
+                        std::cout << "\033[1C";
+                        std::cout.flush();
+                    }
+                }
+            } else if (ch == '\r' || ch == '\n') {
+                std::cout << "\n";
+                if (!current.empty() && (history.empty() || history.back() != current)) {
+                    history.push_back(current);
+                }
+                return current;
+            } else if (ch == '\b') {
+                if (cursor > 0) {
+                    current.erase(cursor - 1, 1);
+                    cursor--;
+                    redraw(current, cursor);
+                }
+            } else if (ch == 3) {
+                std::cout << "^C\n";
+                return "";
+            } else if (ch >= 32) {
+                current.insert(cursor, 1, static_cast<char>(ch));
+                cursor++;
+                redraw(current, cursor);
+            }
+        }
+#else
+        std::string line;
+        if (!std::getline(std::cin, line)) {
+            return "exit";
+        }
+        if (!line.empty() && (history.empty() || history.back() != line)) {
+            history.push_back(line);
+        }
+        return line;
+#endif
+    }
+
 public:
     static int run(Interpreter& interpreter) {
-        std::cout << "\033[1;36mRayQuiro\033[0m 0.2.2 REPL\n";
+        std::cout << "\033[1;36mRayQuiro\033[0m 1.0 REPL\n";
         std::cout << "Type \"exit\" or press Ctrl+C to quit.\n\n";
 
         interpreter.initGlobals();
         std::vector<std::unique_ptr<Stmt>> sessionStmts;
+        std::vector<std::string> history;
         std::string buffer;
 
         auto countBraceBalance = [](const std::string& str) -> int {
@@ -45,18 +143,8 @@ public:
         };
 
         while (true) {
-            if (buffer.empty()) {
-                std::cout << "\033[1;32m>>>\033[0m ";
-            } else {
-                std::cout << "\033[1;33m...\033[0m ";
-            }
-            std::cout.flush();
-
-            std::string line;
-            if (!std::getline(std::cin, line)) {
-                std::cout << "\n";
-                break;
-            }
+            std::string prompt = buffer.empty() ? "\033[1;32m>>>\033[0m " : "\033[1;33m...\033[0m ";
+            std::string line = readLineWithHistory(prompt, history);
 
             if (buffer.empty()) {
                 std::string trimmed = line;

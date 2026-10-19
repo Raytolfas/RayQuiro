@@ -122,8 +122,6 @@ if ($supportsLto) {
     $commonNativeLinkFlags += "-flto"
 }
 
-# Runs a compiler/linker command and filters out known harmless MinGW duplicate-section
-# warnings that appear when mixing clang++/g++ with MSYS2 libstdc++.a
 function Invoke-Compiler {
     param([string]$Exe, [string[]]$CompilerArgs)
 
@@ -293,6 +291,14 @@ if ($exitCode -ne 0) {
 }
 
 Invoke-OptionalStrip $coreOutput
+
+Remove-Item -Recurse -Force $raylibObjectRoot -ErrorAction SilentlyContinue
+if ($resourceObject) {
+    Remove-Item -Force $resourceObject -ErrorAction SilentlyContinue
+}
+if ((Test-Path ".cache") -and ((Get-ChildItem ".cache" -Force | Measure-Object).Count -eq 0)) {
+    Remove-Item -Force ".cache" -ErrorAction SilentlyContinue
+}
 
 Write-Host "Built $coreOutput"
 

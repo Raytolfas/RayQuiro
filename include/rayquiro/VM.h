@@ -17,8 +17,22 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <queue>
+#include <atomic>
 #include <unordered_map>
 #include <vector>
+#include <cstring>
+#include <cstdint>
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#else
+#include <dlfcn.h>
+#endif
 
 #include "Bytecode.h"
 #include "Framework.h"
@@ -351,13 +365,20 @@ private:
                 break;
             }
             case OpCode::BuildObject: {
-
                 VMValue::Object obj;
                 std::vector<std::pair<std::string, VMValue>> pairs(static_cast<std::size_t>(instruction.a));
                 for (int i = static_cast<int>(pairs.size()) - 1; i >= 0; --i) {
                     VMValue val = pop();
                     VMValue key = pop();
                     pairs[static_cast<std::size_t>(i)] = {toString(key), val};
+                }
+                if (!pairs.empty() && pairs[0].first == "__type__") {
+                    auto git = globals_.find(toString(pairs[0].second));
+                    if (git != globals_.end() && std::holds_alternative<VMValue::Object>(git->second.data)) {
+                        for (const auto& [dk, dv] : std::get<VMValue::Object>(git->second.data)) {
+                            if (dk != "__struct__") obj[dk] = dv;
+                        }
+                    }
                 }
                 for (auto& [k, v] : pairs) obj[k] = v;
                 stack_.push_back(VMValue(obj));
@@ -705,8 +726,670 @@ private:
         stack_.push_back(fn(left, right));
     }
 
+    struct VMChannelState {
+        std::queue<VMValue> items;
+        std::mutex mtx;
+        std::condition_variable cv;
+        bool closed = false;
+
+        void send(const VMValue& val) {
+            std::unique_lock<std::mutex> lock(mtx);
+            if (closed) return;
+            items.push(val);
+            cv.notify_one();
+        }
+
+        VMValue recv() {
+            std::unique_lock<std::mutex> lock(mtx);
+            cv.wait(lock, [this]() { return !items.empty() || closed; });
+            if (items.empty()) return VMValue();
+            VMValue val = items.front();
+            items.pop();
+            return val;
+        }
+
+        void close() {
+            std::unique_lock<std::mutex> lock(mtx);
+            closed = true;
+            cv.notify_all();
+        }
+    };
+
+    static inline std::unordered_map<int64_t, std::shared_ptr<VMChannelState>> vmChannelRegistry_;
+    static inline std::mutex vmChannelRegistryMutex_;
+    static inline std::atomic<int64_t> vmChannelCounter_{0};
+
+    static std::shared_ptr<VMChannelState> getVMChannel(int64_t id) {
+        std::lock_guard<std::mutex> lock(vmChannelRegistryMutex_);
+        auto it = vmChannelRegistry_.find(id);
+        if (it != vmChannelRegistry_.end()) return it->second;
+        return nullptr;
+    }
+
+    struct VMRawBuffer {
+        std::vector<uint8_t> bytes;
+    };
+
+    static inline std::unordered_map<int64_t, std::shared_ptr<VMRawBuffer>> vmBufferRegistry_;
+    static inline std::mutex vmBufferRegistryMutex_;
+    static inline std::atomic<int64_t> vmBufferCounter_{0};
+
+    static std::shared_ptr<VMRawBuffer> getVMBuffer(int64_t id) {
+        std::lock_guard<std::mutex> lock(vmBufferRegistryMutex_);
+        auto it = vmBufferRegistry_.find(id);
+        if (it != vmBufferRegistry_.end()) return it->second;
+        return nullptr;
+    }
+
+    struct VMFFILibrary {
+#ifdef _WIN32
+        HMODULE handle = nullptr;
+#else
+        void* handle = nullptr;
+#endif
+        std::string path;
+
+        ~VMFFILibrary() {
+            if (handle) {
+#ifdef _WIN32
+                FreeLibrary(handle);
+#else
+                dlclose(handle);
+#endif
+            }
+        }
+    };
+
+    static inline std::unordered_map<int64_t, std::shared_ptr<VMFFILibrary>> vmFFIRegistry_;
+    static inline std::mutex vmFFIRegistryMutex_;
+    static inline std::atomic<int64_t> vmFFICounter_{0};
+
+    static std::shared_ptr<VMFFILibrary> getVMFFILib(int64_t id) {
+        std::lock_guard<std::mutex> lock(vmFFIRegistryMutex_);
+        auto it = vmFFIRegistry_.find(id);
+        if (it != vmFFIRegistry_.end()) return it->second;
+        return nullptr;
+    }
+
 public:
     static std::optional<VMValue> callDefaultBuiltin(const std::string& name, const std::vector<VMValue>& args) {
+        if (name == "channel") {
+            int64_t id = ++vmChannelCounter_;
+            auto chan = std::make_shared<VMChannelState>();
+            {
+                std::lock_guard<std::mutex> lock(vmChannelRegistryMutex_);
+                vmChannelRegistry_[id] = chan;
+            }
+            VMValue::Object obj;
+            obj["__type__"] = VMValue(std::string("Channel"));
+            obj["__chan_id__"] = VMValue(static_cast<double>(id));
+            return VMValue(obj);
+        }
+        if (name == "channel.send" || name == "channel_send") {
+            if (args.size() >= 2 && std::holds_alternative<VMValue::Object>(args[0].data)) {
+                const auto& obj = std::get<VMValue::Object>(args[0].data);
+                auto it = obj.find("__chan_id__");
+                int64_t chanId = it != obj.end() ? static_cast<int64_t>(toNumber(it->second)) : 0;
+                if (auto chan = getVMChannel(chanId)) {
+                    chan->send(args[1]);
+                }
+            }
+            return VMValue();
+        }
+        if (name == "channel.recv" || name == "channel_recv") {
+            if (!args.empty() && std::holds_alternative<VMValue::Object>(args[0].data)) {
+                const auto& obj = std::get<VMValue::Object>(args[0].data);
+                auto it = obj.find("__chan_id__");
+                int64_t chanId = it != obj.end() ? static_cast<int64_t>(toNumber(it->second)) : 0;
+                if (auto chan = getVMChannel(chanId)) {
+                    return chan->recv();
+                }
+            }
+            return VMValue();
+        }
+        if (name == "channel.close" || name == "channel_close") {
+            if (!args.empty() && std::holds_alternative<VMValue::Object>(args[0].data)) {
+                const auto& obj = std::get<VMValue::Object>(args[0].data);
+                auto it = obj.find("__chan_id__");
+                int64_t chanId = it != obj.end() ? static_cast<int64_t>(toNumber(it->second)) : 0;
+                if (auto chan = getVMChannel(chanId)) {
+                    chan->close();
+                }
+            }
+            return VMValue();
+        }
+        if (name == "ffi.load" || name == "ffi_load") {
+            if (args.empty()) throw std::runtime_error("ffi.load requires library path");
+            std::string path = toString(args[0]);
+#ifdef _WIN32
+            HMODULE h = LoadLibraryA(path.c_str());
+            if (!h) {
+                std::string alt = path + ".dll";
+                h = LoadLibraryA(alt.c_str());
+            }
+#else
+            void* h = dlopen(path.c_str(), RTLD_NOW | RTLD_GLOBAL);
+            if (!h) {
+                std::string alt = "lib" + path + ".so";
+                h = dlopen(alt.c_str(), RTLD_NOW | RTLD_GLOBAL);
+            }
+#endif
+            if (!h) throw std::runtime_error("Failed to load library: " + path);
+            int64_t id = ++vmFFICounter_;
+            auto lib = std::make_shared<VMFFILibrary>();
+            lib->handle = h;
+            lib->path = path;
+            {
+                std::lock_guard<std::mutex> lock(vmFFIRegistryMutex_);
+                vmFFIRegistry_[id] = lib;
+            }
+            VMValue::Object obj;
+            obj["__type__"] = VMValue(std::string("FFILibrary"));
+            obj["__ffi_id__"] = VMValue(static_cast<double>(id));
+            obj["path"] = VMValue(path);
+            return VMValue(obj);
+        }
+        if (name == "ffi.sym" || name == "ffi_sym") {
+            if (args.size() < 2 || !std::holds_alternative<VMValue::Object>(args[0].data)) return VMValue(false);
+            const auto& obj = std::get<VMValue::Object>(args[0].data);
+            auto idIt = obj.find("__ffi_id__");
+            int64_t id = idIt != obj.end() ? static_cast<int64_t>(toNumber(idIt->second)) : 0;
+            auto lib = getVMFFILib(id);
+            if (!lib || !lib->handle) return VMValue(false);
+            std::string symName = toString(args[1]);
+#ifdef _WIN32
+            FARPROC sym = GetProcAddress(lib->handle, symName.c_str());
+#else
+            void* sym = dlsym(lib->handle, symName.c_str());
+#endif
+            return VMValue(sym != nullptr);
+        }
+        if (name == "ffi.call" || name == "ffi_call") {
+            if (args.size() < 2 || !std::holds_alternative<VMValue::Object>(args[0].data)) throw std::runtime_error("ffi.call requires FFILibrary and symbol name");
+            const auto& obj = std::get<VMValue::Object>(args[0].data);
+            auto idIt = obj.find("__ffi_id__");
+            int64_t id = idIt != obj.end() ? static_cast<int64_t>(toNumber(idIt->second)) : 0;
+            auto lib = getVMFFILib(id);
+            if (!lib || !lib->handle) throw std::runtime_error("Invalid or closed FFILibrary handle");
+            std::string symName = toString(args[1]);
+#ifdef _WIN32
+            FARPROC sym = GetProcAddress(lib->handle, symName.c_str());
+#else
+            void* sym = dlsym(lib->handle, symName.c_str());
+#endif
+            if (!sym) throw std::runtime_error("Symbol not found: " + symName);
+            std::vector<intptr_t> rawArgs;
+            std::vector<std::string> tempStrings;
+            for (size_t i = 2; i < args.size(); ++i) {
+                const auto& a = args[i];
+                if (std::holds_alternative<double>(a.data)) {
+                    rawArgs.push_back(static_cast<intptr_t>(static_cast<int64_t>(std::get<double>(a.data))));
+                } else if (std::holds_alternative<std::string>(a.data)) {
+                    tempStrings.push_back(std::get<std::string>(a.data));
+                    rawArgs.push_back(reinterpret_cast<intptr_t>(tempStrings.back().c_str()));
+                } else if (std::holds_alternative<bool>(a.data)) {
+                    rawArgs.push_back(std::get<bool>(a.data) ? 1 : 0);
+                } else if (std::holds_alternative<std::monostate>(a.data)) {
+                    rawArgs.push_back(0);
+                } else if (std::holds_alternative<VMValue::Object>(a.data)) {
+                    const auto& aobj = std::get<VMValue::Object>(a.data);
+                    auto bIt = aobj.find("__buf_id__");
+                    if (bIt != aobj.end()) {
+                        int64_t bid = static_cast<int64_t>(toNumber(bIt->second));
+                        if (auto buf = getVMBuffer(bid)) {
+                            rawArgs.push_back(reinterpret_cast<intptr_t>(buf->bytes.data()));
+                        } else {
+                            rawArgs.push_back(0);
+                        }
+                    } else {
+                        rawArgs.push_back(0);
+                    }
+                } else {
+                    rawArgs.push_back(0);
+                }
+            }
+            intptr_t ret = 0;
+            switch (rawArgs.size()) {
+                case 0: ret = reinterpret_cast<intptr_t(*)()>(sym)(); break;
+                case 1: ret = reinterpret_cast<intptr_t(*)(intptr_t)>(sym)(rawArgs[0]); break;
+                case 2: ret = reinterpret_cast<intptr_t(*)(intptr_t, intptr_t)>(sym)(rawArgs[0], rawArgs[1]); break;
+                case 3: ret = reinterpret_cast<intptr_t(*)(intptr_t, intptr_t, intptr_t)>(sym)(rawArgs[0], rawArgs[1], rawArgs[2]); break;
+                case 4: ret = reinterpret_cast<intptr_t(*)(intptr_t, intptr_t, intptr_t, intptr_t)>(sym)(rawArgs[0], rawArgs[1], rawArgs[2], rawArgs[3]); break;
+                case 5: ret = reinterpret_cast<intptr_t(*)(intptr_t, intptr_t, intptr_t, intptr_t, intptr_t)>(sym)(rawArgs[0], rawArgs[1], rawArgs[2], rawArgs[3], rawArgs[4]); break;
+                case 6: ret = reinterpret_cast<intptr_t(*)(intptr_t, intptr_t, intptr_t, intptr_t, intptr_t, intptr_t)>(sym)(rawArgs[0], rawArgs[1], rawArgs[2], rawArgs[3], rawArgs[4], rawArgs[5]); break;
+                default:
+                    throw std::runtime_error("ffi.call supports up to 6 arguments");
+            }
+            return VMValue(static_cast<double>(ret));
+        }
+        if (name == "ffi.close" || name == "ffi_close") {
+            if (!args.empty() && std::holds_alternative<VMValue::Object>(args[0].data)) {
+                const auto& obj = std::get<VMValue::Object>(args[0].data);
+                auto idIt = obj.find("__ffi_id__");
+                if (idIt != obj.end()) {
+                    int64_t id = static_cast<int64_t>(toNumber(idIt->second));
+                    std::lock_guard<std::mutex> lock(vmFFIRegistryMutex_);
+                    vmFFIRegistry_.erase(id);
+                }
+            }
+            return VMValue();
+        }
+        if (name == "buffer.alloc" || name == "buffer_alloc") {
+            size_t size = !args.empty() ? static_cast<size_t>(std::max(0.0, toNumber(args[0]))) : 0;
+            int64_t id = ++vmBufferCounter_;
+            auto buf = std::make_shared<VMRawBuffer>();
+            buf->bytes.resize(size, 0);
+            {
+                std::lock_guard<std::mutex> lock(vmBufferRegistryMutex_);
+                vmBufferRegistry_[id] = buf;
+            }
+            VMValue::Object obj;
+            obj["__type__"] = VMValue(std::string("Buffer"));
+            obj["__buf_id__"] = VMValue(static_cast<double>(id));
+            obj["length"] = VMValue(static_cast<double>(size));
+            return VMValue(obj);
+        }
+        if (name == "buffer.from_string" || name == "buffer_from_string") {
+            std::string s = !args.empty() ? toString(args[0]) : "";
+            int64_t id = ++vmBufferCounter_;
+            auto buf = std::make_shared<VMRawBuffer>();
+            buf->bytes.assign(s.begin(), s.end());
+            {
+                std::lock_guard<std::mutex> lock(vmBufferRegistryMutex_);
+                vmBufferRegistry_[id] = buf;
+            }
+            VMValue::Object obj;
+            obj["__type__"] = VMValue(std::string("Buffer"));
+            obj["__buf_id__"] = VMValue(static_cast<double>(id));
+            obj["length"] = VMValue(static_cast<double>(buf->bytes.size()));
+            return VMValue(obj);
+        }
+        if (name == "buffer.to_string" || name == "buffer_to_string") {
+            if (!args.empty() && std::holds_alternative<VMValue::Object>(args[0].data)) {
+                const auto& obj = std::get<VMValue::Object>(args[0].data);
+                auto it = obj.find("__buf_id__");
+                int64_t bid = it != obj.end() ? static_cast<int64_t>(toNumber(it->second)) : 0;
+                if (auto buf = getVMBuffer(bid)) {
+                    return VMValue(std::string(buf->bytes.begin(), buf->bytes.end()));
+                }
+            }
+            return VMValue(std::string(""));
+        }
+        if (name == "buffer.size" || name == "buffer_size" || name == "buffer.len") {
+            if (!args.empty() && std::holds_alternative<VMValue::Object>(args[0].data)) {
+                const auto& obj = std::get<VMValue::Object>(args[0].data);
+                auto it = obj.find("__buf_id__");
+                int64_t bid = it != obj.end() ? static_cast<int64_t>(toNumber(it->second)) : 0;
+                if (auto buf = getVMBuffer(bid)) {
+                    return VMValue(static_cast<double>(buf->bytes.size()));
+                }
+            }
+            return VMValue(0.0);
+        }
+        if (name == "buffer.get_u8" || name == "buffer_get_u8") {
+            if (args.size() >= 2 && std::holds_alternative<VMValue::Object>(args[0].data)) {
+                const auto& obj = std::get<VMValue::Object>(args[0].data);
+                auto it = obj.find("__buf_id__");
+                int64_t bid = it != obj.end() ? static_cast<int64_t>(toNumber(it->second)) : 0;
+                size_t offset = static_cast<size_t>(std::max(0.0, toNumber(args[1])));
+                if (auto buf = getVMBuffer(bid)) {
+                    if (offset < buf->bytes.size()) {
+                        return VMValue(static_cast<double>(buf->bytes[offset]));
+                    }
+                }
+            }
+            return VMValue(0.0);
+        }
+        if (name == "buffer.set_u8" || name == "buffer_set_u8") {
+            if (args.size() >= 3 && std::holds_alternative<VMValue::Object>(args[0].data)) {
+                const auto& obj = std::get<VMValue::Object>(args[0].data);
+                auto it = obj.find("__buf_id__");
+                int64_t bid = it != obj.end() ? static_cast<int64_t>(toNumber(it->second)) : 0;
+                size_t offset = static_cast<size_t>(std::max(0.0, toNumber(args[1])));
+                uint8_t val = static_cast<uint8_t>(toNumber(args[2]));
+                if (auto buf = getVMBuffer(bid)) {
+                    if (offset < buf->bytes.size()) {
+                        buf->bytes[offset] = val;
+                    }
+                }
+            }
+            return VMValue();
+        }
+        if (name == "buffer.get_i32" || name == "buffer_get_i32") {
+            if (args.size() >= 2 && std::holds_alternative<VMValue::Object>(args[0].data)) {
+                const auto& obj = std::get<VMValue::Object>(args[0].data);
+                auto it = obj.find("__buf_id__");
+                int64_t bid = it != obj.end() ? static_cast<int64_t>(toNumber(it->second)) : 0;
+                size_t offset = static_cast<size_t>(std::max(0.0, toNumber(args[1])));
+                if (auto buf = getVMBuffer(bid)) {
+                    if (offset + 4 <= buf->bytes.size()) {
+                        int32_t val = 0;
+                        std::memcpy(&val, buf->bytes.data() + offset, 4);
+                        return VMValue(static_cast<double>(val));
+                    }
+                }
+            }
+            return VMValue(0.0);
+        }
+        if (name == "buffer.set_i32" || name == "buffer_set_i32") {
+            if (args.size() >= 3 && std::holds_alternative<VMValue::Object>(args[0].data)) {
+                const auto& obj = std::get<VMValue::Object>(args[0].data);
+                auto it = obj.find("__buf_id__");
+                int64_t bid = it != obj.end() ? static_cast<int64_t>(toNumber(it->second)) : 0;
+                size_t offset = static_cast<size_t>(std::max(0.0, toNumber(args[1])));
+                int32_t val = static_cast<int32_t>(toNumber(args[2]));
+                if (auto buf = getVMBuffer(bid)) {
+                    if (offset + 4 <= buf->bytes.size()) {
+                        std::memcpy(buf->bytes.data() + offset, &val, 4);
+                    }
+                }
+            }
+            return VMValue();
+        }
+        if (name == "buffer.get_f64" || name == "buffer_get_f64") {
+            if (args.size() >= 2 && std::holds_alternative<VMValue::Object>(args[0].data)) {
+                const auto& obj = std::get<VMValue::Object>(args[0].data);
+                auto it = obj.find("__buf_id__");
+                int64_t bid = it != obj.end() ? static_cast<int64_t>(toNumber(it->second)) : 0;
+                size_t offset = static_cast<size_t>(std::max(0.0, toNumber(args[1])));
+                if (auto buf = getVMBuffer(bid)) {
+                    if (offset + 8 <= buf->bytes.size()) {
+                        double val = 0.0;
+                        std::memcpy(&val, buf->bytes.data() + offset, 8);
+                        return VMValue(val);
+                    }
+                }
+            }
+            return VMValue(0.0);
+        }
+        if (name == "buffer.set_f64" || name == "buffer_set_f64") {
+            if (args.size() >= 3 && std::holds_alternative<VMValue::Object>(args[0].data)) {
+                const auto& obj = std::get<VMValue::Object>(args[0].data);
+                auto it = obj.find("__buf_id__");
+                int64_t bid = it != obj.end() ? static_cast<int64_t>(toNumber(it->second)) : 0;
+                size_t offset = static_cast<size_t>(std::max(0.0, toNumber(args[1])));
+                double val = toNumber(args[2]);
+                if (auto buf = getVMBuffer(bid)) {
+                    if (offset + 8 <= buf->bytes.size()) {
+                        std::memcpy(buf->bytes.data() + offset, &val, 8);
+                    }
+                }
+            }
+            return VMValue();
+        }
+        if (name == "buffer.slice" || name == "buffer_slice") {
+            if (args.empty() || !std::holds_alternative<VMValue::Object>(args[0].data)) return VMValue();
+            const auto& obj = std::get<VMValue::Object>(args[0].data);
+            auto it = obj.find("__buf_id__");
+            int64_t bid = it != obj.end() ? static_cast<int64_t>(toNumber(it->second)) : 0;
+            auto srcBuf = getVMBuffer(bid);
+            if (!srcBuf) return VMValue();
+            int64_t len = static_cast<int64_t>(srcBuf->bytes.size());
+            int64_t start = args.size() > 1 ? static_cast<int64_t>(toNumber(args[1])) : 0;
+            int64_t end = args.size() > 2 ? static_cast<int64_t>(toNumber(args[2])) : len;
+            if (start < 0) start = std::max<int64_t>(0, len + start);
+            if (end < 0) end = std::max<int64_t>(0, len + end);
+            start = std::clamp<int64_t>(start, 0, len);
+            end = std::clamp<int64_t>(end, start, len);
+            size_t sliceSize = static_cast<size_t>(end - start);
+            auto newBuf = std::make_shared<VMRawBuffer>();
+            newBuf->bytes.resize(sliceSize);
+            if (sliceSize > 0) {
+                std::memcpy(newBuf->bytes.data(), srcBuf->bytes.data() + start, sliceSize);
+            }
+            int64_t id = ++vmBufferCounter_;
+            {
+                std::lock_guard<std::mutex> lock(vmBufferRegistryMutex_);
+                vmBufferRegistry_[id] = newBuf;
+            }
+            VMValue::Object res;
+            res["__type__"] = VMValue("Buffer");
+            res["__buf_id__"] = VMValue(static_cast<double>(id));
+            res["length"] = VMValue(static_cast<double>(sliceSize));
+            return VMValue(res);
+        }
+        if (name == "struct.calcsize" || name == "struct_calcsize") {
+            if (args.empty()) return VMValue(0.0);
+            std::string fmt = toString(args[0]);
+            size_t total = 0;
+            for (char c : fmt) {
+                if (std::isspace(static_cast<unsigned char>(c))) continue;
+                switch (c) {
+                    case 'b': case 'B': total += 1; break;
+                    case 'h': case 'H': total += 2; break;
+                    case 'i': case 'I': case 'l': case 'L': total += 4; break;
+                    case 'q': case 'Q': total += 8; break;
+                    case 'f': total += 4; break;
+                    case 'd': case 'p': total += 8; break;
+                    default: break;
+                }
+            }
+            return VMValue(static_cast<double>(total));
+        }
+        if (name == "struct.pack" || name == "struct_pack") {
+            if (args.empty()) return VMValue(VMValue::Object{});
+            std::string fmt = toString(args[0]);
+            size_t totalSize = 0;
+            for (char c : fmt) {
+                if (std::isspace(static_cast<unsigned char>(c))) continue;
+                switch (c) {
+                    case 'b': case 'B': totalSize += 1; break;
+                    case 'h': case 'H': totalSize += 2; break;
+                    case 'i': case 'I': case 'l': case 'L': totalSize += 4; break;
+                    case 'q': case 'Q': totalSize += 8; break;
+                    case 'f': totalSize += 4; break;
+                    case 'd': case 'p': totalSize += 8; break;
+                    default: break;
+                }
+            }
+            int64_t id = ++vmBufferCounter_;
+            auto buf = std::make_shared<VMRawBuffer>();
+            buf->bytes.resize(totalSize, 0);
+            {
+                std::lock_guard<std::mutex> lock(vmBufferRegistryMutex_);
+                vmBufferRegistry_[id] = buf;
+            }
+            size_t argIdx = 1;
+            size_t offset = 0;
+            for (char c : fmt) {
+                if (std::isspace(static_cast<unsigned char>(c))) continue;
+                VMValue val = argIdx < args.size() ? args[argIdx++] : VMValue(0.0);
+                switch (c) {
+                    case 'b': {
+                        int8_t v = static_cast<int8_t>(toNumber(val));
+                        std::memcpy(buf->bytes.data() + offset, &v, 1);
+                        offset += 1;
+                        break;
+                    }
+                    case 'B': {
+                        uint8_t v = static_cast<uint8_t>(toNumber(val));
+                        std::memcpy(buf->bytes.data() + offset, &v, 1);
+                        offset += 1;
+                        break;
+                    }
+                    case 'h': {
+                        int16_t v = static_cast<int16_t>(toNumber(val));
+                        std::memcpy(buf->bytes.data() + offset, &v, 2);
+                        offset += 2;
+                        break;
+                    }
+                    case 'H': {
+                        uint16_t v = static_cast<uint16_t>(toNumber(val));
+                        std::memcpy(buf->bytes.data() + offset, &v, 2);
+                        offset += 2;
+                        break;
+                    }
+                    case 'i': case 'l': {
+                        int32_t v = static_cast<int32_t>(toNumber(val));
+                        std::memcpy(buf->bytes.data() + offset, &v, 4);
+                        offset += 4;
+                        break;
+                    }
+                    case 'I': case 'L': {
+                        uint32_t v = static_cast<uint32_t>(toNumber(val));
+                        std::memcpy(buf->bytes.data() + offset, &v, 4);
+                        offset += 4;
+                        break;
+                    }
+                    case 'q': {
+                        int64_t v = static_cast<int64_t>(toNumber(val));
+                        std::memcpy(buf->bytes.data() + offset, &v, 8);
+                        offset += 8;
+                        break;
+                    }
+                    case 'Q': {
+                        uint64_t v = static_cast<uint64_t>(toNumber(val));
+                        std::memcpy(buf->bytes.data() + offset, &v, 8);
+                        offset += 8;
+                        break;
+                    }
+                    case 'f': {
+                        float v = static_cast<float>(toNumber(val));
+                        std::memcpy(buf->bytes.data() + offset, &v, 4);
+                        offset += 4;
+                        break;
+                    }
+                    case 'd': {
+                        double v = toNumber(val);
+                        std::memcpy(buf->bytes.data() + offset, &v, 8);
+                        offset += 8;
+                        break;
+                    }
+                    case 'p': {
+                        intptr_t v = 0;
+                        if (std::holds_alternative<VMValue::Object>(val.data)) {
+                            const auto& o = std::get<VMValue::Object>(val.data);
+                            auto bIt = o.find("__buf_id__");
+                            if (bIt != o.end()) {
+                                int64_t bid = static_cast<int64_t>(toNumber(bIt->second));
+                                if (auto b = getVMBuffer(bid)) {
+                                    v = reinterpret_cast<intptr_t>(b->bytes.data());
+                                }
+                            }
+                        } else {
+                            v = static_cast<intptr_t>(toNumber(val));
+                        }
+                        std::memcpy(buf->bytes.data() + offset, &v, 8);
+                        offset += 8;
+                        break;
+                    }
+                    default:
+                        break;
+                }
+            }
+            VMValue::Object obj;
+            obj["__type__"] = VMValue(std::string("Buffer"));
+            obj["__buf_id__"] = VMValue(static_cast<double>(id));
+            obj["length"] = VMValue(static_cast<double>(totalSize));
+            return VMValue(obj);
+        }
+        if (name == "struct.unpack" || name == "struct_unpack") {
+            if (args.size() < 2 || !std::holds_alternative<VMValue::Object>(args[1].data)) return VMValue(VMValue::Array{});
+            std::string fmt = toString(args[0]);
+            const auto& o = std::get<VMValue::Object>(args[1].data);
+            auto idIt = o.find("__buf_id__");
+            int64_t bid = idIt != o.end() ? static_cast<int64_t>(toNumber(idIt->second)) : 0;
+            auto buf = getVMBuffer(bid);
+            if (!buf) return VMValue(VMValue::Array{});
+            size_t offset = args.size() >= 3 ? static_cast<size_t>(std::max(0.0, toNumber(args[2]))) : 0;
+            VMValue::Array res;
+            for (char c : fmt) {
+                if (std::isspace(static_cast<unsigned char>(c))) continue;
+                size_t sz = 0;
+                switch (c) {
+                    case 'b': case 'B': sz = 1; break;
+                    case 'h': case 'H': sz = 2; break;
+                    case 'i': case 'I': case 'l': case 'L': sz = 4; break;
+                    case 'q': case 'Q': sz = 8; break;
+                    case 'f': sz = 4; break;
+                    case 'd': case 'p': sz = 8; break;
+                    default: break;
+                }
+                if (offset + sz > buf->bytes.size()) break;
+                switch (c) {
+                    case 'b': {
+                        int8_t v = 0;
+                        std::memcpy(&v, buf->bytes.data() + offset, 1);
+                        res.push_back(VMValue(static_cast<double>(v)));
+                        offset += 1;
+                        break;
+                    }
+                    case 'B': {
+                        uint8_t v = 0;
+                        std::memcpy(&v, buf->bytes.data() + offset, 1);
+                        res.push_back(VMValue(static_cast<double>(v)));
+                        offset += 1;
+                        break;
+                    }
+                    case 'h': {
+                        int16_t v = 0;
+                        std::memcpy(&v, buf->bytes.data() + offset, 2);
+                        res.push_back(VMValue(static_cast<double>(v)));
+                        offset += 2;
+                        break;
+                    }
+                    case 'H': {
+                        uint16_t v = 0;
+                        std::memcpy(&v, buf->bytes.data() + offset, 2);
+                        res.push_back(VMValue(static_cast<double>(v)));
+                        offset += 2;
+                        break;
+                    }
+                    case 'i': case 'l': {
+                        int32_t v = 0;
+                        std::memcpy(&v, buf->bytes.data() + offset, 4);
+                        res.push_back(VMValue(static_cast<double>(v)));
+                        offset += 4;
+                        break;
+                    }
+                    case 'I': case 'L': {
+                        uint32_t v = 0;
+                        std::memcpy(&v, buf->bytes.data() + offset, 4);
+                        res.push_back(VMValue(static_cast<double>(v)));
+                        offset += 4;
+                        break;
+                    }
+                    case 'q': {
+                        int64_t v = 0;
+                        std::memcpy(&v, buf->bytes.data() + offset, 8);
+                        res.push_back(VMValue(static_cast<double>(v)));
+                        offset += 8;
+                        break;
+                    }
+                    case 'Q': {
+                        uint64_t v = 0;
+                        std::memcpy(&v, buf->bytes.data() + offset, 8);
+                        res.push_back(VMValue(static_cast<double>(v)));
+                        offset += 8;
+                        break;
+                    }
+                    case 'f': {
+                        float v = 0;
+                        std::memcpy(&v, buf->bytes.data() + offset, 4);
+                        res.push_back(VMValue(static_cast<double>(v)));
+                        offset += 4;
+                        break;
+                    }
+                    case 'd': {
+                        double v = 0;
+                        std::memcpy(&v, buf->bytes.data() + offset, 8);
+                        res.push_back(VMValue(v));
+                        offset += 8;
+                        break;
+                    }
+                    case 'p': {
+                        intptr_t v = 0;
+                        std::memcpy(&v, buf->bytes.data() + offset, 8);
+                        res.push_back(VMValue(static_cast<double>(v)));
+                        offset += 8;
+                        break;
+                    }
+                    default:
+                        break;
+                }
+            }
+            return VMValue(res);
+        }
         if (name == "print") {
             for (size_t i = 0; i < args.size(); ++i) {
                 if (i) std::cout << " ";
@@ -840,6 +1523,12 @@ public:
         if (name == "slice") {
             if (args.empty()) return VMValue();
             const VMValue& source = args[0];
+            if (std::holds_alternative<VMValue::Object>(source.data)) {
+                const auto& obj = std::get<VMValue::Object>(source.data);
+                if (obj.find("__buf_id__") != obj.end()) {
+                    return callDefaultBuiltin("buffer.slice", args);
+                }
+            }
             const int start = args.size() > 1 ? static_cast<int>(toNumber(args[1])) : 0;
             const int end = args.size() > 2 ? static_cast<int>(toNumber(args[2])) : sizeOf(source);
             if (std::holds_alternative<std::string>(source.data)) {
@@ -919,6 +1608,124 @@ public:
                 return VMValue();
             }
             return VMValue();
+        }
+        if (name == "range_inclusive") {
+            double s = args.size() > 0 ? toNumber(args[0]) : 0.0;
+            double e = args.size() > 1 ? toNumber(args[1]) : 0.0;
+            VMValue::Array arr;
+            if (s <= e) {
+                for (double i = s; i <= e; i += 1.0) arr.push_back(VMValue(i));
+            } else {
+                for (double i = s; i >= e; i -= 1.0) arr.push_back(VMValue(i));
+            }
+            return VMValue(arr);
+        }
+        if (name == "vec2") {
+            VMValue::Object v;
+            v["x"] = VMValue(args.size() > 0 ? toNumber(args[0]) : 0.0);
+            v["y"] = VMValue(args.size() > 1 ? toNumber(args[1]) : 0.0);
+            v["__type__"] = VMValue(std::string("vec2"));
+            return VMValue(v);
+        }
+        if (name == "vec3") {
+            VMValue::Object v;
+            v["x"] = VMValue(args.size() > 0 ? toNumber(args[0]) : 0.0);
+            v["y"] = VMValue(args.size() > 1 ? toNumber(args[1]) : 0.0);
+            v["z"] = VMValue(args.size() > 2 ? toNumber(args[2]) : 0.0);
+            v["__type__"] = VMValue(std::string("vec3"));
+            return VMValue(v);
+        }
+        if (name == "vec_add" && args.size() >= 2 && std::holds_alternative<VMValue::Object>(args[0].data) && std::holds_alternative<VMValue::Object>(args[1].data)) {
+            const auto& a = std::get<VMValue::Object>(args[0].data);
+            const auto& b = std::get<VMValue::Object>(args[1].data);
+            bool i3 = a.count("z") && b.count("z");
+            VMValue::Object r;
+            r["x"] = VMValue((a.count("x") ? toNumber(a.at("x")) : 0.0) + (b.count("x") ? toNumber(b.at("x")) : 0.0));
+            r["y"] = VMValue((a.count("y") ? toNumber(a.at("y")) : 0.0) + (b.count("y") ? toNumber(b.at("y")) : 0.0));
+            if (i3) r["z"] = VMValue(toNumber(a.at("z")) + toNumber(b.at("z")));
+            return VMValue(r);
+        }
+        if (name == "vec_sub" && args.size() >= 2 && std::holds_alternative<VMValue::Object>(args[0].data) && std::holds_alternative<VMValue::Object>(args[1].data)) {
+            const auto& a = std::get<VMValue::Object>(args[0].data);
+            const auto& b = std::get<VMValue::Object>(args[1].data);
+            bool i3 = a.count("z") && b.count("z");
+            VMValue::Object r;
+            r["x"] = VMValue((a.count("x") ? toNumber(a.at("x")) : 0.0) - (b.count("x") ? toNumber(b.at("x")) : 0.0));
+            r["y"] = VMValue((a.count("y") ? toNumber(a.at("y")) : 0.0) - (b.count("y") ? toNumber(b.at("y")) : 0.0));
+            if (i3) r["z"] = VMValue(toNumber(a.at("z")) - toNumber(b.at("z")));
+            return VMValue(r);
+        }
+        if (name == "vec_mul" && args.size() >= 2 && std::holds_alternative<VMValue::Object>(args[0].data)) {
+            const auto& a = std::get<VMValue::Object>(args[0].data);
+            double s = toNumber(args[1]);
+            VMValue::Object r;
+            r["x"] = VMValue((a.count("x") ? toNumber(a.at("x")) : 0.0) * s);
+            r["y"] = VMValue((a.count("y") ? toNumber(a.at("y")) : 0.0) * s);
+            if (a.count("z")) r["z"] = VMValue(toNumber(a.at("z")) * s);
+            return VMValue(r);
+        }
+        if (name == "vec_dot" && args.size() >= 2 && std::holds_alternative<VMValue::Object>(args[0].data) && std::holds_alternative<VMValue::Object>(args[1].data)) {
+            const auto& a = std::get<VMValue::Object>(args[0].data);
+            const auto& b = std::get<VMValue::Object>(args[1].data);
+            double d = (a.count("x") ? toNumber(a.at("x")) : 0.0) * (b.count("x") ? toNumber(b.at("x")) : 0.0) +
+                       (a.count("y") ? toNumber(a.at("y")) : 0.0) * (b.count("y") ? toNumber(b.at("y")) : 0.0);
+            if (a.count("z") && b.count("z")) d += toNumber(a.at("z")) * toNumber(b.at("z"));
+            return VMValue(d);
+        }
+        if (name == "vec_len" && !args.empty() && std::holds_alternative<VMValue::Object>(args[0].data)) {
+            const auto& a = std::get<VMValue::Object>(args[0].data);
+            double ax = a.count("x") ? toNumber(a.at("x")) : 0.0;
+            double ay = a.count("y") ? toNumber(a.at("y")) : 0.0;
+            double d = ax * ax + ay * ay;
+            if (a.count("z")) { double az = toNumber(a.at("z")); d += az * az; }
+            return VMValue(std::sqrt(d));
+        }
+        if (name == "vec_normalize" && !args.empty() && std::holds_alternative<VMValue::Object>(args[0].data)) {
+            const auto& a = std::get<VMValue::Object>(args[0].data);
+            double ax = a.count("x") ? toNumber(a.at("x")) : 0.0;
+            double ay = a.count("y") ? toNumber(a.at("y")) : 0.0;
+            double d = ax * ax + ay * ay;
+            if (a.count("z")) { double az = toNumber(a.at("z")); d += az * az; }
+            double len = std::max(std::sqrt(d), 1e-10);
+            VMValue::Object r;
+            r["x"] = VMValue(ax / len);
+            r["y"] = VMValue(ay / len);
+            if (a.count("z")) r["z"] = VMValue(toNumber(a.at("z")) / len);
+            return VMValue(r);
+        }
+        if (name == "vec_dist" && args.size() >= 2 && std::holds_alternative<VMValue::Object>(args[0].data) && std::holds_alternative<VMValue::Object>(args[1].data)) {
+            const auto& a = std::get<VMValue::Object>(args[0].data);
+            const auto& b = std::get<VMValue::Object>(args[1].data);
+            double dx = (a.count("x") ? toNumber(a.at("x")) : 0.0) - (b.count("x") ? toNumber(b.at("x")) : 0.0);
+            double dy = (a.count("y") ? toNumber(a.at("y")) : 0.0) - (b.count("y") ? toNumber(b.at("y")) : 0.0);
+            double dz = (a.count("z") && b.count("z")) ? (toNumber(a.at("z")) - toNumber(b.at("z"))) : 0.0;
+            return VMValue(std::sqrt(dx * dx + dy * dy + dz * dz));
+        }
+        if (name == "vec_lerp" && args.size() >= 3 && std::holds_alternative<VMValue::Object>(args[0].data) && std::holds_alternative<VMValue::Object>(args[1].data)) {
+            const auto& a = std::get<VMValue::Object>(args[0].data);
+            const auto& b = std::get<VMValue::Object>(args[1].data);
+            double t = toNumber(args[2]);
+            double ax = a.count("x") ? toNumber(a.at("x")) : 0.0, bx = b.count("x") ? toNumber(b.at("x")) : 0.0;
+            double ay = a.count("y") ? toNumber(a.at("y")) : 0.0, by = b.count("y") ? toNumber(b.at("y")) : 0.0;
+            VMValue::Object r;
+            r["x"] = VMValue(ax + (bx - ax) * t);
+            r["y"] = VMValue(ay + (by - ay) * t);
+            if (a.count("z") && b.count("z")) {
+                double az = toNumber(a.at("z")), bz = toNumber(b.at("z"));
+                r["z"] = VMValue(az + (bz - az) * t);
+            }
+            return VMValue(r);
+        }
+        if (name == "vec_cross" && args.size() >= 2 && std::holds_alternative<VMValue::Object>(args[0].data) && std::holds_alternative<VMValue::Object>(args[1].data)) {
+            const auto& a = std::get<VMValue::Object>(args[0].data);
+            const auto& b = std::get<VMValue::Object>(args[1].data);
+            double ax = a.count("x") ? toNumber(a.at("x")) : 0.0, ay = a.count("y") ? toNumber(a.at("y")) : 0.0, az = a.count("z") ? toNumber(a.at("z")) : 0.0;
+            double bx = b.count("x") ? toNumber(b.at("x")) : 0.0, by = b.count("y") ? toNumber(b.at("y")) : 0.0, bz = b.count("z") ? toNumber(b.at("z")) : 0.0;
+            VMValue::Object r;
+            r["x"] = VMValue(ay * bz - az * by);
+            r["y"] = VMValue(az * bx - ax * bz);
+            r["z"] = VMValue(ax * by - ay * bx);
+            return VMValue(r);
         }
         if (name == "crypto.sha256" || name == "hash.sha256") {
             if (args.empty()) return VMValue(std::string(""));

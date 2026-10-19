@@ -1,14 +1,15 @@
 # RayQuiro
 
 <p align="left">
-  <img src="https://img.shields.io/github/stars/Raytolfas/RayQuiro?style=for-the-badge&color=0ea5e9" alt="Stars">
+  <img src="https://img.shields.io/github/actions/workflow/status/Raytolfas/RayQuiro/ci.yml?style=for-the-badge&label=CI" alt="CI">
   <img src="https://img.shields.io/github/v/release/Raytolfas/RayQuiro?style=for-the-badge&color=f59e0b" alt="Release">
-  <img src="https://img.shields.io/visual-studio-marketplace/v/raytolfas.rayquiro-lang?style=for-the-badge&label=VS%20Code&color=2563eb" alt="VS Code Extension">
+  <img src="https://img.shields.io/github/stars/Raytolfas/RayQuiro?style=for-the-badge&color=0ea5e9" alt="Stars">
+  <img src="https://img.shields.io/github/license/Raytolfas/RayQuiro?style=for-the-badge&color=10b981" alt="License">
 </p>
 
-RayQuiro is a lightweight scripting language designed for quickly building desktop apps, web backends, utility bots, and native tools.
+RayQuiro is a programming language with a bytecode VM, native compiler (`TinyCC` / `LLVM`), C FFI, raw byte buffers, threads/channels (`spawn` / `channel`), and built-in modules for 2D/3D graphics, desktop UI, and HTTP servers.
 
-## 🚀 Installation
+## Installation
 
 ### Windows (PowerShell)
 ```powershell
@@ -20,39 +21,52 @@ irm rq.raytolfas.cc | iex
 curl -s rq.raytolfas.cc/linux | bash
 ```
 
-*Alternatively, manually download `rqio` from [Releases](https://github.com/Raytolfas/RayQuiro/releases).*
+Prebuilt binaries are also available in [Releases](https://github.com/Raytolfas/RayQuiro/releases).
 
+## Quick Start
 
-## ⚡ Quick Start
+```rq
+fn main() {
+    print("Hello, RayQuiro!");
+}
 
-Create a new file `hello.rq`:
-
-```text
-print("Hello, RayQuiro!");
+main();
 ```
 
-Run it:
+Run:
 
 ```powershell
-rqio hello.rq
+rqio run hello.rq
 ```
 
-## 🛠️ Key CLI Commands
+Build native binary:
 
-- **Run interpreter:** `rqio file.rq`
-- **Run VM (bytecode):** `rqio run --vm file.rq`
-- **Compile to standalone EXE:** `rqio build file.rq -o app.exe`
-- **Pack bytecode:** `rqio pack file.rq -o app.rqb`
-- **Bundle app folder:** `rqio bundle file.rq -o build/app`
-- **Initialize project:** `rqio init [folder-name]`
-- **Install framework:** `rqio install [framework-name]`
-- **Check for updates:** `rqio self-update`
+```powershell
+rqio build hello.rq -o hello --release
+```
 
-## 🔗 Links
+## CLI
 
-- **VS Code Extension:** [RayQuiro on VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=raytolfas.rayquiro-lang)
-- **Releases:** [Raytolfas/RayQuiro Releases](https://github.com/Raytolfas/RayQuiro/releases)
-- **Official Assets Registry:** [Raytolfas/Assets on GitHub](https://github.com/Raytolfas/Assets)
+| Command | Description |
+|---------|-------------|
+| `rqio run <file.rq> [--watch]` | Run script (`--watch` for hot-reload) |
+| `rqio test [path]` | Run `test` blocks and test suites |
+| `rqio build <file.rq> [-o out]` | Compile to native binary (`--tcc`, `--llvm`, `--release`, `--target`) |
+| `rqio check <file.rq>` | Check syntax and AST |
+| `rqio fmt <file.rq>` | Format source file |
+| `rqio repl` | Start REPL |
+| `rqio cc <files.c> [-o out]` | Compile C files with bundled TinyCC |
+| `rqio lsp` | Start LSP server |
+| `rqio debug <file.rq> [--port N]` | Start DAP debug server |
+| `rqio init / add / install / remove / list` | Package manager (`rqio.json`) |
 
----
-*powered by raytolfas*
+## Build from Source
+
+- **Windows:** `./build.ps1`
+- **Linux / macOS:** `./build.sh`
+- **Tests:** `./rqio test`
+
+## Links
+
+- [Releases](https://github.com/Raytolfas/RayQuiro/releases)
+- [Assets Registry](https://github.com/Raytolfas/Assets)

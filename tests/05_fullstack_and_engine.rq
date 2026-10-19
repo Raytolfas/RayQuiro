@@ -1,0 +1,108 @@
+// Imports
+import "rayquiro.ui";
+import "rayquiro.app";
+
+// Math builtins
+var sq = sqrt(16);
+var pw = pow(2, 3);
+var ab = abs(-42);
+assert_eq(sq, 4);
+assert_eq(pw, 8);
+assert_eq(ab, 42);
+assert(pi > 3.14 && pi < 3.15);
+
+var mn = min(10, 20);
+var mx = max(10, 20);
+var cl = clamp(150, 0, 100);
+var fl = floor(3.7);
+var ce = ceil(3.2);
+var ro = round(3.5);
+assert_eq(mn, 10);
+assert_eq(mx, 20);
+assert_eq(cl, 100);
+assert_eq(fl, 3);
+assert_eq(ce, 4);
+assert_eq(ro, 4);
+
+// Vector math
+var v1 = vec2(3, 4);
+var v2 = vec2(1, 2);
+var vSum = vec_add(v1, v2);
+assert_eq(vSum["x"], 4);
+assert_eq(vSum["y"], 6);
+assert_eq(vec_len(v1), 5);
+
+var v3a = vec3(1, 0, 0);
+var v3b = vec3(0, 1, 0);
+var vCross = vec_cross(v3a, v3b);
+assert_eq(vCross["x"], 0);
+assert_eq(vCross["y"], 0);
+assert_eq(vCross["z"], 1);
+
+// JSON
+var originalObj = {"name": "RayQuiro", "stars": 5000, "active": true};
+var jsonStr = json.stringify(originalObj);
+var parsedObj = json.parse(jsonStr);
+assert_eq(parsedObj["name"], "RayQuiro");
+assert_eq(parsedObj["stars"], 5000);
+assert_true(parsedObj["active"]);
+
+// Crypto and hash
+var sha = hash.sha256("rayquiro");
+assert_eq(len(sha), 64);
+var csha = crypto.sha256("rayquiro");
+assert_eq(csha, sha);
+
+var b64 = crypto.base64_encode("Hello World");
+var decoded = crypto.base64_decode(b64);
+assert_eq(decoded, "Hello World");
+
+var uuidStr = crypto.uuid();
+assert_eq(len(uuidStr), 36);
+
+// Filesystem and path
+var testDir = process.cwd();
+assert(len(testDir) > 0);
+var joinedPath = path.join(testDir, "temp_test.txt");
+assert_eq(path.basename(joinedPath), "temp_test.txt");
+assert_eq(path.ext(joinedPath), ".txt");
+
+fs.write(joinedPath, "RayQuiro I/O System OK");
+assert_true(fs.exists(joinedPath));
+var fileContent = fs.read(joinedPath);
+assert_eq(fileContent, "RayQuiro I/O System OK");
+fs.remove(joinedPath);
+assert_false(fs.exists(joinedPath));
+
+// Environment
+env.set("RQ_TEST_VAR", "active");
+assert_true(env.has("RQ_TEST_VAR"));
+assert_eq(env.get("RQ_TEST_VAR"), "active");
+
+// UI styling
+var dark = ui.dark();
+assert_eq(dark["name"], "dark");
+assert_eq(dark["primary"], "#3b82f6");
+
+var hex = ui.rgb(255, 0, 128);
+assert_eq(hex, "#ff0080");
+
+var blended = ui.blend("#000000", "#ffffff", 0.5);
+assert_eq(blended, "#7f7f7f");
+
+// App elements
+var btn = app.button("Click", { "id": "btn1" });
+assert_eq(btn["tag"], "button");
+assert_eq(btn["text"], "Click");
+
+var txt = app.text("RayQuiro Fullstack");
+assert_eq(txt["tag"], "text");
+
+var col = app.column([txt, btn]);
+assert_eq(col["tag"], "column");
+assert_eq(len(col["children"]), 2);
+
+var html = app.to_html(col);
+assert(len(html) > 0);
+
+print("05_fullstack_and_engine: PASS");

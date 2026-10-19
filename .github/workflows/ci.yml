@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x64
+            os: ubuntu-latest
+          - name: Windows x64
+            os: windows-latest
+          - name: macOS ARM64
+            os: macos-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Fetch Raylib if not present
+        shell: bash
+        run: |
+          if [ ! -d "third_party/raylib/src" ]; then
+            mkdir -p third_party
+            git clone --depth 1 --branch 5.0 https://github.com/raysan5/raylib.git third_party/raylib
+          fi
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libgl1-mesa-dev libx11-dev libxrandr-dev libxinerama-dev libxi-dev libxcursor-dev
+
+      - name: Build (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          chmod +x ./build.sh
+          ./build.sh
+
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./build.ps1
+
+      - name: Run test suite (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          ./rqio --version
+          ./rqio test
+
+      - name: Run test suite (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./rqio.exe --version
+          ./rqio.exe test

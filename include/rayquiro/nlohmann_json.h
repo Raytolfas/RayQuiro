@@ -92,8 +92,8 @@ public:
         return (*a_)[i];
     }
 
-    auto begin() const { return a_ ? a_->begin() : json_array{}.begin(); }
-    auto end()   const { return a_ ? a_->end()   : json_array{}.end();   }
+    auto begin() const { static const json_array empty_arr; return a_ ? a_->begin() : empty_arr.begin(); }
+    auto end()   const { static const json_array empty_arr; return a_ ? a_->end()   : empty_arr.end();   }
     size_t size() const {
         if (is_array())  return a_ ? a_->size() : 0;
         if (is_object()) return o_ ? o_->size() : 0;

@@ -184,6 +184,9 @@ public:
                 std::string s;
                 while (pos < src.size()) {
                     char ch = peek();
+                    if (ch == '.' && peekNext() == '.') {
+                        break;
+                    }
                     if (std::isalnum(static_cast<unsigned char>(ch)) || ch == '_' || ch == '.') {
                         s += advance();
                     } else {
@@ -195,7 +198,9 @@ public:
                 else if (s == "as") addToken(tokens, TokenType::AS, s, startLine, startCol);
                 else if (s == "var") addToken(tokens, TokenType::VAR, s, startLine, startCol);
                 else if (s == "let") addToken(tokens, TokenType::LET, s, startLine, startCol);
+                else if (s == "const") addToken(tokens, TokenType::CONST, s, startLine, startCol);
                 else if (s == "fn") addToken(tokens, TokenType::FN, s, startLine, startCol);
+                else if (s == "spawn") addToken(tokens, TokenType::SPAWN, s, startLine, startCol);
                 else if (s == "if") addToken(tokens, TokenType::IF, s, startLine, startCol);
                 else if (s == "else") addToken(tokens, TokenType::ELSE, s, startLine, startCol);
                 else if (s == "while") addToken(tokens, TokenType::WHILE, s, startLine, startCol);
@@ -221,6 +226,9 @@ public:
                 else if (s == "enum") addToken(tokens, TokenType::ENUM, s, startLine, startCol);
                 else if (s == "interface") addToken(tokens, TokenType::INTERFACE, s, startLine, startCol);
                 else if (s == "impl") addToken(tokens, TokenType::IMPL, s, startLine, startCol);
+                else if (s == "defer") addToken(tokens, TokenType::DEFER, s, startLine, startCol);
+                else if (s == "test") addToken(tokens, TokenType::TEST, s, startLine, startCol);
+                else if (s == "export") addToken(tokens, TokenType::EXPORT, s, startLine, startCol);
                 else addToken(tokens, TokenType::IDENTIFIER, s, startLine, startCol);
                 continue;
             }
@@ -234,6 +242,12 @@ public:
             if (c == '.' && peekNext() == '.' && pos + 2 < src.size() && src[pos+2] == '.') {
                 advance(); advance(); advance();
                 addToken(tokens, TokenType::DOT_DOT_DOT, "...", startLine, startCol);
+                continue;
+            }
+
+            if (c == '.' && peekNext() == '.') {
+                advance(); advance();
+                addToken(tokens, TokenType::DOT_DOT, "..", startLine, startCol);
                 continue;
             }
 

@@ -1,0 +1,94 @@
+// Structs
+struct Point {
+    x: 0,
+    y: 0
+}
+
+struct User {
+    name: "Guest",
+    role: "User",
+    active: true
+}
+
+var p = Point { x: 10, y: 25 };
+assert_eq(p["x"], 10);
+assert_eq(p["y"], 25);
+p["x"] = 50;
+assert_eq(p["x"], 50);
+
+var u = User { name: "mixitosik", role: "Admin" };
+assert_eq(u["name"], "mixitosik");
+assert_eq(u["role"], "Admin");
+assert_true(u["active"]);
+
+// Pattern matching
+var matchedNum = "";
+match (2) {
+    1 => matchedNum = "one",
+    2 => matchedNum = "two",
+    _ => matchedNum = "other"
+}
+assert_eq(matchedNum, "two");
+
+var matchedStr = "";
+match "world" {
+    "hello" => { matchedStr = "h"; }
+    "world" => { matchedStr = "w"; }
+    _ => { matchedStr = "unknown"; }
+}
+assert_eq(matchedStr, "w");
+
+// Range and guards
+fn classifyStatus(code) {
+    var desc = "";
+    match (code) {
+        200..299 => desc = "success",
+        300..399 => desc = "redirect",
+        400..499 if code == 404 => desc = "not_found",
+        400..499 => desc = "client_error",
+        500..599 => desc = "server_error",
+        _ => desc = "unknown"
+    }
+    return desc;
+}
+
+assert_eq(classifyStatus(200), "success");
+assert_eq(classifyStatus(204), "success");
+assert_eq(classifyStatus(301), "redirect");
+assert_eq(classifyStatus(404), "not_found");
+assert_eq(classifyStatus(403), "client_error");
+assert_eq(classifyStatus(500), "server_error");
+assert_eq(classifyStatus(999), "unknown");
+
+// Error handling
+var caught = false;
+var finallyExecuted = false;
+try {
+    throw "critical_failure";
+} catch (e) {
+    caught = true;
+    assert_eq(e, "critical_failure");
+} finally {
+    finallyExecuted = true;
+}
+assert_true(caught);
+assert_true(finallyExecuted);
+
+// Stack unwinding and defer
+var deferInCatch = [];
+fn testThrowWithDefer() {
+    defer push(deferInCatch, "cleaned_up");
+    if (true) {
+        throw "error_inside_scope";
+    }
+}
+
+try {
+    testThrowWithDefer();
+} catch (err) {
+    assert_eq(err, "error_inside_scope");
+}
+assert_eq(len(deferInCatch), 1);
+assert_eq(deferInCatch[0], "cleaned_up");
+
+print("04_types_matching_and_structs: PASS");

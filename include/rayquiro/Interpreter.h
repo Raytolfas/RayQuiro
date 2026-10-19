@@ -5,7 +5,9 @@
 #include <chrono>
 #include <cmath>
 #include <cctype>
+#include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -20,6 +22,8 @@
 #include <thread>
 #include <future>
 #include <mutex>
+#include <condition_variable>
+#include <queue>
 #include <optional>
 #include <unordered_map>
 #include <unordered_set>
@@ -230,37 +234,42 @@ private:
     struct Environment {
         std::shared_ptr<Environment> parent;
         std::unordered_map<std::string, VariableSlot> values;
+        mutable std::mutex mtx;
 
         explicit Environment(std::shared_ptr<Environment> parentEnv = nullptr) : parent(std::move(parentEnv)) {}
 
         void define(const std::string& name, const Value& value, bool isConst) {
+            std::lock_guard<std::mutex> lock(mtx);
             values[name] = VariableSlot{value, isConst};
         }
 
         Value get(const std::string& name) const {
-            const auto found = values.find(name);
-            if (found != values.end()) {
-                return found->second.value;
-            }
-            const size_t dot = name.find('.');
-            if (dot != std::string::npos) {
-                const std::string baseName = name.substr(0, dot);
-                const auto baseFound = values.find(baseName);
-                if (baseFound != values.end()) {
-                    Value cur = baseFound->second.value;
-                    std::string rem = name.substr(dot + 1);
-                    while (!rem.empty() && is_object(cur)) {
-                        size_t nextDot = rem.find('.');
-                        std::string seg = (nextDot == std::string::npos) ? rem : rem.substr(0, nextDot);
-                        rem = (nextDot == std::string::npos) ? "" : rem.substr(nextDot + 1);
-                        auto it = cur.as_object()->find(seg);
-                        if (it == cur.as_object()->end()) {
-                            cur = Value();
-                            break;
+            {
+                std::lock_guard<std::mutex> lock(mtx);
+                const auto found = values.find(name);
+                if (found != values.end()) {
+                    return found->second.value;
+                }
+                const size_t dot = name.find('.');
+                if (dot != std::string::npos) {
+                    const std::string baseName = name.substr(0, dot);
+                    const auto baseFound = values.find(baseName);
+                    if (baseFound != values.end()) {
+                        Value cur = baseFound->second.value;
+                        std::string rem = name.substr(dot + 1);
+                        while (!rem.empty() && is_object(cur)) {
+                            size_t nextDot = rem.find('.');
+                            std::string seg = (nextDot == std::string::npos) ? rem : rem.substr(0, nextDot);
+                            rem = (nextDot == std::string::npos) ? "" : rem.substr(nextDot + 1);
+                            auto it = cur.as_object()->find(seg);
+                            if (it == cur.as_object()->end()) {
+                                cur = Value();
+                                break;
+                            }
+                            cur = it->second;
                         }
-                        cur = it->second;
+                        if (!is_null(cur)) return cur;
                     }
-                    if (!is_null(cur)) return cur;
                 }
             }
             if (parent) {
@@ -270,32 +279,35 @@ private:
         }
 
         void assign(const std::string& name, const Value& value) {
-            const auto found = values.find(name);
-            if (found != values.end()) {
-                if (found->second.isConst) {
-                    throw std::runtime_error("Cannot assign to let binding: " + name);
+            {
+                std::lock_guard<std::mutex> lock(mtx);
+                const auto found = values.find(name);
+                if (found != values.end()) {
+                    if (found->second.isConst) {
+                        throw std::runtime_error("Cannot assign to let binding: " + name);
+                    }
+                    found->second.value = value;
+                    return;
                 }
-                found->second.value = value;
-                return;
-            }
-            const size_t dot = name.find('.');
-            if (dot != std::string::npos) {
-                const std::string baseName = name.substr(0, dot);
-                const auto baseFound = values.find(baseName);
-                if (baseFound != values.end() && is_object(baseFound->second.value)) {
-                    Value cur = baseFound->second.value;
-                    std::string rem = name.substr(dot + 1);
-                    while (is_object(cur)) {
-                        size_t nextDot = rem.find('.');
-                        if (nextDot == std::string::npos) {
-                            (*cur.as_object())[rem] = value;
-                            return;
+                const size_t dot = name.find('.');
+                if (dot != std::string::npos) {
+                    const std::string baseName = name.substr(0, dot);
+                    const auto baseFound = values.find(baseName);
+                    if (baseFound != values.end() && is_object(baseFound->second.value)) {
+                        Value cur = baseFound->second.value;
+                        std::string rem = name.substr(dot + 1);
+                        while (is_object(cur)) {
+                            size_t nextDot = rem.find('.');
+                            if (nextDot == std::string::npos) {
+                                (*cur.as_object())[rem] = value;
+                                return;
+                            }
+                            std::string seg = rem.substr(0, nextDot);
+                            rem = rem.substr(nextDot + 1);
+                            auto it = cur.as_object()->find(seg);
+                            if (it == cur.as_object()->end() || !is_object(it->second)) break;
+                            cur = it->second;
                         }
-                        std::string seg = rem.substr(0, nextDot);
-                        rem = rem.substr(nextDot + 1);
-                        auto it = cur.as_object()->find(seg);
-                        if (it == cur.as_object()->end() || !is_object(it->second)) break;
-                        cur = it->second;
                     }
                 }
             }
@@ -474,6 +486,7 @@ private:
 #endif
     std::unordered_map<std::string, Value> structDefs_;
     std::unordered_map<std::string, std::vector<std::string>> interfaceRegistry_;
+    static inline thread_local std::vector<std::vector<std::pair<Stmt*, std::shared_ptr<Environment>>>*> deferScopes_;
 
     enum class EngineMode { Editor, Playing, Paused };
     EngineMode engineMode_ = EngineMode::Editor;
@@ -594,6 +607,700 @@ private:
         if (is_object(value)) return !std::get<Value::Obj>(value.data)->empty();
         if (is_lambda(value)) return true;
         return false;
+    }
+
+    class RayQuiroThreadPool {
+    public:
+        static RayQuiroThreadPool& instance() {
+            static RayQuiroThreadPool pool;
+            return pool;
+        }
+
+        RayQuiroThreadPool() {
+            size_t threads = std::thread::hardware_concurrency();
+            if (threads < 2) threads = 2;
+            workers_.reserve(threads);
+            for (size_t i = 0; i < threads; ++i) {
+                workers_.emplace_back([this]() {
+                    while (true) {
+                        std::function<void()> task;
+                        {
+                            std::unique_lock<std::mutex> lock(mtx_);
+                            cv_.wait(lock, [this]() { return stop_ || !tasks_.empty(); });
+                            if (stop_ && tasks_.empty()) return;
+                            task = std::move(tasks_.front());
+                            tasks_.pop();
+                        }
+                        try {
+                            task();
+                        } catch (...) {}
+                    }
+                });
+            }
+        }
+
+        ~RayQuiroThreadPool() {
+            {
+                std::unique_lock<std::mutex> lock(mtx_);
+                stop_ = true;
+            }
+            cv_.notify_all();
+            for (auto& w : workers_) {
+                if (w.joinable()) w.join();
+            }
+        }
+
+        void enqueue(std::function<void()> task) {
+            {
+                std::unique_lock<std::mutex> lock(mtx_);
+                if (stop_) return;
+                tasks_.push(std::move(task));
+            }
+            cv_.notify_one();
+        }
+
+    private:
+        std::vector<std::thread> workers_;
+        std::queue<std::function<void()>> tasks_;
+        std::mutex mtx_;
+        std::condition_variable cv_;
+        bool stop_ = false;
+    };
+
+    struct ChannelState {
+        std::queue<Value> items;
+        std::mutex mtx;
+        std::condition_variable cv;
+        bool closed = false;
+
+        void send(const Value& val) {
+            std::unique_lock<std::mutex> lock(mtx);
+            if (closed) return;
+            items.push(val);
+            cv.notify_one();
+        }
+
+        Value recv() {
+            std::unique_lock<std::mutex> lock(mtx);
+            cv.wait(lock, [this]() { return !items.empty() || closed; });
+            if (items.empty()) return Value();
+            Value val = items.front();
+            items.pop();
+            return val;
+        }
+
+        void close() {
+            std::unique_lock<std::mutex> lock(mtx);
+            closed = true;
+            cv.notify_all();
+        }
+    };
+
+    static inline std::unordered_map<int64_t, std::shared_ptr<ChannelState>> channelRegistry_;
+    static inline std::mutex channelRegistryMutex_;
+    static inline std::atomic<int64_t> channelCounter_{0};
+
+    static std::shared_ptr<ChannelState> getChannel(int64_t id) {
+        std::lock_guard<std::mutex> lock(channelRegistryMutex_);
+        auto it = channelRegistry_.find(id);
+        if (it != channelRegistry_.end()) return it->second;
+        return nullptr;
+    }
+
+    static Value builtin_channel(const std::vector<Value>& args) {
+        (void)args;
+        int64_t id = ++channelCounter_;
+        auto chan = std::make_shared<ChannelState>();
+        {
+            std::lock_guard<std::mutex> lock(channelRegistryMutex_);
+            channelRegistry_[id] = chan;
+        }
+        Value obj = Value::object();
+        (*obj.as_object())["__type__"] = Value("Channel");
+        (*obj.as_object())["__chan_id__"] = Value(static_cast<double>(id));
+        return obj;
+    }
+
+    static Value builtin_channel_send(const std::vector<Value>& args) {
+        if (args.size() >= 2 && is_object(args[0])) {
+            auto idIt = args[0].as_object()->find("__chan_id__");
+            int64_t chanId = idIt != args[0].as_object()->end() ? static_cast<int64_t>(to_number(idIt->second)) : 0;
+            if (auto chan = getChannel(chanId)) {
+                chan->send(args[1]);
+            }
+        }
+        return Value();
+    }
+
+    static Value builtin_channel_recv(const std::vector<Value>& args) {
+        if (!args.empty() && is_object(args[0])) {
+            auto idIt = args[0].as_object()->find("__chan_id__");
+            int64_t chanId = idIt != args[0].as_object()->end() ? static_cast<int64_t>(to_number(idIt->second)) : 0;
+            if (auto chan = getChannel(chanId)) {
+                return chan->recv();
+            }
+        }
+        return Value();
+    }
+
+    static Value builtin_channel_close(const std::vector<Value>& args) {
+        if (!args.empty() && is_object(args[0])) {
+            auto idIt = args[0].as_object()->find("__chan_id__");
+            int64_t chanId = idIt != args[0].as_object()->end() ? static_cast<int64_t>(to_number(idIt->second)) : 0;
+            if (auto chan = getChannel(chanId)) {
+                chan->close();
+            }
+        }
+        return Value();
+    }
+
+    struct RawBuffer {
+        std::vector<uint8_t> bytes;
+    };
+
+    static inline std::unordered_map<int64_t, std::shared_ptr<RawBuffer>> bufferRegistry_;
+    static inline std::mutex bufferRegistryMutex_;
+    static inline std::atomic<int64_t> bufferCounter_{0};
+
+    static std::shared_ptr<RawBuffer> getBuffer(int64_t id) {
+        std::lock_guard<std::mutex> lock(bufferRegistryMutex_);
+        auto it = bufferRegistry_.find(id);
+        if (it != bufferRegistry_.end()) return it->second;
+        return nullptr;
+    }
+
+    static Value makeBufferValue(std::shared_ptr<RawBuffer> buf) {
+        int64_t id = ++bufferCounter_;
+        {
+            std::lock_guard<std::mutex> lock(bufferRegistryMutex_);
+            bufferRegistry_[id] = buf;
+        }
+        Value obj = Value::object();
+        (*obj.as_object())["__type__"] = Value("Buffer");
+        (*obj.as_object())["__buf_id__"] = Value(static_cast<double>(id));
+        (*obj.as_object())["length"] = Value(static_cast<double>(buf->bytes.size()));
+        return obj;
+    }
+
+    static Value builtin_buffer_alloc(const std::vector<Value>& args) {
+        size_t size = !args.empty() ? static_cast<size_t>(std::max(0.0, to_number(args[0]))) : 0;
+        auto buf = std::make_shared<RawBuffer>();
+        buf->bytes.resize(size, 0);
+        return makeBufferValue(buf);
+    }
+
+    static Value builtin_buffer_from_string(const std::vector<Value>& args) {
+        std::string s = !args.empty() ? to_string(args[0]) : "";
+        auto buf = std::make_shared<RawBuffer>();
+        buf->bytes.assign(s.begin(), s.end());
+        return makeBufferValue(buf);
+    }
+
+    static Value builtin_buffer_to_string(const std::vector<Value>& args) {
+        if (!args.empty() && is_object(args[0])) {
+            auto idIt = args[0].as_object()->find("__buf_id__");
+            int64_t bid = idIt != args[0].as_object()->end() ? static_cast<int64_t>(to_number(idIt->second)) : 0;
+            if (auto buf = getBuffer(bid)) {
+                return Value(std::string(buf->bytes.begin(), buf->bytes.end()));
+            }
+        }
+        return Value(std::string(""));
+    }
+
+    static Value builtin_buffer_size(const std::vector<Value>& args) {
+        if (!args.empty() && is_object(args[0])) {
+            auto idIt = args[0].as_object()->find("__buf_id__");
+            int64_t bid = idIt != args[0].as_object()->end() ? static_cast<int64_t>(to_number(idIt->second)) : 0;
+            if (auto buf = getBuffer(bid)) {
+                return Value(static_cast<double>(buf->bytes.size()));
+            }
+        }
+        return Value(0.0);
+    }
+
+    static Value builtin_buffer_get_u8(const std::vector<Value>& args) {
+        if (args.size() >= 2 && is_object(args[0])) {
+            auto idIt = args[0].as_object()->find("__buf_id__");
+            int64_t bid = idIt != args[0].as_object()->end() ? static_cast<int64_t>(to_number(idIt->second)) : 0;
+            size_t offset = static_cast<size_t>(std::max(0.0, to_number(args[1])));
+            if (auto buf = getBuffer(bid)) {
+                if (offset < buf->bytes.size()) {
+                    return Value(static_cast<double>(buf->bytes[offset]));
+                }
+            }
+        }
+        return Value(0.0);
+    }
+
+    static Value builtin_buffer_set_u8(const std::vector<Value>& args) {
+        if (args.size() >= 3 && is_object(args[0])) {
+            auto idIt = args[0].as_object()->find("__buf_id__");
+            int64_t bid = idIt != args[0].as_object()->end() ? static_cast<int64_t>(to_number(idIt->second)) : 0;
+            size_t offset = static_cast<size_t>(std::max(0.0, to_number(args[1])));
+            uint8_t val = static_cast<uint8_t>(to_number(args[2]));
+            if (auto buf = getBuffer(bid)) {
+                if (offset < buf->bytes.size()) {
+                    buf->bytes[offset] = val;
+                }
+            }
+        }
+        return Value();
+    }
+
+    static Value builtin_buffer_get_i32(const std::vector<Value>& args) {
+        if (args.size() >= 2 && is_object(args[0])) {
+            auto idIt = args[0].as_object()->find("__buf_id__");
+            int64_t bid = idIt != args[0].as_object()->end() ? static_cast<int64_t>(to_number(idIt->second)) : 0;
+            size_t offset = static_cast<size_t>(std::max(0.0, to_number(args[1])));
+            if (auto buf = getBuffer(bid)) {
+                if (offset + 4 <= buf->bytes.size()) {
+                    int32_t val = 0;
+                    std::memcpy(&val, buf->bytes.data() + offset, 4);
+                    return Value(static_cast<double>(val));
+                }
+            }
+        }
+        return Value(0.0);
+    }
+
+    static Value builtin_buffer_set_i32(const std::vector<Value>& args) {
+        if (args.size() >= 3 && is_object(args[0])) {
+            auto idIt = args[0].as_object()->find("__buf_id__");
+            int64_t bid = idIt != args[0].as_object()->end() ? static_cast<int64_t>(to_number(idIt->second)) : 0;
+            size_t offset = static_cast<size_t>(std::max(0.0, to_number(args[1])));
+            int32_t val = static_cast<int32_t>(to_number(args[2]));
+            if (auto buf = getBuffer(bid)) {
+                if (offset + 4 <= buf->bytes.size()) {
+                    std::memcpy(buf->bytes.data() + offset, &val, 4);
+                }
+            }
+        }
+        return Value();
+    }
+
+    static Value builtin_buffer_get_f64(const std::vector<Value>& args) {
+        if (args.size() >= 2 && is_object(args[0])) {
+            auto idIt = args[0].as_object()->find("__buf_id__");
+            int64_t bid = idIt != args[0].as_object()->end() ? static_cast<int64_t>(to_number(idIt->second)) : 0;
+            size_t offset = static_cast<size_t>(std::max(0.0, to_number(args[1])));
+            if (auto buf = getBuffer(bid)) {
+                if (offset + 8 <= buf->bytes.size()) {
+                    double val = 0.0;
+                    std::memcpy(&val, buf->bytes.data() + offset, 8);
+                    return Value(val);
+                }
+            }
+        }
+        return Value(0.0);
+    }
+
+    static Value builtin_buffer_set_f64(const std::vector<Value>& args) {
+        if (args.size() >= 3 && is_object(args[0])) {
+            auto idIt = args[0].as_object()->find("__buf_id__");
+            int64_t bid = idIt != args[0].as_object()->end() ? static_cast<int64_t>(to_number(idIt->second)) : 0;
+            size_t offset = static_cast<size_t>(std::max(0.0, to_number(args[1])));
+            double val = to_number(args[2]);
+            if (auto buf = getBuffer(bid)) {
+                if (offset + 8 <= buf->bytes.size()) {
+                    std::memcpy(buf->bytes.data() + offset, &val, 8);
+                }
+            }
+        }
+        return Value();
+    }
+
+    static Value builtin_buffer_slice(const std::vector<Value>& args) {
+        if (args.empty() || !is_object(args[0])) return Value();
+        auto idIt = args[0].as_object()->find("__buf_id__");
+        int64_t bid = idIt != args[0].as_object()->end() ? static_cast<int64_t>(to_number(idIt->second)) : 0;
+        auto srcBuf = getBuffer(bid);
+        if (!srcBuf) return Value();
+        int64_t len = static_cast<int64_t>(srcBuf->bytes.size());
+        int64_t start = args.size() > 1 ? static_cast<int64_t>(to_number(args[1])) : 0;
+        int64_t end = args.size() > 2 ? static_cast<int64_t>(to_number(args[2])) : len;
+        if (start < 0) start = std::max<int64_t>(0, len + start);
+        if (end < 0) end = std::max<int64_t>(0, len + end);
+        start = std::clamp<int64_t>(start, 0, len);
+        end = std::clamp<int64_t>(end, start, len);
+        size_t sliceSize = static_cast<size_t>(end - start);
+        auto newBuf = std::make_shared<RawBuffer>();
+        newBuf->bytes.resize(sliceSize);
+        if (sliceSize > 0) {
+            std::memcpy(newBuf->bytes.data(), srcBuf->bytes.data() + start, sliceSize);
+        }
+        return makeBufferValue(newBuf);
+    }
+
+    struct FFILibrary {
+#ifdef _WIN32
+        HMODULE handle = nullptr;
+#else
+        void* handle = nullptr;
+#endif
+        std::string path;
+
+        ~FFILibrary() {
+            if (handle) {
+#ifdef _WIN32
+                FreeLibrary(handle);
+#else
+                dlclose(handle);
+#endif
+            }
+        }
+    };
+
+    static inline std::unordered_map<int64_t, std::shared_ptr<FFILibrary>> ffiRegistry_;
+    static inline std::mutex ffiRegistryMutex_;
+    static inline std::atomic<int64_t> ffiCounter_{0};
+
+    static std::shared_ptr<FFILibrary> getFFILib(int64_t id) {
+        std::lock_guard<std::mutex> lock(ffiRegistryMutex_);
+        auto it = ffiRegistry_.find(id);
+        if (it != ffiRegistry_.end()) return it->second;
+        return nullptr;
+    }
+
+    static Value builtin_ffi_load(const std::vector<Value>& args) {
+        if (args.empty()) throw std::runtime_error("ffi.load requires library path");
+        std::string path = to_string(args[0]);
+#ifdef _WIN32
+        HMODULE h = LoadLibraryA(path.c_str());
+        if (!h) {
+            std::string alt = path + ".dll";
+            h = LoadLibraryA(alt.c_str());
+        }
+#else
+        void* h = dlopen(path.c_str(), RTLD_NOW | RTLD_GLOBAL);
+        if (!h) {
+            std::string alt = "lib" + path + ".so";
+            h = dlopen(alt.c_str(), RTLD_NOW | RTLD_GLOBAL);
+        }
+#endif
+        if (!h) throw std::runtime_error("Failed to load library: " + path);
+
+        int64_t id = ++ffiCounter_;
+        auto lib = std::make_shared<FFILibrary>();
+        lib->handle = h;
+        lib->path = path;
+        {
+            std::lock_guard<std::mutex> lock(ffiRegistryMutex_);
+            ffiRegistry_[id] = lib;
+        }
+
+        Value obj = Value::object();
+        (*obj.as_object())["__type__"] = Value("FFILibrary");
+        (*obj.as_object())["__ffi_id__"] = Value(static_cast<double>(id));
+        (*obj.as_object())["path"] = Value(path);
+        return obj;
+    }
+
+    static Value builtin_ffi_sym(const std::vector<Value>& args) {
+        if (args.size() < 2 || !is_object(args[0])) return Value(false);
+        auto idIt = args[0].as_object()->find("__ffi_id__");
+        int64_t id = idIt != args[0].as_object()->end() ? static_cast<int64_t>(to_number(idIt->second)) : 0;
+        auto lib = getFFILib(id);
+        if (!lib || !lib->handle) return Value(false);
+        std::string symName = to_string(args[1]);
+#ifdef _WIN32
+        FARPROC sym = GetProcAddress(lib->handle, symName.c_str());
+#else
+        void* sym = dlsym(lib->handle, symName.c_str());
+#endif
+        return Value(sym != nullptr);
+    }
+
+    static Value builtin_ffi_call(const std::vector<Value>& args) {
+        if (args.size() < 2 || !is_object(args[0])) throw std::runtime_error("ffi.call requires FFILibrary and symbol name");
+        auto idIt = args[0].as_object()->find("__ffi_id__");
+        int64_t id = idIt != args[0].as_object()->end() ? static_cast<int64_t>(to_number(idIt->second)) : 0;
+        auto lib = getFFILib(id);
+        if (!lib || !lib->handle) throw std::runtime_error("Invalid or closed FFILibrary handle");
+
+        std::string symName = to_string(args[1]);
+#ifdef _WIN32
+        FARPROC sym = GetProcAddress(lib->handle, symName.c_str());
+#else
+        void* sym = dlsym(lib->handle, symName.c_str());
+#endif
+        if (!sym) throw std::runtime_error("Symbol not found: " + symName);
+
+        std::vector<intptr_t> rawArgs;
+        std::vector<std::string> tempStrings;
+        for (size_t i = 2; i < args.size(); ++i) {
+            const auto& a = args[i];
+            if (is_number(a)) {
+                rawArgs.push_back(static_cast<intptr_t>(static_cast<int64_t>(to_number(a))));
+            } else if (is_string(a)) {
+                tempStrings.push_back(std::get<std::string>(a.data));
+                rawArgs.push_back(reinterpret_cast<intptr_t>(tempStrings.back().c_str()));
+            } else if (is_bool(a)) {
+                rawArgs.push_back(truthy(a) ? 1 : 0);
+            } else if (is_null(a)) {
+                rawArgs.push_back(0);
+            } else if (is_object(a)) {
+                auto bIt = a.as_object()->find("__buf_id__");
+                if (bIt != a.as_object()->end()) {
+                    int64_t bid = static_cast<int64_t>(to_number(bIt->second));
+                    if (auto buf = getBuffer(bid)) {
+                        rawArgs.push_back(reinterpret_cast<intptr_t>(buf->bytes.data()));
+                    } else {
+                        rawArgs.push_back(0);
+                    }
+                } else {
+                    rawArgs.push_back(0);
+                }
+            } else {
+                rawArgs.push_back(0);
+            }
+        }
+
+        intptr_t ret = 0;
+        switch (rawArgs.size()) {
+            case 0: ret = reinterpret_cast<intptr_t(*)()>(sym)(); break;
+            case 1: ret = reinterpret_cast<intptr_t(*)(intptr_t)>(sym)(rawArgs[0]); break;
+            case 2: ret = reinterpret_cast<intptr_t(*)(intptr_t, intptr_t)>(sym)(rawArgs[0], rawArgs[1]); break;
+            case 3: ret = reinterpret_cast<intptr_t(*)(intptr_t, intptr_t, intptr_t)>(sym)(rawArgs[0], rawArgs[1], rawArgs[2]); break;
+            case 4: ret = reinterpret_cast<intptr_t(*)(intptr_t, intptr_t, intptr_t, intptr_t)>(sym)(rawArgs[0], rawArgs[1], rawArgs[2], rawArgs[3]); break;
+            case 5: ret = reinterpret_cast<intptr_t(*)(intptr_t, intptr_t, intptr_t, intptr_t, intptr_t)>(sym)(rawArgs[0], rawArgs[1], rawArgs[2], rawArgs[3], rawArgs[4]); break;
+            case 6: ret = reinterpret_cast<intptr_t(*)(intptr_t, intptr_t, intptr_t, intptr_t, intptr_t, intptr_t)>(sym)(rawArgs[0], rawArgs[1], rawArgs[2], rawArgs[3], rawArgs[4], rawArgs[5]); break;
+            default:
+                throw std::runtime_error("ffi.call supports up to 6 arguments");
+        }
+        return Value(static_cast<double>(ret));
+    }
+
+    static Value builtin_ffi_close(const std::vector<Value>& args) {
+        if (!args.empty() && is_object(args[0])) {
+            auto idIt = args[0].as_object()->find("__ffi_id__");
+            if (idIt != args[0].as_object()->end()) {
+                int64_t id = static_cast<int64_t>(to_number(idIt->second));
+                std::lock_guard<std::mutex> lock(ffiRegistryMutex_);
+                ffiRegistry_.erase(id);
+            }
+        }
+        return Value();
+    }
+
+    static size_t struct_format_element_size(char c) {
+        switch (c) {
+            case 'b': case 'B': return 1;
+            case 'h': case 'H': return 2;
+            case 'i': case 'I': case 'l': case 'L': return 4;
+            case 'q': case 'Q': return 8;
+            case 'f': return 4;
+            case 'd': case 'p': return 8;
+            default: return 0;
+        }
+    }
+
+    static Value builtin_struct_calcsize(const std::vector<Value>& args) {
+        if (args.empty()) return Value(0.0);
+        std::string fmt = to_string(args[0]);
+        size_t total = 0;
+        for (char c : fmt) {
+            if (std::isspace(static_cast<unsigned char>(c))) continue;
+            total += struct_format_element_size(c);
+        }
+        return Value(static_cast<double>(total));
+    }
+
+    static Value builtin_struct_pack(const std::vector<Value>& args) {
+        if (args.empty()) return makeBufferValue(std::make_shared<RawBuffer>());
+        std::string fmt = to_string(args[0]);
+        size_t totalSize = 0;
+        for (char c : fmt) {
+            if (std::isspace(static_cast<unsigned char>(c))) continue;
+            totalSize += struct_format_element_size(c);
+        }
+        auto buf = std::make_shared<RawBuffer>();
+        buf->bytes.resize(totalSize, 0);
+        size_t argIdx = 1;
+        size_t offset = 0;
+        for (char c : fmt) {
+            if (std::isspace(static_cast<unsigned char>(c))) continue;
+            Value val = argIdx < args.size() ? args[argIdx++] : Value(0.0);
+            switch (c) {
+                case 'b': {
+                    int8_t v = static_cast<int8_t>(to_number(val));
+                    std::memcpy(buf->bytes.data() + offset, &v, 1);
+                    offset += 1;
+                    break;
+                }
+                case 'B': {
+                    uint8_t v = static_cast<uint8_t>(to_number(val));
+                    std::memcpy(buf->bytes.data() + offset, &v, 1);
+                    offset += 1;
+                    break;
+                }
+                case 'h': {
+                    int16_t v = static_cast<int16_t>(to_number(val));
+                    std::memcpy(buf->bytes.data() + offset, &v, 2);
+                    offset += 2;
+                    break;
+                }
+                case 'H': {
+                    uint16_t v = static_cast<uint16_t>(to_number(val));
+                    std::memcpy(buf->bytes.data() + offset, &v, 2);
+                    offset += 2;
+                    break;
+                }
+                case 'i': case 'l': {
+                    int32_t v = static_cast<int32_t>(to_number(val));
+                    std::memcpy(buf->bytes.data() + offset, &v, 4);
+                    offset += 4;
+                    break;
+                }
+                case 'I': case 'L': {
+                    uint32_t v = static_cast<uint32_t>(to_number(val));
+                    std::memcpy(buf->bytes.data() + offset, &v, 4);
+                    offset += 4;
+                    break;
+                }
+                case 'q': {
+                    int64_t v = static_cast<int64_t>(to_number(val));
+                    std::memcpy(buf->bytes.data() + offset, &v, 8);
+                    offset += 8;
+                    break;
+                }
+                case 'Q': {
+                    uint64_t v = static_cast<uint64_t>(to_number(val));
+                    std::memcpy(buf->bytes.data() + offset, &v, 8);
+                    offset += 8;
+                    break;
+                }
+                case 'f': {
+                    float v = static_cast<float>(to_number(val));
+                    std::memcpy(buf->bytes.data() + offset, &v, 4);
+                    offset += 4;
+                    break;
+                }
+                case 'd': {
+                    double v = to_number(val);
+                    std::memcpy(buf->bytes.data() + offset, &v, 8);
+                    offset += 8;
+                    break;
+                }
+                case 'p': {
+                    intptr_t v = 0;
+                    if (is_object(val)) {
+                        auto bIt = val.as_object()->find("__buf_id__");
+                        if (bIt != val.as_object()->end()) {
+                            int64_t bid = static_cast<int64_t>(to_number(bIt->second));
+                            if (auto b = getBuffer(bid)) {
+                                v = reinterpret_cast<intptr_t>(b->bytes.data());
+                            }
+                        }
+                    } else {
+                        v = static_cast<intptr_t>(to_number(val));
+                    }
+                    std::memcpy(buf->bytes.data() + offset, &v, 8);
+                    offset += 8;
+                    break;
+                }
+                default:
+                    break;
+            }
+        }
+        return makeBufferValue(buf);
+    }
+
+    static Value builtin_struct_unpack(const std::vector<Value>& args) {
+        if (args.size() < 2 || !is_object(args[1])) return Value::array();
+        std::string fmt = to_string(args[0]);
+        auto idIt = args[1].as_object()->find("__buf_id__");
+        int64_t bid = idIt != args[1].as_object()->end() ? static_cast<int64_t>(to_number(idIt->second)) : 0;
+        auto buf = getBuffer(bid);
+        if (!buf) return Value::array();
+        size_t offset = args.size() >= 3 ? static_cast<size_t>(std::max(0.0, to_number(args[2]))) : 0;
+        Value res = Value::array();
+        for (char c : fmt) {
+            if (std::isspace(static_cast<unsigned char>(c))) continue;
+            size_t sz = struct_format_element_size(c);
+            if (offset + sz > buf->bytes.size()) break;
+            switch (c) {
+                case 'b': {
+                    int8_t v = 0;
+                    std::memcpy(&v, buf->bytes.data() + offset, 1);
+                    res.as_array()->push_back(Value(static_cast<double>(v)));
+                    offset += 1;
+                    break;
+                }
+                case 'B': {
+                    uint8_t v = 0;
+                    std::memcpy(&v, buf->bytes.data() + offset, 1);
+                    res.as_array()->push_back(Value(static_cast<double>(v)));
+                    offset += 1;
+                    break;
+                }
+                case 'h': {
+                    int16_t v = 0;
+                    std::memcpy(&v, buf->bytes.data() + offset, 2);
+                    res.as_array()->push_back(Value(static_cast<double>(v)));
+                    offset += 2;
+                    break;
+                }
+                case 'H': {
+                    uint16_t v = 0;
+                    std::memcpy(&v, buf->bytes.data() + offset, 2);
+                    res.as_array()->push_back(Value(static_cast<double>(v)));
+                    offset += 2;
+                    break;
+                }
+                case 'i': case 'l': {
+                    int32_t v = 0;
+                    std::memcpy(&v, buf->bytes.data() + offset, 4);
+                    res.as_array()->push_back(Value(static_cast<double>(v)));
+                    offset += 4;
+                    break;
+                }
+                case 'I': case 'L': {
+                    uint32_t v = 0;
+                    std::memcpy(&v, buf->bytes.data() + offset, 4);
+                    res.as_array()->push_back(Value(static_cast<double>(v)));
+                    offset += 4;
+                    break;
+                }
+                case 'q': {
+                    int64_t v = 0;
+                    std::memcpy(&v, buf->bytes.data() + offset, 8);
+                    res.as_array()->push_back(Value(static_cast<double>(v)));
+                    offset += 8;
+                    break;
+                }
+                case 'Q': {
+                    uint64_t v = 0;
+                    std::memcpy(&v, buf->bytes.data() + offset, 8);
+                    res.as_array()->push_back(Value(static_cast<double>(v)));
+                    offset += 8;
+                    break;
+                }
+                case 'f': {
+                    float v = 0;
+                    std::memcpy(&v, buf->bytes.data() + offset, 4);
+                    res.as_array()->push_back(Value(static_cast<double>(v)));
+                    offset += 4;
+                    break;
+                }
+                case 'd': {
+                    double v = 0;
+                    std::memcpy(&v, buf->bytes.data() + offset, 8);
+                    res.as_array()->push_back(Value(v));
+                    offset += 8;
+                    break;
+                }
+                case 'p': {
+                    intptr_t v = 0;
+                    std::memcpy(&v, buf->bytes.data() + offset, 8);
+                    res.as_array()->push_back(Value(static_cast<double>(v)));
+                    offset += 8;
+                    break;
+                }
+                default:
+                    break;
+            }
+        }
+        return res;
     }
 
     static Value array(const std::vector<Value>& items) {
@@ -859,6 +1566,25 @@ private:
             return Value();
         }
 
+        if (auto sliceExpr = dynamic_cast<SliceExpr*>(expr)) {
+            Value target = evaluate(sliceExpr->target.get(), env);
+            Value startVal = sliceExpr->start ? evaluate(sliceExpr->start.get(), env) : Value(0.0);
+            Value endVal = sliceExpr->end ? evaluate(sliceExpr->end.get(), env) : Value(static_cast<double>(size_of(target)));
+            return builtin_slice({target, startVal, endVal});
+        }
+
+        if (auto range = dynamic_cast<RangeExpr*>(expr)) {
+            double s = to_number(evaluate(range->start.get(), env));
+            double e = to_number(evaluate(range->end.get(), env));
+            Value arr = Value::array();
+            if (s <= e) {
+                for (double i = s; i <= e; i += 1.0) arr.as_array()->push_back(Value(i));
+            } else {
+                for (double i = s; i >= e; i -= 1.0) arr.as_array()->push_back(Value(i));
+            }
+            return arr;
+        }
+
         if (auto assignExpr = dynamic_cast<AssignExpr*>(expr)) {
             Value value = evaluate(assignExpr->value.get(), env);
             env->assign(assignExpr->name, value);
@@ -1024,6 +1750,22 @@ private:
 
         if (auto blockStmt = dynamic_cast<BlockStmt*>(stmt)) {
             auto scope = std::make_shared<Environment>(env);
+            std::vector<std::pair<Stmt*, std::shared_ptr<Environment>>> localDefers;
+            deferScopes_.push_back(&localDefers);
+            struct BlockDeferGuard {
+                std::vector<std::vector<std::pair<Stmt*, std::shared_ptr<Environment>>>*>& stack;
+                std::vector<std::pair<Stmt*, std::shared_ptr<Environment>>>& defers;
+                Interpreter* interp;
+                ~BlockDeferGuard() {
+                    if (!stack.empty() && stack.back() == &defers) stack.pop_back();
+                    while (!defers.empty()) {
+                        auto item = defers.back();
+                        defers.pop_back();
+                        try { interp->execute(item.first, item.second); } catch (...) {}
+                    }
+                }
+            } guard{deferScopes_, localDefers, this};
+
             for (const auto& child : blockStmt->statements) {
                 execute(child.get(), scope);
             }
@@ -1124,15 +1866,47 @@ private:
                 bool matched = false;
                 if (!arm.pattern) {
                     matched = true;
+                } else if (auto range = dynamic_cast<RangeExpr*>(arm.pattern.get())) {
+                    double subj = to_number(subject);
+                    double s = to_number(evaluate(range->start.get(), env));
+                    double e = to_number(evaluate(range->end.get(), env));
+                    matched = (subj >= s && subj <= e);
                 } else {
                     Value patVal = evaluate(arm.pattern.get(), env);
-                    matched = (to_string(subject) == to_string(patVal));
+                    matched = truthy(eq(subject, patVal)) || (to_string(subject) == to_string(patVal));
+                }
+                if (matched && arm.guard) {
+                    matched = truthy(evaluate(arm.guard.get(), env));
                 }
                 if (matched) {
                     execute(arm.body.get(), env);
                     break;
                 }
             }
+            return;
+        }
+
+        if (auto deferStmt = dynamic_cast<DeferStmt*>(stmt)) {
+            if (!deferScopes_.empty()) {
+                deferScopes_.back()->push_back({deferStmt->statement.get(), env});
+            }
+            return;
+        }
+
+        if (auto testStmt = dynamic_cast<TestStmt*>(stmt)) {
+            auto testScope = std::make_shared<Environment>(env);
+            try {
+                execute(testStmt->body.get(), testScope);
+            } catch (const std::exception& e) {
+                throw std::runtime_error("Test failed [" + testStmt->name + "]: " + e.what());
+            } catch (...) {
+                throw std::runtime_error("Test failed [" + testStmt->name + "]: unknown error");
+            }
+            return;
+        }
+
+        if (auto exportStmt = dynamic_cast<ExportStmt*>(stmt)) {
+            execute(exportStmt->declaration.get(), env);
             return;
         }
 
@@ -1232,8 +2006,64 @@ private:
             return;
         }
 
+        if (auto spawnStmt = dynamic_cast<SpawnStmt*>(stmt)) {
+            Expr* callExpr = spawnStmt->callExpr.get();
+            if (auto call = dynamic_cast<CallExpr*>(callExpr)) {
+                std::vector<Value> capturedArgs;
+                capturedArgs.reserve(call->args.size());
+                for (const auto& arg : call->args) capturedArgs.push_back(evaluate(arg.get(), env));
+                std::string calleeName = call->callee;
+                RayQuiroThreadPool::instance().enqueue([this, calleeName, capturedArgs, env]() {
+                    try {
+                        callFunction(calleeName, capturedArgs, env);
+                    } catch (...) {}
+                });
+            } else if (auto dynCall = dynamic_cast<DynCallExpr*>(callExpr)) {
+                Value callee = evaluate(dynCall->callee.get(), env);
+                std::vector<Value> capturedArgs;
+                capturedArgs.reserve(dynCall->args.size());
+                for (const auto& arg : dynCall->args) capturedArgs.push_back(evaluate(arg.get(), env));
+                RayQuiroThreadPool::instance().enqueue([this, callee, capturedArgs, env]() {
+                    try {
+                        callLambda(callee, capturedArgs, env);
+                    } catch (...) {}
+                });
+            } else if (auto lambda = dynamic_cast<LambdaExpr*>(callExpr)) {
+                Value lv = evaluate(lambda, env);
+                RayQuiroThreadPool::instance().enqueue([this, lv, env]() {
+                    try {
+                        callLambda(lv, {}, env);
+                    } catch (...) {}
+                });
+            } else {
+                RayQuiroThreadPool::instance().enqueue([this, callExpr, env]() {
+                    try {
+                        Value val = evaluate(callExpr, env);
+                        if (is_lambda(val)) {
+                            callLambda(val, {}, env);
+                        }
+                    } catch (...) {}
+                });
+            }
+            return;
+        }
+
         throw std::runtime_error("Unsupported statement encountered in interpreter.");
     }
+
+    struct DeferScopeGuard {
+        std::vector<std::vector<std::pair<Stmt*, std::shared_ptr<Environment>>>*>& stack;
+        std::vector<std::pair<Stmt*, std::shared_ptr<Environment>>>& defers;
+        Interpreter* interp;
+        ~DeferScopeGuard() {
+            if (!stack.empty() && stack.back() == &defers) stack.pop_back();
+            while (!defers.empty()) {
+                auto item = defers.back();
+                defers.pop_back();
+                try { interp->execute(item.first, item.second); } catch (...) {}
+            }
+        }
+    };
 
     Value callLambda(const Value& callee, const std::vector<Value>& args,
                      const std::shared_ptr<Environment>& callSiteEnv) {
@@ -1299,10 +2129,82 @@ private:
 
         auto frame = std::make_shared<Environment>(closureEnv);
         bindParams(frame);
+
+        std::vector<std::pair<Stmt*, std::shared_ptr<Environment>>> localDefers;
+        deferScopes_.push_back(&localDefers);
+        DeferScopeGuard guard{deferScopes_, localDefers, this};
+
         try {
             for (const auto& s : lv->body->statements) execute(s.get(), frame);
         } catch (const ReturnSignal& sig) { return sig.value; }
         return Value();
+    }
+
+    struct CallbackSlot {
+        Value fn;
+        std::shared_ptr<Environment> env;
+        void* interp;
+        CallbackSlot() noexcept : interp(nullptr) {}
+    };
+
+    static inline CallbackSlot s_callbacks[16];
+    static inline std::atomic<int> s_callbackCount{0};
+    static inline std::mutex s_callbackMutex;
+
+    template <int Index>
+    static intptr_t callbackThunk(intptr_t a0, intptr_t a1, intptr_t a2, intptr_t a3) {
+        auto* interp = static_cast<Interpreter*>(s_callbacks[Index].interp);
+        if (!interp) return 0;
+        try {
+            std::vector<Value> args = {
+                Value(static_cast<double>(a0)),
+                Value(static_cast<double>(a1)),
+                Value(static_cast<double>(a2)),
+                Value(static_cast<double>(a3))
+            };
+            Value res;
+            if (is_lambda(s_callbacks[Index].fn)) {
+                res = interp->callLambda(s_callbacks[Index].fn, args, s_callbacks[Index].env);
+            }
+            if (is_number(res)) return static_cast<intptr_t>(to_number(res));
+            if (is_bool(res)) return truthy(res) ? 1 : 0;
+            return 0;
+        } catch (...) {
+            return 0;
+        }
+    }
+
+    static void* getCallbackPointer(int idx) {
+        switch (idx) {
+            case 0: return reinterpret_cast<void*>(&callbackThunk<0>);
+            case 1: return reinterpret_cast<void*>(&callbackThunk<1>);
+            case 2: return reinterpret_cast<void*>(&callbackThunk<2>);
+            case 3: return reinterpret_cast<void*>(&callbackThunk<3>);
+            case 4: return reinterpret_cast<void*>(&callbackThunk<4>);
+            case 5: return reinterpret_cast<void*>(&callbackThunk<5>);
+            case 6: return reinterpret_cast<void*>(&callbackThunk<6>);
+            case 7: return reinterpret_cast<void*>(&callbackThunk<7>);
+            case 8: return reinterpret_cast<void*>(&callbackThunk<8>);
+            case 9: return reinterpret_cast<void*>(&callbackThunk<9>);
+            case 10: return reinterpret_cast<void*>(&callbackThunk<10>);
+            case 11: return reinterpret_cast<void*>(&callbackThunk<11>);
+            case 12: return reinterpret_cast<void*>(&callbackThunk<12>);
+            case 13: return reinterpret_cast<void*>(&callbackThunk<13>);
+            case 14: return reinterpret_cast<void*>(&callbackThunk<14>);
+            case 15: return reinterpret_cast<void*>(&callbackThunk<15>);
+            default: return nullptr;
+        }
+    }
+
+    Value builtin_ffi_callback(const std::vector<Value>& args, const std::shared_ptr<Environment>& env) {
+        if (args.empty() || !is_lambda(args[0])) throw std::runtime_error("ffi.callback requires a function argument");
+        std::lock_guard<std::mutex> lock(s_callbackMutex);
+        int slot = s_callbackCount.fetch_add(1) % 16;
+        s_callbacks[slot].fn = args[0];
+        s_callbacks[slot].env = env;
+        s_callbacks[slot].interp = this;
+        void* ptr = getCallbackPointer(slot);
+        return Value(static_cast<double>(reinterpret_cast<intptr_t>(ptr)));
     }
 
     std::optional<Value> callFunctionIfExists(const std::string& name, const std::vector<Value>& args) {
@@ -1377,6 +2279,79 @@ private:
                         if (method == "close") {
                             tryNativeModuleCall("app.window_close", {Value(winId)});
                             return Value();
+                        }
+                    }
+                    if (tIt != obj.as_object()->end() && to_string(tIt->second) == "Channel") {
+                        auto idIt = obj.as_object()->find("__chan_id__");
+                        int64_t chanId = idIt != obj.as_object()->end() ? static_cast<int64_t>(to_number(idIt->second)) : 0;
+                        if (auto chan = getChannel(chanId)) {
+                            if (method == "send") {
+                                chan->send(!args.empty() ? args[0] : Value());
+                                return Value();
+                            }
+                            if (method == "recv") {
+                                return chan->recv();
+                            }
+                            if (method == "close") {
+                                chan->close();
+                                return Value();
+                            }
+                        }
+                        return Value();
+                    }
+                    if (tIt != obj.as_object()->end() && to_string(tIt->second) == "FFILibrary") {
+                        if (method == "call") {
+                            std::vector<Value> fargs;
+                            fargs.push_back(obj);
+                            for (const auto& a : args) fargs.push_back(a);
+                            return builtin_ffi_call(fargs);
+                        }
+                        if (method == "sym") {
+                            std::vector<Value> fargs = {obj};
+                            if (!args.empty()) fargs.push_back(args[0]);
+                            return builtin_ffi_sym(fargs);
+                        }
+                        if (method == "close") {
+                            return builtin_ffi_close({obj});
+                        }
+                    }
+                    if (tIt != obj.as_object()->end() && to_string(tIt->second) == "Buffer") {
+                        if (method == "to_string") return builtin_buffer_to_string({obj});
+                        if (method == "size" || method == "len") return builtin_buffer_size({obj});
+                        if (method == "get_u8") {
+                            std::vector<Value> bargs = {obj};
+                            if (!args.empty()) bargs.push_back(args[0]);
+                            return builtin_buffer_get_u8(bargs);
+                        }
+                        if (method == "set_u8") {
+                            std::vector<Value> bargs = {obj};
+                            for (const auto& a : args) bargs.push_back(a);
+                            return builtin_buffer_set_u8(bargs);
+                        }
+                        if (method == "get_i32") {
+                            std::vector<Value> bargs = {obj};
+                            if (!args.empty()) bargs.push_back(args[0]);
+                            return builtin_buffer_get_i32(bargs);
+                        }
+                        if (method == "set_i32") {
+                            std::vector<Value> bargs = {obj};
+                            for (const auto& a : args) bargs.push_back(a);
+                            return builtin_buffer_set_i32(bargs);
+                        }
+                        if (method == "get_f64") {
+                            std::vector<Value> bargs = {obj};
+                            if (!args.empty()) bargs.push_back(args[0]);
+                            return builtin_buffer_get_f64(bargs);
+                        }
+                        if (method == "set_f64") {
+                            std::vector<Value> bargs = {obj};
+                            for (const auto& a : args) bargs.push_back(a);
+                            return builtin_buffer_set_f64(bargs);
+                        }
+                        if (method == "slice") {
+                            std::vector<Value> bargs = {obj};
+                            for (const auto& a : args) bargs.push_back(a);
+                            return builtin_buffer_slice(bargs);
                         }
                     }
                 }
@@ -1466,6 +2441,10 @@ private:
         auto frame = std::make_shared<Environment>(globals_);
         bindFuncParams(frame, args);
 
+        std::vector<std::pair<Stmt*, std::shared_ptr<Environment>>> localDefers;
+        deferScopes_.push_back(&localDefers);
+        DeferScopeGuard guard{deferScopes_, localDefers, this};
+
         try {
             for (const auto& statement : function->body->statements) {
                 execute(statement.get(), frame);
@@ -1492,6 +2471,32 @@ private:
         if (builtin == "num") return builtin_num(args);
         if (builtin == "bool") return builtin_bool(args);
         if (builtin == "type") return builtin_type(args);
+        if (builtin == "channel") return builtin_channel(args);
+        if (builtin == "channel.send" || builtin == "channel_send") return builtin_channel_send(args);
+        if (builtin == "channel.recv" || builtin == "channel_recv") return builtin_channel_recv(args);
+        if (builtin == "channel.close" || builtin == "channel_close") return builtin_channel_close(args);
+
+        if (builtin == "ffi.load" || builtin == "ffi_load") return builtin_ffi_load(args);
+        if (builtin == "ffi.sym" || builtin == "ffi_sym") return builtin_ffi_sym(args);
+        if (builtin == "ffi.call" || builtin == "ffi_call") return builtin_ffi_call(args);
+        if (builtin == "ffi.close" || builtin == "ffi_close") return builtin_ffi_close(args);
+        if (builtin == "ffi.callback" || builtin == "ffi_callback") return builtin_ffi_callback(args, callEnv ? callEnv : globals_);
+
+        if (builtin == "struct.pack" || builtin == "struct_pack") return builtin_struct_pack(args);
+        if (builtin == "struct.unpack" || builtin == "struct_unpack") return builtin_struct_unpack(args);
+        if (builtin == "struct.calcsize" || builtin == "struct_calcsize") return builtin_struct_calcsize(args);
+
+        if (builtin == "buffer.alloc" || builtin == "buffer_alloc") return builtin_buffer_alloc(args);
+        if (builtin == "buffer.from_string" || builtin == "buffer_from_string") return builtin_buffer_from_string(args);
+        if (builtin == "buffer.to_string" || builtin == "buffer_to_string") return builtin_buffer_to_string(args);
+        if (builtin == "buffer.size" || builtin == "buffer_size" || builtin == "buffer.len") return builtin_buffer_size(args);
+        if (builtin == "buffer.get_u8" || builtin == "buffer_get_u8") return builtin_buffer_get_u8(args);
+        if (builtin == "buffer.set_u8" || builtin == "buffer_set_u8") return builtin_buffer_set_u8(args);
+        if (builtin == "buffer.get_i32" || builtin == "buffer_get_i32") return builtin_buffer_get_i32(args);
+        if (builtin == "buffer.set_i32" || builtin == "buffer_set_i32") return builtin_buffer_set_i32(args);
+        if (builtin == "buffer.get_f64" || builtin == "buffer_get_f64") return builtin_buffer_get_f64(args);
+        if (builtin == "buffer.set_f64" || builtin == "buffer_set_f64") return builtin_buffer_set_f64(args);
+        if (builtin == "buffer.slice" || builtin == "buffer_slice") return builtin_buffer_slice(args);
 
         if (builtin == "is_impl") {
             if (args.size() < 2) return Value(false);
@@ -3327,6 +4332,12 @@ private:
     static Value builtin_slice(const std::vector<Value>& args) {
         if (args.empty()) return Value();
         const Value& source = args[0];
+        if (is_object(source)) {
+            auto idIt = source.as_object()->find("__buf_id__");
+            if (idIt != source.as_object()->end()) {
+                return builtin_buffer_slice(args);
+            }
+        }
         const int start = args.size() > 1 ? static_cast<int>(to_number(args[1])) : 0;
         const int end = args.size() > 2 ? static_cast<int>(to_number(args[2])) : size_of(source);
         if (is_string(source)) {

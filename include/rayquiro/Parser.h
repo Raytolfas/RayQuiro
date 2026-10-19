@@ -70,7 +70,8 @@ private:
 
         if (match({TokenType::IMPORT}))            node = parseImport();
         else if (match({TokenType::FROM}))         node = parseFromImport();
-        else if (match({TokenType::VAR, TokenType::LET})) node = parseVar(previous().type == TokenType::LET);
+        else if (match({TokenType::VAR, TokenType::LET, TokenType::CONST})) node = parseVar(previous().type == TokenType::LET, previous().type == TokenType::CONST);
+        else if (match({TokenType::SPAWN}))        node = parseSpawn();
         else if (match({TokenType::FN}))           node = parseFunction();
         else if (match({TokenType::IF}))           node = parseIf();
         else if (match({TokenType::WHILE}))        node = parseWhile();
@@ -99,6 +100,9 @@ private:
         else if (match({TokenType::STRUCT}))    node = parseStruct();
         else if (match({TokenType::ENUM}))      node = parseEnum();
         else if (match({TokenType::INTERFACE})) node = parseInterface();
+        else if (match({TokenType::DEFER}))     node = parseDefer();
+        else if (match({TokenType::TEST}))      node = parseTest();
+        else if (match({TokenType::EXPORT}))    node = parseExport();
         else if (match({TokenType::LBRACE}))    node = parseBlock();
         else                                    node = parseExprStmt();
 
@@ -147,7 +151,14 @@ private:
         return node;
     }
 
-    std::unique_ptr<Stmt> parseVar(bool isLet) {
+    std::unique_ptr<Stmt> parseSpawn() {
+        auto node = std::make_unique<SpawnStmt>();
+        node->callExpr = parseExpression();
+        match({TokenType::SEMICOLON});
+        return node;
+    }
+
+    std::unique_ptr<Stmt> parseVar(bool isLet, bool isConst = false) {
 
         if (match({TokenType::LBRACKET})) {
             auto node = std::make_unique<ArrayDestructureStmt>();
@@ -186,10 +197,13 @@ private:
 
         auto node = std::make_unique<VarStmt>();
         node->isLet = isLet;
+        node->isConst = isConst;
         Token name = expect(TokenType::IDENTIFIER, "Expected variable name");
         node->name = name.value;
         if (match({TokenType::COLON})) {
-            if (check(TokenType::IDENTIFIER)) advance();
+            if (check(TokenType::IDENTIFIER)) {
+                node->typeAnnotation = advance().value;
+            }
         }
         if (match({TokenType::EQUALS})) {
             node->initializer = parseExpression();
@@ -209,6 +223,11 @@ private:
         expect(TokenType::LPAREN, "Expected '(' after function name");
         fn->params = parseParamList();
         expect(TokenType::RPAREN, "Expected ')' after parameters");
+        if (match({TokenType::COLON})) {
+            if (check(TokenType::IDENTIFIER)) {
+                fn->returnType = advance().value;
+            }
+        }
         expect(TokenType::LBRACE, "Expected '{' before function body");
         fn->body = parseBlock();
         return fn;
@@ -363,6 +382,9 @@ private:
             } else {
                 arm.pattern = parseExpression();
             }
+            if (match({TokenType::IF})) {
+                arm.guard = parseExpression();
+            }
             expect(TokenType::ARROW_LOG, "Expected '=>' after match pattern");
             arm.body = parseStatement();
             match({TokenType::COMMA});
@@ -370,6 +392,30 @@ private:
             node->arms.push_back(std::move(arm));
         }
         expect(TokenType::RBRACE, "Expected '}' after match body");
+        return node;
+    }
+
+    std::unique_ptr<Stmt> parseDefer() {
+        auto node = std::make_unique<DeferStmt>();
+        node->statement = parseStatement();
+        return node;
+    }
+
+    std::unique_ptr<Stmt> parseTest() {
+        std::string name = "anonymous test";
+        if (check(TokenType::STRING)) {
+            name = advance().value;
+        }
+        expect(TokenType::LBRACE, "Expected '{' after test");
+        auto node = std::make_unique<TestStmt>();
+        node->name = name;
+        node->body = parseBlock();
+        return node;
+    }
+
+    std::unique_ptr<Stmt> parseExport() {
+        auto node = std::make_unique<ExportStmt>();
+        node->declaration = parseStatement();
         return node;
     }
 
@@ -415,6 +461,11 @@ private:
                 break;
             }
             p.name = expect(TokenType::IDENTIFIER, "Expected parameter name").value;
+            if (match({TokenType::COLON})) {
+                if (check(TokenType::IDENTIFIER)) {
+                    p.typeAnnotation = advance().value;
+                }
+            }
             if (match({TokenType::EQUALS})) {
                 p.defaultValue = parseAssignment();
             }
@@ -632,11 +683,24 @@ private:
         return expr;
     }
 
-    std::unique_ptr<Expr> parseComparison() {
+    std::unique_ptr<Expr> parseRange() {
         auto expr = parseTerm();
+        if (match({TokenType::DOT_DOT})) {
+            auto rangeNode = std::make_unique<RangeExpr>();
+            rangeNode->start = std::move(expr);
+            if (!check(TokenType::RBRACKET) && !check(TokenType::COMMA) && !check(TokenType::SEMICOLON) && !check(TokenType::RPAREN) && !check(TokenType::ARROW_LOG) && !check(TokenType::IF)) {
+                rangeNode->end = parseTerm();
+            }
+            return rangeNode;
+        }
+        return expr;
+    }
+
+    std::unique_ptr<Expr> parseComparison() {
+        auto expr = parseRange();
         while (match({TokenType::LT, TokenType::LTE, TokenType::GT, TokenType::GTE})) {
             std::string op = previous().value;
-            auto right = parseTerm();
+            auto right = parseRange();
             auto bin = std::make_unique<BinaryExpr>();
             bin->op = op;
             bin->left = std::move(expr);
@@ -730,12 +794,33 @@ private:
                     expr = std::move(call);
                 }
             } else if (match({TokenType::LBRACKET})) {
-                auto index = parseExpression();
-                expect(TokenType::RBRACKET, "Expected ']'");
-                auto idx = std::make_unique<IndexExpr>();
-                idx->target = std::move(expr);
-                idx->index = std::move(index);
-                expr = std::move(idx);
+                if (match({TokenType::DOT_DOT})) {
+                    std::unique_ptr<Expr> endExpr;
+                    if (!check(TokenType::RBRACKET)) {
+                        endExpr = parseExpression();
+                    }
+                    expect(TokenType::RBRACKET, "Expected ']'");
+                    auto slice = std::make_unique<SliceExpr>();
+                    slice->target = std::move(expr);
+                    slice->start = nullptr;
+                    slice->end = std::move(endExpr);
+                    expr = std::move(slice);
+                } else {
+                    auto index = parseExpression();
+                    expect(TokenType::RBRACKET, "Expected ']'");
+                    if (auto range = dynamic_cast<RangeExpr*>(index.get())) {
+                        auto slice = std::make_unique<SliceExpr>();
+                        slice->target = std::move(expr);
+                        slice->start = std::move(range->start);
+                        slice->end = std::move(range->end);
+                        expr = std::move(slice);
+                    } else {
+                        auto idx = std::make_unique<IndexExpr>();
+                        idx->target = std::move(expr);
+                        idx->index = std::move(index);
+                        expr = std::move(idx);
+                    }
+                }
             } else if (match({TokenType::PLUS_PLUS, TokenType::MINUS_MINUS})) {
 
                 std::string op = previous().value;

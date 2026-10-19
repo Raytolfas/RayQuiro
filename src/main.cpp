@@ -32,7 +32,7 @@
 #endif
 
 namespace {
-const char* kRayQuiroVersion = "0.2.2";
+const char* kRayQuiroVersion = "1.0";
 
 std::string rebuildCommandLine(int argc, char* argv[]) {
     std::string cmd;
@@ -99,7 +99,9 @@ enum class CliMode {
     Help,
     Version,
     Repl,
-    Test
+    Test,
+    Check,
+    CCompile
 };
 
 struct CliOptions {
@@ -149,7 +151,8 @@ void printHelp() {
     std::cout << "  rqio build <script.rq> --debug      Compile with -O0 -g debug symbols\n";
     std::cout << "  rqio build <script.rq> --target <T> Target triple (linux-x64, win-x64, macos-arm64)\n";
     std::cout << "  rqio build <script.rq> --no-llvm    Compile via GCC fallback\n";
-    std::cout << "  rqio fmt <script.rq>                Format source file in place\n";
+    std::cout << "  rqio check <script.rq>              Validate syntax & AST without execution\n";
+    std::cout << "  rqio cc <files.c> [-o out]          Autonomous C compiler via bundled TinyCC\n";
     std::cout << "  rqio lsp                            Start Language Server Protocol (VS Code IntelliSense)\n";
     std::cout << "  rqio debug <script.rq> [--port N]   Start DAP debug server (VS Code F5)\n";
     std::cout << "\n\033[1mPackage Manager:\033[0m\n";
@@ -414,6 +417,21 @@ CliOptions parseArguments(int argc, char* argv[]) {
         ++index;
         if (index < argc) {
             options.inputPath = argv[index];
+        }
+        return options;
+    }
+    if (first == "check") {
+        options.mode = CliMode::Check;
+        ++index;
+        if (index < argc) {
+            options.inputPath = argv[index];
+        }
+        return options;
+    }
+    if (first == "cc") {
+        options.mode = CliMode::CCompile;
+        for (int i = 2; i < argc; ++i) {
+            options.scriptArgs.push_back(argv[i]);
         }
         return options;
     }
@@ -1161,6 +1179,42 @@ int main(int argc, char* argv[]) {
             LSPServer lsp;
             return lsp.run();
         }
+        if (cliOptions.mode == CliMode::Check) {
+            std::filesystem::path checkTarget = cliOptions.inputPath;
+            if (checkTarget.empty()) {
+                checkTarget = projectConfig.entryPath;
+            }
+            if (!std::filesystem::exists(checkTarget)) {
+                throw std::runtime_error("Cannot find file to check: " + checkTarget.string());
+            }
+            const std::string source = readTextFile(checkTarget);
+            Lexer lexer(source);
+            auto tokens = lexer.tokenize();
+            Parser parser(tokens);
+            auto program = parser.parse();
+            (void)program;
+            std::cout << "\033[1;32m[PASS]\033[0m " << checkTarget.filename().string() << " syntax and AST validated successfully.\n";
+            return 0;
+        }
+        if (cliOptions.mode == CliMode::CCompile) {
+            std::string tccBin = TCCToolchain::resolveTcc(exePath);
+            if (tccBin.empty()) {
+                tccBin = "tcc";
+            }
+            std::string cmd = "\"" + tccBin + "\"";
+            for (const auto& a : cliOptions.scriptArgs) {
+                if (a.find(' ') != std::string::npos) {
+                    cmd += " \"" + a + "\"";
+                } else {
+                    cmd += " " + a;
+                }
+            }
+#ifdef _WIN32
+            return std::system(("cmd /C \"" + cmd + "\"").c_str());
+#else
+            return std::system(cmd.c_str());
+#endif
+        }
         if (cliOptions.mode == CliMode::Test) {
             return runTestSuite(cliOptions, projectConfig, exePath);
         }
@@ -1180,17 +1234,24 @@ int main(int argc, char* argv[]) {
                 resolved.builtinSymbolAliases);
 
             std::filesystem::path outBin = cliOptions.outExePath;
-            bool isTargetWindows = cliOptions.targetTriple.empty() ?
+            std::string effectiveTarget = cliOptions.targetTriple;
+            if (effectiveTarget == "wasm" || effectiveTarget == "wasm32") {
+                effectiveTarget = "wasm32-wasi";
+            }
+            bool isTargetWasm = (effectiveTarget.find("wasm") != std::string::npos);
+            bool isTargetWindows = !isTargetWasm && (effectiveTarget.empty() ?
 #ifdef _WIN32
                 true
 #else
                 false
 #endif
-                : (cliOptions.targetTriple.find("windows") != std::string::npos || cliOptions.targetTriple.find("win32") != std::string::npos);
+                : (effectiveTarget.find("windows") != std::string::npos || effectiveTarget.find("win32") != std::string::npos));
 
             if (outBin.empty()) {
                 outBin = cliOptions.inputPath.parent_path() / cliOptions.inputPath.stem();
-                if (isTargetWindows) {
+                if (isTargetWasm) {
+                    outBin.replace_extension(".wasm");
+                } else if (isTargetWindows) {
                     outBin.replace_extension(".exe");
                 }
             }
@@ -1220,7 +1281,10 @@ int main(int argc, char* argv[]) {
 #endif
 
             std::string cc;
-            if (cliOptions.useTCC) {
+            if (isTargetWasm) {
+                cc = LLVMToolchain::resolveClang();
+                if (cc.empty()) cc = "clang";
+            } else if (cliOptions.useTCC) {
                 cc = TCCToolchain::resolveTcc(exePath);
                 if (cc.empty()) cc = "tcc";
             } else if (cliOptions.useLLVM) {
@@ -1274,8 +1338,8 @@ int main(int argc, char* argv[]) {
                 platformFlags = " -mconsole";
             }
             bool isTCC = (cc.find("tcc") != std::string::npos);
-            std::string targetFlag = (cliOptions.targetTriple.empty() || isTCC) ? "" : (" --target=" + cliOptions.targetTriple);
-            std::string mathFlag = isTargetWindows ? "" : " -lm ";
+            std::string targetFlag = (effectiveTarget.empty() || isTCC) ? "" : (" --target=" + effectiveTarget);
+            std::string mathFlag = (isTargetWindows || isTargetWasm) ? "" : " -lm ";
             std::string cmd = q(std::filesystem::path(cc))
                 + " " + optFlags + platformFlags + targetFlag
                 + mathFlag
@@ -1284,8 +1348,8 @@ int main(int argc, char* argv[]) {
 
             bool isLLVM = (cc.find("clang") != std::string::npos);
             std::string modeDesc = cliOptions.releaseMode ? "release" : cliOptions.debugBuild ? "debug" : "optimized";
-            if (!cliOptions.targetTriple.empty() && !isTCC) {
-                modeDesc += " -> " + cliOptions.targetTriple;
+            if (!effectiveTarget.empty() && !isTCC) {
+                modeDesc += " -> " + effectiveTarget;
             }
             std::string backendName = isLLVM ? " via LLVM" : isTCC ? " via TinyCC" : " via GCC";
             Log::status("Compiling", cliOptions.inputPath.filename().string()

@@ -1,0 +1,48 @@
+// Spawn and channels
+var ch = channel();
+
+fn worker(delta) {
+    return 100 + delta;
+}
+
+spawn fn() {
+    ch.send(worker(50));
+};
+
+var received = ch.recv();
+assert_eq(received, 150);
+
+// Thread pool
+var poolChannel = channel();
+var spawnedCount = 20;
+var i = 0;
+while (i < spawnedCount) {
+    var val = i;
+    spawn fn() {
+        poolChannel.send(val * 2);
+    };
+    i = i + 1;
+}
+
+var collected = 0;
+var receivedSum = 0;
+while (collected < spawnedCount) {
+    var r = poolChannel.recv();
+    receivedSum = receivedSum + r;
+    collected = collected + 1;
+}
+
+assert_eq(collected, 20);
+assert_eq(receivedSum, 380);
+
+// Message passing
+var objChannel = channel();
+spawn fn() {
+    objChannel.send({"status": "ready", "code": 200});
+};
+
+var resObj = objChannel.recv();
+assert_eq(resObj["status"], "ready");
+assert_eq(resObj["code"], 200);
+
+print("03_concurrency_and_async: PASS");

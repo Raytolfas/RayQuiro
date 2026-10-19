@@ -1,0 +1,102 @@
+// Raw memory buffers
+var buf = buffer.alloc(32);
+assert_eq(buffer.size(buf), 32);
+
+buffer.set_u8(buf, 0, 72);
+buffer.set_u8(buf, 1, 105);
+assert_eq(buffer.get_u8(buf, 0), 72);
+assert_eq(buffer.get_u8(buf, 1), 105);
+
+buffer.set_i32(buf, 4, 123456);
+assert_eq(buffer.get_i32(buf, 4), 123456);
+
+buffer.set_f64(buf, 8, 3.14159);
+var fval = buffer.get_f64(buf, 8);
+assert(fval > 3.14 && fval < 3.15);
+
+// String buffers
+var strBuf = buffer.from_string("RayQuiro Systems");
+assert_eq(buffer.size(strBuf), 16);
+assert_eq(buffer.to_string(strBuf), "RayQuiro Systems");
+
+// Buffer slicing
+var rawBuf = buffer.alloc(8);
+buffer.set_u8(rawBuf, 0, 100);
+buffer.set_u8(rawBuf, 1, 101);
+buffer.set_u8(rawBuf, 2, 102);
+buffer.set_u8(rawBuf, 3, 103);
+
+var bslice = buffer.slice(rawBuf, 1, 3);
+assert_eq(buffer.size(bslice), 2);
+assert_eq(buffer.get_u8(bslice, 0), 101);
+assert_eq(buffer.get_u8(bslice, 1), 102);
+
+var bslice2 = slice(rawBuf, 2, 4);
+assert_eq(buffer.size(bslice2), 2);
+assert_eq(buffer.get_u8(bslice2, 0), 102);
+assert_eq(buffer.get_u8(bslice2, 1), 103);
+
+// Array and string slices
+var nums = [10, 20, 30, 40, 50];
+var sub = nums[1..4];
+assert_eq(len(sub), 3);
+assert_eq(sub[0], 20);
+assert_eq(sub[1], 30);
+assert_eq(sub[2], 40);
+
+var head = nums[..2];
+assert_eq(len(head), 2);
+assert_eq(head[0], 10);
+assert_eq(head[1], 20);
+
+var tail = nums[3..];
+assert_eq(len(tail), 2);
+assert_eq(tail[0], 40);
+assert_eq(tail[1], 50);
+
+var text = "Hello, RayQuiro!";
+var word = text[0..5];
+assert_eq(word, "Hello");
+
+// Struct packing
+var sz = struct.calcsize("b h i d");
+assert_eq(sz, 1 + 2 + 4 + 8);
+
+var packed = struct.pack("b h i d", 7, 1000, 200000, 3.14159);
+assert_eq(buffer.size(packed), 15);
+
+var unpacked = struct.unpack("b h i d", packed, 0);
+assert_eq(len(unpacked), 4);
+assert_eq(unpacked[0], 7);
+assert_eq(unpacked[1], 1000);
+assert_eq(unpacked[2], 200000);
+assert(unpacked[3] > 3.14 && unpacked[3] < 3.15);
+
+// FFI
+if (os.name() == "windows") {
+    var k32 = ffi.load("kernel32.dll");
+    assert_true(ffi.sym(k32, "GetCurrentProcessId"));
+    var pid = ffi.call(k32, "GetCurrentProcessId");
+    assert(pid > 0);
+    ffi.close(k32);
+} else if (os.name() == "macos" || os.name() == "darwin") {
+    var libsys = ffi.load("libSystem.B.dylib");
+    assert_true(ffi.sym(libsys, "getpid"));
+    var pid = ffi.call(libsys, "getpid");
+    assert(pid > 0);
+    ffi.close(libsys);
+} else {
+    var libc = ffi.load("libc.so.6");
+    assert_true(ffi.sym(libc, "getpid"));
+    var pid = ffi.call(libc, "getpid");
+    assert(pid > 0);
+    ffi.close(libc);
+}
+
+// Callbacks
+var cb = ffi.callback(fn(a, b, c, d) {
+    return a + b + c + d;
+});
+assert(cb > 0);
+
+print("02_systems_and_memory: PASS");

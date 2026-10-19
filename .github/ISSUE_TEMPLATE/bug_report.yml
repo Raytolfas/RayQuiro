@@ -1,0 +1,52 @@
+name: Bug Report
+description: Report a bug in the RayQuiro VM, interpreter, compiler, or standard library
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating System
+      options:
+        - Windows x64
+        - Linux x64
+        - macOS ARM64 / x64
+    validations:
+      required: true
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Execution Mode
+      options:
+        - rqio run (Bytecode VM / Interpreter)
+        - rqio build --tcc (TinyCC Native)
+        - rqio build --llvm (LLVM Clang Native)
+        - rqio test
+        - rqio lsp / VS Code Extension
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal .rq Reproduction
+      description: Minimal code snippet that reproduces the issue
+      render: rq
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual Output / Error
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+    validations:
+      required: true

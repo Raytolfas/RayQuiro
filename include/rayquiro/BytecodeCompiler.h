@@ -5,6 +5,7 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "AST.h"
@@ -23,6 +24,13 @@ public:
         const std::unordered_map<std::string, std::string>& symbolAliases
     ) {
         BytecodeCompiler compiler(namespaceAliases, symbolAliases);
+        for (const auto& statement : program.statements) {
+            Stmt* rawStmt = statement.get();
+            if (auto exp = dynamic_cast<ExportStmt*>(rawStmt)) rawStmt = exp->declaration.get();
+            if (auto fn = dynamic_cast<FunctionStmt*>(rawStmt)) {
+                compiler.userFunctions_.insert(fn->name);
+            }
+        }
         for (const auto& statement : program.statements) {
             if (!compiler.supportsStmt(statement.get())) {
                 return false;
@@ -48,6 +56,7 @@ private:
 
     const std::unordered_map<std::string, std::string>& builtinNamespaceAliases_;
     const std::unordered_map<std::string, std::string>& builtinSymbolAliases_;
+    std::unordered_set<std::string> userFunctions_;
 
     BytecodeCompiler(
         const std::unordered_map<std::string, std::string>& namespaceAliases,
@@ -64,17 +73,21 @@ private:
         output.entry.name = "__main__";
 
         for (const auto& statement : program.statements) {
-            if (auto functionStmt = dynamic_cast<FunctionStmt*>(statement.get())) {
+            Stmt* rawStmt = statement.get();
+            if (auto exp = dynamic_cast<ExportStmt*>(rawStmt)) rawStmt = exp->declaration.get();
+            if (auto functionStmt = dynamic_cast<FunctionStmt*>(rawStmt)) {
                 output.functions[functionStmt->name] = compileFunction(*functionStmt);
             }
         }
 
         LocalScope globals;
         for (const auto& statement : program.statements) {
-            if (dynamic_cast<FunctionStmt*>(statement.get()) != nullptr) {
+            Stmt* rawStmt = statement.get();
+            if (auto exp = dynamic_cast<ExportStmt*>(rawStmt)) rawStmt = exp->declaration.get();
+            if (dynamic_cast<FunctionStmt*>(rawStmt) != nullptr) {
                 continue;
             }
-            compileStmt(statement.get(), output.entry, globals, true);
+            compileStmt(rawStmt, output.entry, globals, true);
         }
         output.entry.localCount = globals.nextSlot;
         emit(output.entry, OpCode::Null);
@@ -91,6 +104,21 @@ private:
         LocalScope scope;
         for (const auto& p : functionStmt.params) {
             scope.locals[p.name] = scope.nextSlot++;
+        }
+
+        for (const auto& p : functionStmt.params) {
+            if (p.defaultValue) {
+                int slot = scope.locals[p.name];
+                emit(function, OpCode::GetLocal, slot);
+                int jmpIdx = static_cast<int>(function.code.size());
+                emit(function, OpCode::JumpIfNotNull, 0);
+                emit(function, OpCode::Pop);
+                compileExpr(p.defaultValue.get(), function, scope);
+                emit(function, OpCode::SetLocal, slot);
+                int afterInit = static_cast<int>(function.code.size());
+                function.code[jmpIdx].b = afterInit;
+                emit(function, OpCode::Pop);
+            }
         }
 
         for (const auto& statement : functionStmt.body->statements) {
@@ -114,37 +142,96 @@ private:
 
     bool supportsStmt(Stmt* stmt) const {
         if (!stmt) return true;
+        if (dynamic_cast<DeferStmt*>(stmt) != nullptr) return false;
+        if (dynamic_cast<SpawnStmt*>(stmt) != nullptr) return false;
+        if (dynamic_cast<SwitchStmt*>(stmt) != nullptr) return false;
+        if (auto ts = dynamic_cast<TestStmt*>(stmt)) return supportsStmt(ts->body.get());
+        if (auto exp = dynamic_cast<ExportStmt*>(stmt)) return supportsStmt(exp->declaration.get());
         if (dynamic_cast<ImportStmt*>(stmt) != nullptr) return true;
         if (dynamic_cast<FromImportStmt*>(stmt) != nullptr) return true;
         if (auto vs = dynamic_cast<VarStmt*>(stmt)) return supportsExpr(vs->initializer.get());
+        if (auto ad = dynamic_cast<ArrayDestructureStmt*>(stmt)) return supportsExpr(ad->init.get());
+        if (auto od = dynamic_cast<ObjectDestructureStmt*>(stmt)) return supportsExpr(od->init.get());
         if (auto es = dynamic_cast<ExprStmt*>(stmt)) return supportsExpr(es->expr.get());
+        if (auto ls = dynamic_cast<LogStmt*>(stmt)) return supportsExpr(ls->message.get());
         if (auto bs = dynamic_cast<BlockStmt*>(stmt)) {
             for (const auto& s : bs->statements) if (!supportsStmt(s.get())) return false;
+            return true;
         }
         if (auto ws = dynamic_cast<WhileStmt*>(stmt)) return supportsExpr(ws->condition.get()) && supportsStmt(ws->body.get());
+        if (auto fis = dynamic_cast<ForInStmt*>(stmt)) return supportsExpr(fis->iterable.get()) && supportsStmt(fis->body.get());
         if (auto is = dynamic_cast<IfStmt*>(stmt)) return supportsExpr(is->condition.get()) && supportsStmt(is->thenBranch.get()) && supportsStmt(is->elseBranch.get());
-        if (auto fs = dynamic_cast<FunctionStmt*>(stmt)) return supportsStmt(fs->body.get());
+        if (auto rs = dynamic_cast<ReturnStmt*>(stmt)) {
+            for (const auto& v : rs->values) if (!supportsExpr(v.get())) return false;
+            return true;
+        }
+        if (auto ths = dynamic_cast<ThrowStmt*>(stmt)) return supportsExpr(ths->value.get());
+        if (auto tcs = dynamic_cast<TryCatchStmt*>(stmt)) {
+            return supportsStmt(tcs->tryBody.get()) && supportsStmt(tcs->catchBody.get()) && supportsStmt(tcs->finallyBody.get());
+        }
+        if (auto ss = dynamic_cast<StructStmt*>(stmt)) {
+            for (const auto& f : ss->fields) if (!supportsExpr(f.second.get())) return false;
+            return true;
+        }
+        if (auto ms = dynamic_cast<MatchStmt*>(stmt)) {
+            if (!supportsExpr(ms->subject.get())) return false;
+            for (const auto& arm : ms->arms) {
+                if (!supportsExpr(arm.pattern.get())) return false;
+                if (!supportsExpr(arm.guard.get())) return false;
+                if (!supportsStmt(arm.body.get())) return false;
+            }
+            return true;
+        }
+        if (auto fs = dynamic_cast<FunctionStmt*>(stmt)) {
+            for (const auto& p : fs->params) {
+                if (p.isVariadic) return false;
+                if (p.defaultValue && !supportsExpr(p.defaultValue.get())) return false;
+            }
+            return supportsStmt(fs->body.get());
+        }
         return true;
     }
 
     bool supportsExpr(Expr* expr) const {
         if (!expr) return true;
+        if (dynamic_cast<LambdaExpr*>(expr) != nullptr) return false;
+        if (dynamic_cast<DynCallExpr*>(expr) != nullptr) return false;
+        if (auto re = dynamic_cast<RangeExpr*>(expr)) return supportsExpr(re->start.get()) && supportsExpr(re->end.get());
+        if (auto se = dynamic_cast<SliceExpr*>(expr)) return supportsExpr(se->target.get()) && supportsExpr(se->start.get()) && supportsExpr(se->end.get());
         if (auto call = dynamic_cast<CallExpr*>(expr)) {
-            if (call->callee.rfind("engine.", 0) == 0 ||
-                call->callee.rfind("web.", 0) == 0) {
+            std::string canonical = canonicalizeBuiltinName(call->callee);
+            if (userFunctions_.find(canonical) == userFunctions_.end() &&
+                userFunctions_.find(call->callee) == userFunctions_.end() &&
+                !isSupportedBuiltin(canonical)) {
                 return false;
             }
             for (const auto& a : call->args) if (!supportsExpr(a.get())) return false;
+            return true;
         }
         if (auto be = dynamic_cast<BinaryExpr*>(expr)) return supportsExpr(be->left.get()) && supportsExpr(be->right.get());
         if (auto ue = dynamic_cast<UnaryExpr*>(expr)) return supportsExpr(ue->right.get());
         if (auto ae = dynamic_cast<AssignExpr*>(expr)) return supportsExpr(ae->value.get());
+        if (auto cae = dynamic_cast<CompoundAssignExpr*>(expr)) return supportsExpr(cae->value.get());
+        if (auto sie = dynamic_cast<SetIndexExpr*>(expr)) return supportsExpr(sie->object.get()) && supportsExpr(sie->index.get()) && supportsExpr(sie->value.get());
         if (auto ie = dynamic_cast<IndexExpr*>(expr)) return supportsExpr(ie->target.get()) && supportsExpr(ie->index.get());
+        if (auto nce = dynamic_cast<NullCoalesceExpr*>(expr)) return supportsExpr(nce->left.get()) && supportsExpr(nce->right.get());
+        if (auto oce = dynamic_cast<OptionalChainExpr*>(expr)) return supportsExpr(oce->object.get()) && supportsExpr(oce->index.get());
+        if (auto tle = dynamic_cast<TemplateLiteralExpr*>(expr)) {
+            for (const auto& e : tle->exprs) if (!supportsExpr(e.get())) return false;
+            return true;
+        }
+        if (auto sie2 = dynamic_cast<StructInstExpr*>(expr)) {
+            for (const auto& f : sie2->fields) if (!supportsExpr(f.second.get())) return false;
+            return true;
+        }
+        if (auto awe = dynamic_cast<AwaitExpr*>(expr)) return supportsExpr(awe->operand.get());
         if (auto oe = dynamic_cast<ObjectExpr*>(expr)) {
             for (const auto& f : oe->fields) if (!supportsExpr(f.second.get())) return false;
+            return true;
         }
         if (auto ar = dynamic_cast<ArrayExpr*>(expr)) {
             for (const auto& e : ar->elements) if (!supportsExpr(e.get())) return false;
+            return true;
         }
         return true;
     }
@@ -152,11 +239,14 @@ private:
     static bool isSupportedBuiltin(const std::string& name) {
         return name == "print" ||
             name == "str" ||
+            name == "to_string" ||
             name == "num" ||
             name == "bool" ||
             name == "type" ||
             name == "len" ||
+            name == "length" ||
             name == "range" ||
+            name == "range_inclusive" ||
             name == "push" ||
             name == "pop" ||
             name == "join" ||
@@ -167,12 +257,45 @@ private:
             name == "trim" ||
             name == "replace" ||
             name == "slice" ||
+            name == "startswith" ||
+            name == "endswith" ||
+            name == "indexof" ||
+            name == "repeat" ||
+            name == "char_code" ||
+            name == "char_from" ||
+            name == "char" ||
             name == "floor" ||
             name == "ceil" ||
             name == "round" ||
+            name == "sqrt" ||
+            name == "abs" ||
+            name == "pow" ||
+            name == "sin" ||
+            name == "cos" ||
+            name == "tan" ||
+            name == "log" ||
+            name == "atan2" ||
+            name == "hypot" ||
+            name == "atan" ||
+            name == "asin" ||
+            name == "acos" ||
+            name == "exp" ||
+            name == "log2" ||
+            name == "log10" ||
             name == "min" ||
             name == "max" ||
             name == "clamp" ||
+            name == "vec2" ||
+            name == "vec3" ||
+            name == "vec_add" ||
+            name == "vec_sub" ||
+            name == "vec_mul" ||
+            name == "vec_dot" ||
+            name == "vec_len" ||
+            name == "vec_normalize" ||
+            name == "vec_dist" ||
+            name == "vec_lerp" ||
+            name == "vec_cross" ||
             name == "sleep" ||
             name == "clock.ms" ||
             name == "time.now_ms" ||
@@ -182,6 +305,13 @@ private:
             name == "json.parse" ||
             name == "random" ||
             name == "random.int" ||
+            name == "random.float" ||
+            name == "random.choice" ||
+            name == "random.shuffle" ||
+            name == "random.range" ||
+            name == "random.bool" ||
+            name == "random.boolean" ||
+            name == "random.seed" ||
             name == "datetime.now" ||
             name == "datetime.timestamp" ||
             name == "datetime.format" ||
@@ -192,6 +322,39 @@ private:
             name == "path.exists" ||
             name == "path.abs" ||
             name == "path.stem" ||
+            name == "fs.exists" ||
+            name == "fs.mkdir" ||
+            name == "fs.remove" ||
+            name == "fs.copy" ||
+            name == "fs.copy_tree" ||
+            name == "fs.read" ||
+            name == "fs.write" ||
+            name == "os.name" ||
+            name == "os.arch" ||
+            name == "os.cwd" ||
+            name == "os.chdir" ||
+            name == "os.home" ||
+            name == "os.temp" ||
+            name == "os.sep" ||
+            name == "os.exists" ||
+            name == "os.is_dir" ||
+            name == "os.is_file" ||
+            name == "env.get" ||
+            name == "env.has" ||
+            name == "env.set" ||
+            name == "env.all" ||
+            name == "env.path_add" ||
+            name == "process.run" ||
+            name == "process.cwd" ||
+            name == "process.pid" ||
+            name == "process.exit" ||
+            name == "process.exe_dir" ||
+            name == "net.tcp_connect" ||
+            name == "net.tcp_send" ||
+            name == "net.tcp_recv" ||
+            name == "net.tcp_close" ||
+            name == "http.get" ||
+            name == "http.post" ||
             name == "hash.sha256" ||
             name == "crypto.sha256" ||
             name == "crypto.md5" ||
@@ -212,28 +375,52 @@ private:
             name == "assert_false" ||
             name == "assert_null" ||
             name == "__optional_get" ||
-            name == "app.init" ||
-            name == "app.run" ||
-            name == "app.button" ||
-            name == "app.text" ||
-            name == "app.label" ||
-            name == "app.input" ||
-            name == "app.checkbox" ||
-            name == "app.style" ||
-            name == "app.theme" ||
-            name == "app.set_theme" ||
-            name == "app.close" ||
-            name == "app.quit" ||
-            name == "app.msg" ||
-            name == "ui.style" ||
-            name == "ui.theme" ||
-            name == "ui.set_theme" ||
-            name == "ui.dark" ||
-            name == "ui.light" ||
-            name == "ui.rgb" ||
-            name == "ui.rgba" ||
-            name == "ui.hex" ||
-            name == "ui.apply";
+            name == "channel" ||
+            name == "channel.send" ||
+            name == "channel_send" ||
+            name == "channel.recv" ||
+            name == "channel_recv" ||
+            name == "channel.close" ||
+            name == "channel_close" ||
+            name == "ffi.load" ||
+            name == "ffi_load" ||
+            name == "ffi.sym" ||
+            name == "ffi_sym" ||
+            name == "ffi.call" ||
+            name == "ffi_call" ||
+            name == "ffi.close" ||
+            name == "ffi_close" ||
+            name == "buffer.alloc" ||
+            name == "buffer_alloc" ||
+            name == "buffer.from_string" ||
+            name == "buffer_from_string" ||
+            name == "buffer.to_string" ||
+            name == "buffer_to_string" ||
+            name == "buffer.size" ||
+            name == "buffer_size" ||
+            name == "buffer.len" ||
+            name == "buffer.get_u8" ||
+            name == "buffer_get_u8" ||
+            name == "buffer.set_u8" ||
+            name == "buffer_set_u8" ||
+            name == "buffer.get_i32" ||
+            name == "buffer_get_i32" ||
+            name == "buffer.set_i32" ||
+            name == "buffer_set_i32" ||
+            name == "buffer.get_f64" ||
+            name == "buffer_get_f64" ||
+            name == "buffer.set_f64" ||
+            name == "buffer_set_f64" ||
+            name == "buffer.slice" ||
+            name == "buffer_slice" ||
+            name == "ffi.callback" ||
+            name == "ffi_callback" ||
+            name == "struct.calcsize" ||
+            name == "struct_calcsize" ||
+            name == "struct.pack" ||
+            name == "struct_pack" ||
+            name == "struct.unpack" ||
+            name == "struct_unpack";
     }
 
     static bool isFrameworkNamespace(const std::string& name) {
@@ -249,7 +436,11 @@ private:
             name == "path" ||
             name == "hash" ||
             name == "crypto" ||
-            name == "regex";
+            name == "regex" ||
+            name == "channel" ||
+            name == "buffer" ||
+            name == "ffi" ||
+            name == "struct";
     }
 
     static bool usesUnsupportedFrameworkBuiltin(const std::string& name) {
@@ -526,6 +717,134 @@ private:
         }
 
         if (dynamic_cast<InterfaceStmt*>(stmt) != nullptr) {
+            return;
+        }
+
+        if (auto expStmt = dynamic_cast<ExportStmt*>(stmt)) {
+            compileStmt(expStmt->declaration.get(), function, scope, topLevel);
+            return;
+        }
+
+        if (auto testStmt = dynamic_cast<TestStmt*>(stmt)) {
+            compileStmt(testStmt->body.get(), function, scope, false);
+            return;
+        }
+
+        if (auto arrDestr = dynamic_cast<ArrayDestructureStmt*>(stmt)) {
+            compileExpr(arrDestr->init.get(), function, scope);
+            const int tempSlot = scope.nextSlot++;
+            emit(function, OpCode::SetLocal, tempSlot);
+            emit(function, OpCode::Pop);
+
+            for (std::size_t i = 0; i < arrDestr->names.size(); ++i) {
+                if (arrDestr->names[i].empty()) continue;
+                emit(function, OpCode::GetLocal, tempSlot);
+                emit(function, OpCode::Constant, addConstant(function, VMValue(static_cast<double>(i))));
+                emit(function, OpCode::GetIndex);
+                if (topLevel) {
+                    emit(function, OpCode::DefineGlobal, addConstant(function, VMValue(arrDestr->names[i])));
+                } else {
+                    const int slot = scope.nextSlot++;
+                    scope.locals[arrDestr->names[i]] = slot;
+                    emit(function, OpCode::SetLocal, slot);
+                    emit(function, OpCode::Pop);
+                }
+            }
+            return;
+        }
+
+        if (auto objDestr = dynamic_cast<ObjectDestructureStmt*>(stmt)) {
+            compileExpr(objDestr->init.get(), function, scope);
+            const int tempSlot = scope.nextSlot++;
+            emit(function, OpCode::SetLocal, tempSlot);
+            emit(function, OpCode::Pop);
+
+            for (const auto& [key, local] : objDestr->bindings) {
+                emit(function, OpCode::GetLocal, tempSlot);
+                emit(function, OpCode::Constant, addConstant(function, VMValue(key)));
+                emit(function, OpCode::GetIndex);
+                if (topLevel) {
+                    emit(function, OpCode::DefineGlobal, addConstant(function, VMValue(local)));
+                } else {
+                    const int slot = scope.nextSlot++;
+                    scope.locals[local] = slot;
+                    emit(function, OpCode::SetLocal, slot);
+                    emit(function, OpCode::Pop);
+                }
+            }
+            return;
+        }
+
+        if (auto matchStmt = dynamic_cast<MatchStmt*>(stmt)) {
+            compileExpr(matchStmt->subject.get(), function, scope);
+            const int subjSlot = scope.nextSlot++;
+            emit(function, OpCode::SetLocal, subjSlot);
+            emit(function, OpCode::Pop);
+
+            std::vector<int> endJumps;
+            for (const auto& arm : matchStmt->arms) {
+                bool isWildcard = (!arm.pattern);
+                if (auto id = dynamic_cast<IdentifierExpr*>(arm.pattern.get())) {
+                    if (id->name == "_") isWildcard = true;
+                }
+
+                if (isWildcard) {
+                    if (arm.guard) {
+                        compileExpr(arm.guard.get(), function, scope);
+                        int skipGuard = emitPlaceholder(function, OpCode::JumpIfFalse);
+                        emit(function, OpCode::Pop);
+                        compileStmt(arm.body.get(), function, scope, false);
+                        endJumps.push_back(emitPlaceholder(function, OpCode::Jump));
+                        patchJump(function, skipGuard, static_cast<int>(function.code.size()));
+                        emit(function, OpCode::Pop);
+                    } else {
+                        compileStmt(arm.body.get(), function, scope, false);
+                        endJumps.push_back(emitPlaceholder(function, OpCode::Jump));
+                    }
+                    continue;
+                }
+
+                if (auto rng = dynamic_cast<RangeExpr*>(arm.pattern.get())) {
+                    emit(function, OpCode::GetLocal, subjSlot);
+                    compileExpr(rng->start.get(), function, scope);
+                    emit(function, OpCode::GreaterEqual);
+                    emit(function, OpCode::GetLocal, subjSlot);
+                    compileExpr(rng->end.get(), function, scope);
+                    emit(function, OpCode::LessEqual);
+                    emit(function, OpCode::Equal);
+                } else {
+                    emit(function, OpCode::GetLocal, subjSlot);
+                    compileExpr(arm.pattern.get(), function, scope);
+                    emit(function, OpCode::Equal);
+                }
+
+                int skipArm = emitPlaceholder(function, OpCode::JumpIfFalse);
+                emit(function, OpCode::Pop);
+
+                if (arm.guard) {
+                    compileExpr(arm.guard.get(), function, scope);
+                    int skipGuard = emitPlaceholder(function, OpCode::JumpIfFalse);
+                    emit(function, OpCode::Pop);
+                    compileStmt(arm.body.get(), function, scope, false);
+                    endJumps.push_back(emitPlaceholder(function, OpCode::Jump));
+                    patchJump(function, skipGuard, static_cast<int>(function.code.size()));
+                    emit(function, OpCode::Pop);
+                    int skipEnd = emitPlaceholder(function, OpCode::Jump);
+                    patchJump(function, skipArm, static_cast<int>(function.code.size()));
+                    emit(function, OpCode::Pop);
+                    patchJump(function, skipEnd, static_cast<int>(function.code.size()));
+                } else {
+                    compileStmt(arm.body.get(), function, scope, false);
+                    endJumps.push_back(emitPlaceholder(function, OpCode::Jump));
+                    patchJump(function, skipArm, static_cast<int>(function.code.size()));
+                    emit(function, OpCode::Pop);
+                }
+            }
+
+            const int matchEnd = static_cast<int>(function.code.size());
+            for (int jmp : endJumps) {
+                patchJump(function, jmp, matchEnd);
+            }
             return;
         }
 
@@ -840,6 +1159,29 @@ private:
             }
             emit(function, OpCode::Call,
                  addConstant(function, VMValue(std::string("__optional_get"))), 2);
+            return;
+        }
+
+        if (auto rng = dynamic_cast<RangeExpr*>(expr)) {
+            compileExpr(rng->start.get(), function, scope);
+            compileExpr(rng->end.get(), function, scope);
+            emit(function, OpCode::Call, addConstant(function, VMValue(std::string("range_inclusive"))), 2);
+            return;
+        }
+
+        if (auto slc = dynamic_cast<SliceExpr*>(expr)) {
+            compileExpr(slc->target.get(), function, scope);
+            if (slc->start) {
+                compileExpr(slc->start.get(), function, scope);
+            } else {
+                emit(function, OpCode::Constant, addConstant(function, VMValue(0.0)));
+            }
+            if (slc->end) {
+                compileExpr(slc->end.get(), function, scope);
+                emit(function, OpCode::Call, addConstant(function, VMValue(std::string("slice"))), 3);
+            } else {
+                emit(function, OpCode::Call, addConstant(function, VMValue(std::string("slice"))), 2);
+            }
             return;
         }
 

@@ -74,4 +74,6 @@ $CXX $COMMON_CXX_FLAGS $LINK_FLAGS -shared -fPIC \
 
 echo "Built $CORE_OUTPUT"
 command -v strip >/dev/null 2>&1 && strip "$CORE_OUTPUT" 2>/dev/null || true
+rm -rf "$CACHE_DIR"
+rmdir .cache 2>/dev/null || true
 echo "Done."
