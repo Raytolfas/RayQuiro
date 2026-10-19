@@ -21,13 +21,10 @@ jobs:
         include:
           - target: linux-x64
             os: ubuntu-latest
-            archive: rqio-linux-x64.tar.gz
           - target: windows-x64
             os: windows-latest
-            archive: rqio-windows-x64.zip
           - target: macos-arm64
             os: macos-latest
-            archive: rqio-macos-arm64.tar.gz
 
     steps:
       - name: Checkout repository
@@ -63,29 +60,33 @@ jobs:
           ./build.ps1
           ./rqio.exe test
 
-      - name: Package archive (Linux)
+      - name: Prepare binaries (Linux)
         if: matrix.target == 'linux-x64'
         run: |
-          tar -czf ${{ matrix.archive }} rqio rqio_core.so LICENSE README.md
+          mkdir -p out
+          cp rqio out/rqio
+          cp rqio_core.so out/rqio_core.so
 
-      - name: Package archive (macOS)
+      - name: Prepare binaries (macOS)
         if: matrix.target == 'macos-arm64'
         run: |
-          tar -czf ${{ matrix.archive }} rqio rqio_core.dylib LICENSE README.md
+          mkdir -p out
+          cp rqio out/rqio-macos
+          cp rqio_core.dylib out/rqio_core.dylib
 
-      - name: Package archive (Windows)
+      - name: Prepare binaries (Windows)
         if: matrix.target == 'windows-x64'
         shell: pwsh
         run: |
-          $items = @("rqio.exe", "rqio_core.dll", "LICENSE", "README.md")
-          if (Test-Path "third_party/tcc") { $items += "third_party/tcc" }
-          Compress-Archive -Path $items -DestinationPath ${{ matrix.archive }} -Force
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          Copy-Item rqio.exe out/rqio.exe
+          Copy-Item rqio_core.dll out/rqio_core.dll
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}
-          path: ${{ matrix.archive }}
+          path: out/*
 
   publish-release:
     name: Publish GitHub Release
@@ -98,12 +99,6 @@ jobs:
         with:
           path: dist
           merge-multiple: true
-
-      - name: Generate SHA256SUMS
-        working-directory: dist
-        run: |
-          sha256sum * > SHA256SUMS.txt
-          cat SHA256SUMS.txt
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
