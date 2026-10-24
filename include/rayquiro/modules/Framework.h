@@ -181,6 +181,7 @@ public:
 
     void init(std::string title, int w, int h) {
 #ifdef _WIN32
+        SetProcessDPIAware();
         cleanup();
         bgBrush = CreateSolidBrush(bgColor);
         editBrush = CreateSolidBrush(editBgColor);
@@ -239,15 +240,15 @@ public:
     void add_text(std::string text, int x = -1, int y = -1, int w = -1, int h = -1) {
 #ifdef _WIN32
         if (!hwnd) return;
-        compute_pos(x, y, w, h, 26);
+        compute_pos(x, y, w, h, 36);
         std::wstring wtext = utf8_to_wide(text);
         HWND lbl = CreateWindowW(L"STATIC", wtext.c_str(),
-            WS_VISIBLE | WS_CHILD | SS_LEFT,
+            WS_VISIBLE | WS_CHILD | SS_LEFT | SS_CENTERIMAGE,
             x, y, w, h, hwnd, NULL, hInst, NULL);
         if (lbl && hFont) SendMessageW(lbl, WM_SETFONT, (WPARAM)hFont, TRUE);
         if (lbl) controls.push_back(lbl);
 #else
-        compute_pos(x, y, w, h, 26);
+        compute_pos(x, y, w, h, 36);
         linuxControls.push_back(LinuxControl{LinuxControl::Text, text, "", false, x, y, w, h});
 #endif
     }
@@ -255,7 +256,7 @@ public:
     void add_input(std::string placeholder, int x = -1, int y = -1, int w = -1, int h = -1) {
 #ifdef _WIN32
         if (!hwnd) return;
-        compute_pos(x, y, w, h, 32);
+        compute_pos(x, y, w, h, 36);
         std::wstring wph = utf8_to_wide(placeholder);
         HWND edit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", wph.c_str(),
             WS_TABSTOP | WS_VISIBLE | WS_CHILD | ES_AUTOHSCROLL,
@@ -263,7 +264,7 @@ public:
         if (edit && hFont) SendMessageW(edit, WM_SETFONT, (WPARAM)hFont, TRUE);
         if (edit) controls.push_back(edit);
 #else
-        compute_pos(x, y, w, h, 32);
+        compute_pos(x, y, w, h, 36);
         linuxControls.push_back(LinuxControl{LinuxControl::Input, placeholder, "", false, x, y, w, h});
 #endif
     }
@@ -271,16 +272,16 @@ public:
     void add_checkbox(std::string label, bool checked = false, int x = -1, int y = -1, int w = -1, int h = -1) {
 #ifdef _WIN32
         if (!hwnd) return;
-        compute_pos(x, y, w, h, 26);
+        compute_pos(x, y, w, h, 36);
         std::wstring wlbl = utf8_to_wide(label);
         HWND chk = CreateWindowW(L"BUTTON", wlbl.c_str(),
-            WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_AUTOCHECKBOX,
+            WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_AUTOCHECKBOX | BS_VCENTER,
             x, y, w, h, hwnd, NULL, hInst, NULL);
         if (chk && hFont) SendMessageW(chk, WM_SETFONT, (WPARAM)hFont, TRUE);
         if (chk && checked) SendMessageW(chk, BM_SETCHECK, BST_CHECKED, 0);
         if (chk) controls.push_back(chk);
 #else
-        compute_pos(x, y, w, h, 26);
+        compute_pos(x, y, w, h, 36);
         linuxControls.push_back(LinuxControl{LinuxControl::Checkbox, label, "", checked, x, y, w, h});
 #endif
     }
@@ -513,10 +514,12 @@ public:
                         DrawText(ctrl.text.c_str(), static_cast<int>(tx), static_cast<int>(ty), 16, Color{255, 255, 255, 255});
                     }
                 } else if (ctrl.type == LinuxControl::Text) {
+                    Vector2 sz = customFont ? MeasureTextEx(appFont, ctrl.text.c_str(), 16.0f, 1.0f) : Vector2{static_cast<float>(MeasureText(ctrl.text.c_str(), 16)), 16.0f};
+                    float ty = r.y + (r.height - sz.y) / 2.0f;
                     if (customFont) {
-                        DrawTextEx(appFont, ctrl.text.c_str(), Vector2{r.x, r.y}, 16.0f, 1.0f, linuxTextColor);
+                        DrawTextEx(appFont, ctrl.text.c_str(), Vector2{r.x, ty}, 16.0f, 1.0f, linuxTextColor);
                     } else {
-                        DrawText(ctrl.text.c_str(), static_cast<int>(r.x), static_cast<int>(r.y), 16, linuxTextColor);
+                        DrawText(ctrl.text.c_str(), static_cast<int>(r.x), static_cast<int>(ty), 16, linuxTextColor);
                     }
                 } else if (ctrl.type == LinuxControl::Input) {
                     DrawRectangleRounded(r, 0.15f, 4, linuxItemBgColor);

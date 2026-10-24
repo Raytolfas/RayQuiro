@@ -266,181 +266,230 @@ class LSPServer {
         std::filesystem::path docPath = uriToPath(uri);
         std::filesystem::path docDir = docPath.parent_path();
 
-        std::string importedModule;
-        std::regex importAsRegex(R"(import\s+["']([^"']+)["']\s+as\s+([A-Za-z_][A-Za-z0-9_]*))");
-        std::smatch match;
+        std::unordered_map<std::string, std::string> importedAliases;
+        std::regex importRegex(R"(import\s+(?:["']([^"']+)["']|([A-Za-z0-9_.]+))(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?)");
         auto textBegin = docText.cbegin();
-        while (std::regex_search(textBegin, docText.cend(), match, importAsRegex)) {
-            if (match[2].str() == target) {
-                importedModule = match[1].str();
-                break;
+        std::smatch match;
+        while (std::regex_search(textBegin, docText.cend(), match, importRegex)) {
+            std::string mod = match[1].matched ? match[1].str() : match[2].str();
+            std::string alias = match[3].matched ? match[3].str() : "";
+            if (alias.empty()) {
+                std::string base = mod;
+                size_t dot = base.rfind('.');
+                if (dot != std::string::npos) base = base.substr(dot + 1);
+                importedAliases[base] = mod;
+                importedAliases[mod] = mod;
+            } else {
+                importedAliases[alias] = mod;
             }
             textBegin = match.suffix().first;
         }
 
-        if (importedModule.empty()) {
-            std::regex importBareRegex(R"(import\s+["']([^"']+)["'])");
-            textBegin = docText.cbegin();
-            while (std::regex_search(textBegin, docText.cend(), match, importBareRegex)) {
-                std::string full = match[1].str();
-                std::string base = full;
-                size_t dot = base.rfind('.');
-                if (dot != std::string::npos) base = base.substr(dot + 1);
-                if (base == target || full == target) {
-                    importedModule = full;
-                    break;
-                }
-                textBegin = match.suffix().first;
-            }
+        std::string importedModule;
+        auto aliasIt = importedAliases.find(target);
+        if (aliasIt != importedAliases.end()) {
+            importedModule = aliasIt->second;
         }
 
-        if (importedModule.empty()) {
-            importedModule = target;
-        }
+        std::string canonical = importedModule;
+        if (canonical.rfind("rayquiro.", 0) == 0) canonical = canonical.substr(9);
+        if (canonical == "raytolfas.engine") canonical = "engine";
 
-        std::vector<std::filesystem::path> searchPaths = {
-            docDir / importedModule,
-            docDir / (importedModule + ".rq"),
-            docDir / "packages" / importedModule / "main.rq",
-            docDir / "packages" / importedModule / "index.rq",
-            docDir / "packages" / importedModule / (importedModule + ".rq"),
-            std::filesystem::current_path() / "packages" / importedModule / "main.rq",
-            std::filesystem::current_path() / "packages" / importedModule / "index.rq",
-            std::filesystem::current_path() / "packages" / importedModule / (importedModule + ".rq")
-        };
+        if (!importedModule.empty()) {
+            std::vector<std::filesystem::path> searchPaths = {
+                docDir / importedModule,
+                docDir / (importedModule + ".rq"),
+                docDir / "packages" / importedModule / "main.rq",
+                docDir / "packages" / importedModule / "index.rq",
+                docDir / "packages" / importedModule / (importedModule + ".rq"),
+                std::filesystem::current_path() / "packages" / importedModule / "main.rq",
+                std::filesystem::current_path() / "packages" / importedModule / "index.rq",
+                std::filesystem::current_path() / "packages" / importedModule / (importedModule + ".rq")
+            };
 
-        bool foundExternalFile = false;
-        for (const auto& sp : searchPaths) {
-            std::error_code ec;
-            if (std::filesystem::exists(sp, ec) && std::filesystem::is_regular_file(sp, ec)) {
-                std::ifstream f(sp);
-                if (f.is_open()) {
-                    std::stringstream buffer;
-                    buffer << f.rdbuf();
-                    std::string content = buffer.str();
-                    std::regex fnRegex(R"(fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\))");
-                    std::smatch fnMatch;
-                    auto cBegin = content.cbegin();
-                    while (std::regex_search(cBegin, content.cend(), fnMatch, fnRegex)) {
-                        std::string fnName = fnMatch[1].str();
-                        std::string params = fnMatch[2].str();
-                        items.push_back(makeCompletionItem(fnName, 3, target + "." + fnName + "(" + params + ")", "Exported function from " + importedModule));
-                        cBegin = fnMatch.suffix().first;
+            bool foundExternalFile = false;
+            for (const auto& sp : searchPaths) {
+                std::error_code ec;
+                if (std::filesystem::exists(sp, ec) && std::filesystem::is_regular_file(sp, ec)) {
+                    std::ifstream f(sp);
+                    if (f.is_open()) {
+                        std::stringstream buffer;
+                        buffer << f.rdbuf();
+                        std::string content = buffer.str();
+                        std::regex fnRegex(R"(fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\))");
+                        std::smatch fnMatch;
+                        auto cBegin = content.cbegin();
+                        while (std::regex_search(cBegin, content.cend(), fnMatch, fnRegex)) {
+                            std::string fnName = fnMatch[1].str();
+                            std::string params = fnMatch[2].str();
+                            items.push_back(makeCompletionItem(fnName, 3, target + "." + fnName + "(" + params + ")", "Exported function from " + importedModule));
+                            cBegin = fnMatch.suffix().first;
+                        }
+                        foundExternalFile = true;
+                        break;
                     }
-                    foundExternalFile = true;
-                    break;
                 }
+            }
+
+            if (foundExternalFile && items.size() > 0) {
+                return items;
             }
         }
 
-        if (foundExternalFile && items.size() > 0) {
+        if (canonical == "telebot") {
+            items.push_back(makeCompletionItem("init", 3, target + ".init(token) -> Bot", "Initialize a Telegram bot client instance"));
+            items.push_back(makeCompletionItem("send_message", 3, target + ".send_message(chat_id, text) -> bool", "Send a text message to a chat"));
+            items.push_back(makeCompletionItem("on_message", 3, target + ".on_message(bot, fn) -> null", "Register a handler for incoming messages"));
+            items.push_back(makeCompletionItem("command", 3, target + ".command(bot, cmd, fn) -> null", "Register a command handler"));
+            items.push_back(makeCompletionItem("polling", 3, target + ".polling(bot) -> null", "Start long polling for updates"));
+            items.push_back(makeCompletionItem("get_updates", 3, target + ".get_updates(bot) -> array", "Fetch new pending updates"));
+            items.push_back(makeCompletionItem("set_webhook", 3, target + ".set_webhook(bot, url) -> bool", "Set custom Telegram webhook URL"));
             return items;
         }
 
-        if (importedModule == "telebot" || target == "telebot") {
-            items.push_back(makeCompletionItem("init", 3, "telebot.init(token) -> Bot", "Initialize a Telegram bot client instance"));
-            items.push_back(makeCompletionItem("send_message", 3, "telebot.send_message(chat_id, text) -> bool", "Send a text message to a chat"));
-            items.push_back(makeCompletionItem("on_message", 3, "telebot.on_message(bot, fn) -> null", "Register a handler for incoming messages"));
-            items.push_back(makeCompletionItem("command", 3, "telebot.command(bot, cmd, fn) -> null", "Register a command handler"));
-            items.push_back(makeCompletionItem("polling", 3, "telebot.polling(bot) -> null", "Start long polling for updates"));
-            items.push_back(makeCompletionItem("get_updates", 3, "telebot.get_updates(bot) -> array", "Fetch new pending updates"));
-            items.push_back(makeCompletionItem("set_webhook", 3, "telebot.set_webhook(bot, url) -> bool", "Set custom Telegram webhook URL"));
+        if (canonical == "ui") {
+            items.push_back(makeCompletionItem("theme", 3, target + ".theme(name) -> Object", "Get preconfigured theme: dark, light, nord, dracula, cyberpunk, midnight"));
+            items.push_back(makeCompletionItem("dark", 3, target + ".dark() -> Object", "Get dark theme palette"));
+            items.push_back(makeCompletionItem("light", 3, target + ".light() -> Object", "Get light theme palette"));
+            items.push_back(makeCompletionItem("nord", 3, target + ".nord() -> Object", "Get Nord theme palette"));
+            items.push_back(makeCompletionItem("dracula", 3, target + ".dracula() -> Object", "Get Dracula theme palette"));
+            items.push_back(makeCompletionItem("cyberpunk", 3, target + ".cyberpunk() -> Object", "Get Cyberpunk theme palette"));
+            items.push_back(makeCompletionItem("midnight", 3, target + ".midnight() -> Object", "Get Midnight theme palette"));
+            items.push_back(makeCompletionItem("create_theme", 3, target + ".create_theme(options) -> Object", "Create custom theme extending a base palette"));
+            items.push_back(makeCompletionItem("rgb", 3, target + ".rgb(r, g, b) -> String", "Create hex color from RGB integers"));
+            items.push_back(makeCompletionItem("rgba", 3, target + ".rgba(r, g, b, a) -> String", "Create rgba color string"));
+            items.push_back(makeCompletionItem("hex", 3, target + ".hex(color) -> String", "Normalize hex color string"));
+            items.push_back(makeCompletionItem("blend", 3, target + ".blend(c1, c2, factor) -> String", "Linear blend between two colors"));
+            items.push_back(makeCompletionItem("lighten", 3, target + ".lighten(color, percent) -> String", "Lighten color by percentage"));
+            items.push_back(makeCompletionItem("darken", 3, target + ".darken(color, percent) -> String", "Darken color by percentage"));
+            items.push_back(makeCompletionItem("alpha", 3, target + ".alpha(color, opacity) -> String", "Set color opacity"));
+            items.push_back(makeCompletionItem("button_style", 3, target + ".button_style(variant, options) -> Object", "Get styled button configuration"));
+            items.push_back(makeCompletionItem("card_style", 3, target + ".card_style(options) -> Object", "Get styled card container configuration"));
+            items.push_back(makeCompletionItem("text_style", 3, target + ".text_style(role, options) -> Object", "Get typography text style configuration"));
+            items.push_back(makeCompletionItem("badge_style", 3, target + ".badge_style(variant, options) -> Object", "Get badge styling configuration"));
+            items.push_back(makeCompletionItem("input_style", 3, target + ".input_style(options) -> Object", "Get input control styling configuration"));
+            items.push_back(makeCompletionItem("parse", 3, target + ".parse(cssString) -> Object", "Parse CSS-like stylesheet into object"));
+            items.push_back(makeCompletionItem("stringify", 3, target + ".stringify(styleObject) -> String", "Format style object as CSS stylesheet"));
+            items.push_back(makeCompletionItem("style", 3, target + ".style(cssString) -> String", "Set active UI stylesheet"));
+            items.push_back(makeCompletionItem("apply", 3, target + ".apply(element, style) -> Element", "Apply style dictionary or CSS to element"));
+            items.push_back(makeCompletionItem("default_style", 3, target + ".default_style(tag) -> Object", "Get clean default CSS style for element tag"));
+            items.push_back(makeCompletionItem("minimal", 3, target + ".minimal() -> Object", "Get clean minimal CSS design tokens"));
             return items;
         }
 
-        if (importedModule == "rayquiro.ui" || target == "ui") {
-            items.push_back(makeCompletionItem("theme", 3, "ui.theme(name) -> Object", "Get preconfigured theme: dark, light, nord, dracula, cyberpunk, midnight"));
-            items.push_back(makeCompletionItem("dark", 3, "ui.dark() -> Object", "Get dark theme palette"));
-            items.push_back(makeCompletionItem("light", 3, "ui.light() -> Object", "Get light theme palette"));
-            items.push_back(makeCompletionItem("nord", 3, "ui.nord() -> Object", "Get Nord theme palette"));
-            items.push_back(makeCompletionItem("dracula", 3, "ui.dracula() -> Object", "Get Dracula theme palette"));
-            items.push_back(makeCompletionItem("cyberpunk", 3, "ui.cyberpunk() -> Object", "Get Cyberpunk theme palette"));
-            items.push_back(makeCompletionItem("midnight", 3, "ui.midnight() -> Object", "Get Midnight theme palette"));
-            items.push_back(makeCompletionItem("create_theme", 3, "ui.create_theme(options) -> Object", "Create custom theme extending a base palette"));
-            items.push_back(makeCompletionItem("rgb", 3, "ui.rgb(r, g, b) -> String", "Create hex color from RGB integers"));
-            items.push_back(makeCompletionItem("rgba", 3, "ui.rgba(r, g, b, a) -> String", "Create rgba color string"));
-            items.push_back(makeCompletionItem("hex", 3, "ui.hex(color) -> String", "Normalize hex color string"));
-            items.push_back(makeCompletionItem("blend", 3, "ui.blend(c1, c2, factor) -> String", "Linear blend between two colors"));
-            items.push_back(makeCompletionItem("lighten", 3, "ui.lighten(color, percent) -> String", "Lighten color by percentage"));
-            items.push_back(makeCompletionItem("darken", 3, "ui.darken(color, percent) -> String", "Darken color by percentage"));
-            items.push_back(makeCompletionItem("alpha", 3, "ui.alpha(color, opacity) -> String", "Set color opacity"));
-            items.push_back(makeCompletionItem("button_style", 3, "ui.button_style(variant, options) -> Object", "Get styled button configuration"));
-            items.push_back(makeCompletionItem("card_style", 3, "ui.card_style(options) -> Object", "Get styled card container configuration"));
-            items.push_back(makeCompletionItem("text_style", 3, "ui.text_style(role, options) -> Object", "Get typography text style configuration"));
-            items.push_back(makeCompletionItem("badge_style", 3, "ui.badge_style(variant, options) -> Object", "Get badge styling configuration"));
-            items.push_back(makeCompletionItem("input_style", 3, "ui.input_style(options) -> Object", "Get input control styling configuration"));
-            items.push_back(makeCompletionItem("parse", 3, "ui.parse(cssString) -> Object", "Parse CSS-like stylesheet into object"));
-            items.push_back(makeCompletionItem("stringify", 3, "ui.stringify(styleObject) -> String", "Format style object as CSS stylesheet"));
-            items.push_back(makeCompletionItem("style", 3, "ui.style(cssString) -> String", "Set active UI stylesheet"));
-            items.push_back(makeCompletionItem("apply", 3, "ui.apply(element, style) -> Element", "Apply style dictionary or CSS to element"));
-            items.push_back(makeCompletionItem("default_style", 3, "ui.default_style(tag) -> Object", "Get clean default CSS style for element tag"));
-            items.push_back(makeCompletionItem("minimal", 3, "ui.minimal() -> Object", "Get clean minimal CSS design tokens"));
+        if (canonical == "app") {
+            items.push_back(makeCompletionItem("window", 3, target + ".window(options) -> Window", "Create desktop application window"));
+            items.push_back(makeCompletionItem("button", 3, target + ".button(text, options) -> Element", "Create button UI element (HTML button)"));
+            items.push_back(makeCompletionItem("text", 3, target + ".text(text, options) -> Element", "Create text/span UI element"));
+            items.push_back(makeCompletionItem("label", 3, target + ".label(text, options) -> Element", "Create label UI element"));
+            items.push_back(makeCompletionItem("input", 3, target + ".input(placeholder, value, options) -> Element", "Create text input element"));
+            items.push_back(makeCompletionItem("textarea", 3, target + ".textarea(placeholder, value, options) -> Element", "Create textarea multiline element"));
+            items.push_back(makeCompletionItem("checkbox", 3, target + ".checkbox(label, checked, options) -> Element", "Create checkbox element"));
+            items.push_back(makeCompletionItem("radio", 3, target + ".radio(label, group, checked, options) -> Element", "Create radio button element"));
+            items.push_back(makeCompletionItem("slider", 3, target + ".slider(min, max, value, options) -> Element", "Create numeric range slider"));
+            items.push_back(makeCompletionItem("progress", 3, target + ".progress(value, max, options) -> Element", "Create progress bar"));
+            items.push_back(makeCompletionItem("select", 3, target + ".select(options, selectedIndex, options) -> Element", "Create dropdown select"));
+            items.push_back(makeCompletionItem("image", 3, target + ".image(src, options) -> Element", "Create image element"));
+            items.push_back(makeCompletionItem("link", 3, target + ".link(url, text, options) -> Element", "Create hyperlink element"));
+            items.push_back(makeCompletionItem("heading", 3, target + ".heading(text, level, options) -> Element", "Create heading h1-h6 element"));
+            items.push_back(makeCompletionItem("divider", 3, target + ".divider(options) -> Element", "Create divider line hr element"));
+            items.push_back(makeCompletionItem("row", 3, target + ".row(children, options) -> Element", "Create horizontal flex container"));
+            items.push_back(makeCompletionItem("column", 3, target + ".column(children, options) -> Element", "Create vertical flex container"));
+            items.push_back(makeCompletionItem("box", 3, target + ".box(children, options) -> Element", "Create container box / card"));
+            items.push_back(makeCompletionItem("card", 3, target + ".card(children, options) -> Element", "Create styled card container"));
+            items.push_back(makeCompletionItem("element", 3, target + ".element(tag, props, children, style) -> Element", "Create generic custom DOM element"));
+            items.push_back(makeCompletionItem("to_html", 3, target + ".to_html(element) -> String", "Serialize UI element tree to HTML string"));
+            items.push_back(makeCompletionItem("quit", 3, target + ".quit() -> null", "Quit application loop"));
             return items;
         }
 
-        if (importedModule == "rayquiro.app" || target == "app") {
-            items.push_back(makeCompletionItem("window", 3, "app.window(options) -> Window", "Create desktop application window"));
-            items.push_back(makeCompletionItem("button", 3, "app.button(text, options) -> Element", "Create button UI element (HTML button)"));
-            items.push_back(makeCompletionItem("text", 3, "app.text(text, options) -> Element", "Create text/span UI element"));
-            items.push_back(makeCompletionItem("label", 3, "app.label(text, options) -> Element", "Create label UI element"));
-            items.push_back(makeCompletionItem("input", 3, "app.input(placeholder, value, options) -> Element", "Create text input element"));
-            items.push_back(makeCompletionItem("textarea", 3, "app.textarea(placeholder, value, options) -> Element", "Create textarea multiline element"));
-            items.push_back(makeCompletionItem("checkbox", 3, "app.checkbox(label, checked, options) -> Element", "Create checkbox element"));
-            items.push_back(makeCompletionItem("radio", 3, "app.radio(label, group, checked, options) -> Element", "Create radio button element"));
-            items.push_back(makeCompletionItem("slider", 3, "app.slider(min, max, value, options) -> Element", "Create numeric range slider"));
-            items.push_back(makeCompletionItem("progress", 3, "app.progress(value, max, options) -> Element", "Create progress bar"));
-            items.push_back(makeCompletionItem("select", 3, "app.select(options, selectedIndex, options) -> Element", "Create dropdown select"));
-            items.push_back(makeCompletionItem("image", 3, "app.image(src, options) -> Element", "Create image element"));
-            items.push_back(makeCompletionItem("link", 3, "app.link(url, text, options) -> Element", "Create hyperlink element"));
-            items.push_back(makeCompletionItem("heading", 3, "app.heading(text, level, options) -> Element", "Create heading h1-h6 element"));
-            items.push_back(makeCompletionItem("divider", 3, "app.divider(options) -> Element", "Create divider line hr element"));
-            items.push_back(makeCompletionItem("row", 3, "app.row(children, options) -> Element", "Create horizontal flex container"));
-            items.push_back(makeCompletionItem("column", 3, "app.column(children, options) -> Element", "Create vertical flex container"));
-            items.push_back(makeCompletionItem("box", 3, "app.box(children, options) -> Element", "Create container box / card"));
-            items.push_back(makeCompletionItem("card", 3, "app.card(children, options) -> Element", "Create styled card container"));
-            items.push_back(makeCompletionItem("element", 3, "app.element(tag, props, children, style) -> Element", "Create generic custom DOM element"));
-            items.push_back(makeCompletionItem("to_html", 3, "app.to_html(element) -> String", "Serialize UI element tree to HTML string"));
-            items.push_back(makeCompletionItem("quit", 3, "app.quit() -> null", "Quit application loop"));
+        if (canonical == "web") {
+            items.push_back(makeCompletionItem("server", 3, target + ".server() -> object", "Create web server instance"));
+            items.push_back(makeCompletionItem("page", 3, target + ".page(title, body) -> null", "Emit HTML page"));
+            items.push_back(makeCompletionItem("begin", 3, target + ".begin(title) -> null", "Begin HTML site generation"));
+            items.push_back(makeCompletionItem("route", 3, target + ".route(path, title) -> null", "Define web route"));
+            items.push_back(makeCompletionItem("head", 3, target + ".head(html) -> null", "Append raw HTML to head"));
+            items.push_back(makeCompletionItem("public", 3, target + ".public(dir) -> null", "Set public static assets directory"));
+            items.push_back(makeCompletionItem("live", 3, target + ".live(port) -> null", "Start live dev server"));
+            items.push_back(makeCompletionItem("style", 3, target + ".style(css) -> null", "Apply global stylesheet"));
+            items.push_back(makeCompletionItem("text", 3, target + ".text(str) -> null", "Append text block"));
+            items.push_back(makeCompletionItem("h1", 3, target + ".h1(str) -> null", "Append heading 1"));
+            items.push_back(makeCompletionItem("h2", 3, target + ".h2(str) -> null", "Append heading 2"));
+            items.push_back(makeCompletionItem("p", 3, target + ".p(str) -> null", "Append paragraph"));
+            items.push_back(makeCompletionItem("button", 3, target + ".button(text) -> null", "Append HTML button"));
+            items.push_back(makeCompletionItem("raw", 3, target + ".raw(html) -> null", "Append raw HTML snippet"));
+            items.push_back(makeCompletionItem("html", 3, target + ".html(content) -> null", "Append raw HTML snippet"));
+            items.push_back(makeCompletionItem("render", 3, target + ".render(element_or_template) -> String", "Declarative render component or template to HTML"));
+            items.push_back(makeCompletionItem("element", 3, target + ".element(tag, props, children) -> Object", "Create declarative HTML element node"));
+            items.push_back(makeCompletionItem("template", 3, target + ".template(html, data) -> String", "Interpolate data object into HTML template"));
+            items.push_back(makeCompletionItem("end", 3, target + ".end() -> null", "Finalize web site build"));
+            items.push_back(makeCompletionItem("get", 3, target + ".get(url, [headers]) -> object", "HTTP GET request"));
+            items.push_back(makeCompletionItem("post", 3, target + ".post(url, body, [headers]) -> object", "HTTP POST request"));
             return items;
         }
 
-        if (importedModule == "rayquiro.web" || target == "web") {
-            items.push_back(makeCompletionItem("server", 3, "web.server() -> object", "Create web server instance"));
-            items.push_back(makeCompletionItem("page", 3, "web.page(title, body) -> null", "Emit HTML page"));
-            items.push_back(makeCompletionItem("begin", 3, "web.begin(title) -> null", "Begin HTML site generation"));
-            items.push_back(makeCompletionItem("route", 3, "web.route(path, title) -> null", "Define web route"));
-            items.push_back(makeCompletionItem("head", 3, "web.head(html) -> null", "Append raw HTML to head"));
-            items.push_back(makeCompletionItem("public", 3, "web.public(dir) -> null", "Set public static assets directory"));
-            items.push_back(makeCompletionItem("live", 3, "web.live(port) -> null", "Start live dev server"));
-            items.push_back(makeCompletionItem("style", 3, "web.style(css) -> null", "Apply global stylesheet"));
-            items.push_back(makeCompletionItem("text", 3, "web.text(str) -> null", "Append text block"));
-            items.push_back(makeCompletionItem("h1", 3, "web.h1(str) -> null", "Append heading 1"));
-            items.push_back(makeCompletionItem("h2", 3, "web.h2(str) -> null", "Append heading 2"));
-            items.push_back(makeCompletionItem("p", 3, "web.p(str) -> null", "Append paragraph"));
-            items.push_back(makeCompletionItem("button", 3, "web.button(text) -> null", "Append HTML button"));
-            items.push_back(makeCompletionItem("raw", 3, "web.raw(html) -> null", "Append raw HTML snippet"));
-            items.push_back(makeCompletionItem("end", 3, "web.end() -> null", "Finalize web site build"));
-            items.push_back(makeCompletionItem("get", 3, "web.get(url, [headers]) -> object", "HTTP GET request"));
-            items.push_back(makeCompletionItem("post", 3, "web.post(url, body, [headers]) -> object", "HTTP POST request"));
-            return items;
-        }
-
-        if (importedModule == "rayquiro.engine" || target == "engine") {
-            items.push_back(makeCompletionItem("init", 3, "engine.init(w, h, title) -> null", "Initialize engine"));
-            items.push_back(makeCompletionItem("set_fps", 3, "engine.set_fps(target) -> null", "Set target FPS"));
-            items.push_back(makeCompletionItem("should_close", 3, "engine.should_close() -> bool", "Check close request"));
-            items.push_back(makeCompletionItem("get_delta_time", 3, "engine.get_delta_time() -> number", "Delta frame time"));
-            items.push_back(makeCompletionItem("begin_draw", 3, "engine.begin_draw() -> null", "Begin frame draw"));
-            items.push_back(makeCompletionItem("end_draw", 3, "engine.end_draw() -> null", "End frame draw"));
-            items.push_back(makeCompletionItem("clear", 3, "engine.clear(r, g, b) -> null", "Clear color"));
-            items.push_back(makeCompletionItem("draw_circle", 3, "engine.draw_circle(cx, cy, r, color) -> null", "Draw circle"));
-            items.push_back(makeCompletionItem("draw_rect", 3, "engine.draw_rect(x, y, w, h, color) -> null", "Draw rect"));
-            items.push_back(makeCompletionItem("draw_text", 3, "engine.draw_text(text, x, y, size, color) -> null", "Draw text"));
-            items.push_back(makeCompletionItem("load_texture", 3, "engine.load_texture(path) -> texture", "Load texture"));
-            items.push_back(makeCompletionItem("draw_texture", 3, "engine.draw_texture(tex, x, y) -> null", "Draw texture"));
-            items.push_back(makeCompletionItem("load_sound", 3, "engine.load_sound(path) -> sound", "Load sound"));
-            items.push_back(makeCompletionItem("play_sound", 3, "engine.play_sound(sound) -> null", "Play sound"));
-            items.push_back(makeCompletionItem("close", 3, "engine.close() -> null", "Close engine window"));
+        if (canonical == "engine") {
+            items.push_back(makeCompletionItem("init", 3, target + ".init(w, h, title) -> null", "Initialize engine window with Vulkan PBR backend"));
+            items.push_back(makeCompletionItem("set_fps", 3, target + ".set_fps(target) -> null", "Set target framerate cap"));
+            items.push_back(makeCompletionItem("should_close", 3, target + ".should_close() -> bool", "Check whether window close is requested"));
+            items.push_back(makeCompletionItem("get_delta_time", 3, target + ".get_delta_time() -> number", "Delta frame time in seconds"));
+            items.push_back(makeCompletionItem("begin_draw", 3, target + ".begin_draw() -> null", "Begin frame draw buffer"));
+            items.push_back(makeCompletionItem("end_draw", 3, target + ".end_draw() -> null", "End frame draw and swap buffers"));
+            items.push_back(makeCompletionItem("clear", 3, target + ".clear(r, g, b) -> null", "Clear frame buffer with RGB color"));
+            items.push_back(makeCompletionItem("draw_circle", 3, target + ".draw_circle(cx, cy, r, color) -> null", "Draw filled 2D circle"));
+            items.push_back(makeCompletionItem("draw_circle_lines", 3, target + ".draw_circle_lines(cx, cy, r, color) -> null", "Draw 2D circle outline"));
+            items.push_back(makeCompletionItem("draw_rect", 3, target + ".draw_rect(x, y, w, h, color) -> null", "Draw filled 2D rectangle"));
+            items.push_back(makeCompletionItem("draw_rect_lines", 3, target + ".draw_rect_lines(x, y, w, h, color) -> null", "Draw 2D rectangle outline"));
+            items.push_back(makeCompletionItem("draw_line", 3, target + ".draw_line(x1, y1, x2, y2, color) -> null", "Draw 2D line segment"));
+            items.push_back(makeCompletionItem("draw_pixel", 3, target + ".draw_pixel(x, y, color) -> null", "Draw single pixel"));
+            items.push_back(makeCompletionItem("draw_text", 3, target + ".draw_text(text, x, y, size, color) -> null", "Draw 2D text label"));
+            items.push_back(makeCompletionItem("load_texture", 3, target + ".load_texture(path) -> texture", "Load 2D texture from image file"));
+            items.push_back(makeCompletionItem("draw_texture", 3, target + ".draw_texture(tex, x, y) -> null", "Draw 2D texture at coordinates"));
+            items.push_back(makeCompletionItem("unload_texture", 3, target + ".unload_texture(tex) -> null", "Unload texture from GPU memory"));
+            items.push_back(makeCompletionItem("load_sound", 3, target + ".load_sound(path) -> sound", "Load audio file from disk"));
+            items.push_back(makeCompletionItem("play_sound", 3, target + ".play_sound(sound) -> null", "Play loaded audio sound"));
+            items.push_back(makeCompletionItem("stop_sound", 3, target + ".stop_sound(sound) -> null", "Stop audio sound playback"));
+            items.push_back(makeCompletionItem("unload_sound", 3, target + ".unload_sound(sound) -> null", "Unload sound from audio device"));
+            items.push_back(makeCompletionItem("set_sound_volume", 3, target + ".set_sound_volume(sound, volume) -> null", "Set audio volume 0.0 - 1.0"));
+            items.push_back(makeCompletionItem("is_key_down", 3, target + ".is_key_down(key) -> bool", "Check if keyboard key is held down"));
+            items.push_back(makeCompletionItem("is_key_pressed", 3, target + ".is_key_pressed(key) -> bool", "Check if keyboard key was pressed this frame"));
+            items.push_back(makeCompletionItem("is_mouse_button_down", 3, target + ".is_mouse_button_down(btn) -> bool", "Check if mouse button is held down"));
+            items.push_back(makeCompletionItem("is_mouse_button_pressed", 3, target + ".is_mouse_button_pressed(btn) -> bool", "Check if mouse button was clicked this frame"));
+            items.push_back(makeCompletionItem("get_mouse_x", 3, target + ".get_mouse_x() -> number", "Get mouse X cursor coordinate"));
+            items.push_back(makeCompletionItem("get_mouse_y", 3, target + ".get_mouse_y() -> number", "Get mouse Y cursor coordinate"));
+            items.push_back(makeCompletionItem("get_mouse_delta_x", 3, target + ".get_mouse_delta_x() -> number", "Get mouse delta X movement"));
+            items.push_back(makeCompletionItem("get_mouse_delta_y", 3, target + ".get_mouse_delta_y() -> number", "Get mouse delta Y movement"));
+            items.push_back(makeCompletionItem("set_mouse_locked", 3, target + ".set_mouse_locked(locked) -> null", "Lock or release mouse cursor"));
+            items.push_back(makeCompletionItem("set_pbr_environment", 3, target + ".set_pbr_environment(roughness, metallic, exposure) -> null", "Configure Vulkan Cook-Torrance GGX PBR environment"));
+            items.push_back(makeCompletionItem("add_point_light", 3, target + ".add_point_light(x, y, z, r, g, b, intensity) -> null", "Add 3D point light to Vulkan scene"));
+            items.push_back(makeCompletionItem("clear_lights", 3, target + ".clear_lights() -> null", "Clear all 3D scene point lights"));
+            items.push_back(makeCompletionItem("set_camera", 3, target + ".set_camera(px, py, pz, tx, ty, tz, fov) -> null", "Configure 3D perspective camera position and target"));
+            items.push_back(makeCompletionItem("draw_cube", 3, target + ".draw_cube(x, y, z, w, h, d, color) -> null", "Draw 3D solid cube"));
+            items.push_back(makeCompletionItem("draw_cube_wires", 3, target + ".draw_cube_wires(x, y, z, w, h, d, color) -> null", "Draw 3D wireframe cube"));
+            items.push_back(makeCompletionItem("draw_sphere", 3, target + ".draw_sphere(x, y, z, radius, color) -> null", "Draw 3D solid sphere"));
+            items.push_back(makeCompletionItem("draw_sphere_wires", 3, target + ".draw_sphere_wires(x, y, z, radius, color) -> null", "Draw 3D wireframe sphere"));
+            items.push_back(makeCompletionItem("draw_cylinder", 3, target + ".draw_cylinder(x, y, z, radius, height, color) -> null", "Draw 3D solid cylinder"));
+            items.push_back(makeCompletionItem("draw_cone", 3, target + ".draw_cone(x, y, z, radius, height, color) -> null", "Draw 3D solid cone"));
+            items.push_back(makeCompletionItem("draw_capsule", 3, target + ".draw_capsule(x, y, z, radius, height, color) -> null", "Draw 3D solid capsule"));
+            items.push_back(makeCompletionItem("draw_line_3d", 3, target + ".draw_line_3d(x1, y1, z1, x2, y2, z2, color) -> null", "Draw 3D line segment"));
+            items.push_back(makeCompletionItem("draw_ray", 3, target + ".draw_ray(ox, oy, oz, dx, dy, dz, length, color) -> null", "Draw 3D ray"));
+            items.push_back(makeCompletionItem("draw_grid", 3, target + ".draw_grid(slices, spacing) -> null", "Draw 3D reference ground grid"));
+            items.push_back(makeCompletionItem("draw_axes", 3, target + ".draw_axes(length) -> null", "Draw 3D XYZ coordinate axes"));
+            items.push_back(makeCompletionItem("create_entity", 3, target + ".create_entity(tag) -> number", "Create scene entity and return ID"));
+            items.push_back(makeCompletionItem("set_entity_position", 3, target + ".set_entity_position(id, x, y, z) -> null", "Set entity 3D position"));
+            items.push_back(makeCompletionItem("set_entity_rotation", 3, target + ".set_entity_rotation(id, rx, ry, rz) -> null", "Set entity 3D rotation euler angles"));
+            items.push_back(makeCompletionItem("set_entity_scale", 3, target + ".set_entity_scale(id, sx, sy, sz) -> null", "Set entity 3D scale vector"));
+            items.push_back(makeCompletionItem("get_entity_position", 3, target + ".get_entity_position(id) -> object", "Get entity 3D position vector"));
+            items.push_back(makeCompletionItem("get_entity_rotation", 3, target + ".get_entity_rotation(id) -> object", "Get entity 3D rotation vector"));
+            items.push_back(makeCompletionItem("get_entity_scale", 3, target + ".get_entity_scale(id) -> object", "Get entity 3D scale vector"));
+            items.push_back(makeCompletionItem("get_entity_tag", 3, target + ".get_entity_tag(id) -> string", "Get entity string tag"));
+            items.push_back(makeCompletionItem("destroy_entity", 3, target + ".destroy_entity(id) -> null", "Destroy entity by ID"));
+            items.push_back(makeCompletionItem("raycast", 3, target + ".raycast(ox, oy, oz, dx, dy, dz) -> object", "Perform 3D raycast against scene entities"));
+            items.push_back(makeCompletionItem("get_fps", 3, target + ".get_fps() -> number", "Get current render framerate"));
+            items.push_back(makeCompletionItem("get_draw_calls", 3, target + ".get_draw_calls() -> number", "Get GPU draw call count for frame"));
+            items.push_back(makeCompletionItem("get_triangle_count", 3, target + ".get_triangle_count() -> number", "Get rendered triangle count"));
+            items.push_back(makeCompletionItem("screenshot", 3, target + ".screenshot(filename) -> bool", "Save frame screenshot to file"));
+            items.push_back(makeCompletionItem("close", 3, target + ".close() -> null", "Close engine window and free GPU resources"));
             return items;
         }
 

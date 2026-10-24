@@ -2720,8 +2720,8 @@ private:
         if (builtin == "engine.init") return builtin_engine_init(args);
         if (builtin == "engine.shutdown" || builtin == "engine.close") return builtin_engine_shutdown(args);
         if (builtin == "engine.should_close" || builtin == "engine.shouldClose") return builtin_engine_should_close(args);
-        if (builtin == "engine.begin" || builtin == "engine.beginDraw" || builtin == "engine.begin_draw" || builtin == "engine.frame_begin") return builtin_engine_begin(args);
-        if (builtin == "engine.end" || builtin == "engine.endDraw" || builtin == "engine.end_draw" || builtin == "engine.frame_end") return builtin_engine_end(args);
+        if (builtin == "engine.begin" || builtin == "engine.beginDraw" || builtin == "engine.begin_draw") return builtin_engine_begin(args);
+        if (builtin == "engine.end" || builtin == "engine.endDraw" || builtin == "engine.end_draw") return builtin_engine_end(args);
         if (builtin == "engine.clear") return builtin_engine_clear(args);
         if (builtin == "engine.set_camera" || builtin == "engine.setCamera") return builtin_engine_set_camera(args);
         if (builtin == "engine.target_fps" || builtin == "engine.setFps" || builtin == "engine.set_fps") return builtin_engine_target_fps(args);
@@ -2756,6 +2756,7 @@ private:
         if (builtin == "engine.key_pressed") return builtin_engine_key_pressed(args);
         if (builtin == "engine.mouse_down") return builtin_engine_mouse_down(args);
         if (builtin == "engine.mouse_pos") return builtin_engine_mouse_pos(args);
+        if (builtin == "engine.mouse_delta") return builtin_engine_mouse_delta(args);
         if (builtin == "engine.window") return builtin_engine_window(args);
         if (builtin == "engine.camera") return builtin_engine_camera(args);
         if (builtin == "engine.frame_begin") return builtin_engine_frame_begin(args);
@@ -2794,6 +2795,10 @@ private:
         if (builtin == "engine.asset_exists") return builtin_engine_asset_exists(args);
         if (builtin == "engine.draw_grid") return builtin_engine_draw_grid(args);
         if (builtin == "engine.draw_cube") return builtin_engine_draw_cube(args);
+        if (builtin == "engine.draw_cube_wires" || builtin == "engine.draw_wire_cube") return builtin_engine_draw_wire_cube(args);
+        if (builtin == "engine.draw_cylinder") return builtin_engine_draw_cylinder(args);
+        if (builtin == "engine.draw_sphere_wires" || builtin == "engine.draw_wire_sphere") return builtin_engine_draw_wire_sphere(args);
+        if (builtin == "engine.draw_line_3d") return builtin_engine_draw_line_3d(args);
         if (builtin == "engine.draw_plane") return builtin_engine_draw_plane(args);
         if (builtin == "engine.draw_sphere") return builtin_engine_draw_sphere(args);
         if (builtin == "engine.draw_text") return builtin_engine_draw_text(args);
@@ -4050,7 +4055,7 @@ private:
     }
 
     bool hasNativeModule(const std::string& name) const {
-        if (name == "web" || name == "app" || name == "ui" || name == "engine" || name == "raytolfas.engine") {
+        if (name == "web" || name == "app" || name == "ui" || name == "engine" || name == "raytolfas.engine" || name == "rayquiro.engine") {
             return true;
         }
         for (const auto& candidate : native_module_candidates(name)) {
@@ -4067,13 +4072,13 @@ private:
             return cached->second;
         }
 
-        if (moduleName == "web" || moduleName == "app" || moduleName == "ui" || moduleName == "engine" || moduleName == "raytolfas.engine") {
+        if (moduleName == "web" || moduleName == "app" || moduleName == "ui" || moduleName == "engine" || moduleName == "raytolfas.engine" || moduleName == "rayquiro.engine") {
             NativeModule module;
             module.handle = nullptr;
             if (moduleName == "web") module.invoke = rqm_builtin_web_invoke;
             else if (moduleName == "app") module.invoke = rqm_builtin_app_invoke;
             else if (moduleName == "ui") module.invoke = rqm_builtin_ui_invoke;
-            else if (moduleName == "engine" || moduleName == "raytolfas.engine") module.invoke = rqm_builtin_engine_invoke;
+            else if (moduleName == "engine" || moduleName == "raytolfas.engine" || moduleName == "rayquiro.engine") module.invoke = rqm_builtin_engine_invoke;
             module.freeMemory = rqm_builtin_free;
             nativeModules_[moduleName] = module;
             return nativeModules_[moduleName];
@@ -6161,47 +6166,66 @@ private:
         return Value();
     }
 
-    static std::vector<Value> expect_array_items(const Value& value, const std::string& what) {
-        if (!is_array(value)) {
-            throw std::runtime_error(what + " expects an array value.");
-        }
-        return *value.as_array();
-    }
-
     static RTColor value_to_color(const Value& value) {
-        const std::vector<Value> items = expect_array_items(value, "Color");
-        if (items.size() < 4) {
-            throw std::runtime_error("Color expects [r, g, b, a].");
+        if (is_object(value)) {
+            const auto& obj = *value.as_object();
+            unsigned char r = obj.count("r") ? static_cast<unsigned char>(to_number(obj.at("r"))) : 255;
+            unsigned char g = obj.count("g") ? static_cast<unsigned char>(to_number(obj.at("g"))) : 255;
+            unsigned char b = obj.count("b") ? static_cast<unsigned char>(to_number(obj.at("b"))) : 255;
+            unsigned char a = obj.count("a") ? static_cast<unsigned char>(to_number(obj.at("a"))) : 255;
+            return RTColor{r, g, b, a};
         }
-        return RTColor{
-            static_cast<unsigned char>(to_number(items[0])),
-            static_cast<unsigned char>(to_number(items[1])),
-            static_cast<unsigned char>(to_number(items[2])),
-            static_cast<unsigned char>(to_number(items[3]))
-        };
+        if (is_array(value)) {
+            const auto& items = *value.as_array();
+            unsigned char r = items.size() > 0 ? static_cast<unsigned char>(to_number(items[0])) : 255;
+            unsigned char g = items.size() > 1 ? static_cast<unsigned char>(to_number(items[1])) : 255;
+            unsigned char b = items.size() > 2 ? static_cast<unsigned char>(to_number(items[2])) : 255;
+            unsigned char a = items.size() > 3 ? static_cast<unsigned char>(to_number(items[3])) : 255;
+            return RTColor{r, g, b, a};
+        }
+        return RTColor{255, 255, 255, 255};
     }
 
     static RTVec2 value_to_vec2(const Value& value) {
-        const std::vector<Value> items = expect_array_items(value, "Vector2");
-        if (items.size() < 2) {
-            throw std::runtime_error("Vector2 expects [x, y].");
+        if (is_object(value)) {
+            const auto& obj = *value.as_object();
+            float x = obj.count("x") ? static_cast<float>(to_number(obj.at("x"))) : 0.0f;
+            float y = obj.count("y") ? static_cast<float>(to_number(obj.at("y"))) : 0.0f;
+            return RTVec2{x, y};
         }
-        return RTVec2{
-            static_cast<float>(to_number(items[0])),
-            static_cast<float>(to_number(items[1]))
-        };
+        if (is_array(value)) {
+            const auto& items = *value.as_array();
+            float x = items.size() > 0 ? static_cast<float>(to_number(items[0])) : 0.0f;
+            float y = items.size() > 1 ? static_cast<float>(to_number(items[1])) : 0.0f;
+            return RTVec2{x, y};
+        }
+        if (is_number(value)) {
+            float n = static_cast<float>(to_number(value));
+            return RTVec2{n, n};
+        }
+        return RTVec2{0.0f, 0.0f};
     }
 
     static RTVec3 value_to_vec3(const Value& value) {
-        const std::vector<Value> items = expect_array_items(value, "Vector3");
-        if (items.size() < 3) {
-            throw std::runtime_error("Vector3 expects [x, y, z].");
+        if (is_object(value)) {
+            const auto& obj = *value.as_object();
+            float x = obj.count("x") ? static_cast<float>(to_number(obj.at("x"))) : 0.0f;
+            float y = obj.count("y") ? static_cast<float>(to_number(obj.at("y"))) : 0.0f;
+            float z = obj.count("z") ? static_cast<float>(to_number(obj.at("z"))) : 0.0f;
+            return RTVec3{x, y, z};
         }
-        return RTVec3{
-            static_cast<float>(to_number(items[0])),
-            static_cast<float>(to_number(items[1])),
-            static_cast<float>(to_number(items[2]))
-        };
+        if (is_array(value)) {
+            const auto& items = *value.as_array();
+            float x = items.size() > 0 ? static_cast<float>(to_number(items[0])) : 0.0f;
+            float y = items.size() > 1 ? static_cast<float>(to_number(items[1])) : 0.0f;
+            float z = items.size() > 2 ? static_cast<float>(to_number(items[2])) : 0.0f;
+            return RTVec3{x, y, z};
+        }
+        if (is_number(value)) {
+            float n = static_cast<float>(to_number(value));
+            return RTVec3{n, n, n};
+        }
+        return RTVec3{0.0f, 0.0f, 0.0f};
     }
 
     static Value builtin_engine_init(const std::vector<Value>& args) {
@@ -6224,8 +6248,10 @@ private:
     }
 
     static Value builtin_engine_begin(const std::vector<Value>& args) {
-        (void)args;
         rt_begin();
+        if (!args.empty()) {
+            builtin_engine_clear({args[0]});
+        }
         return Value();
     }
 
@@ -6456,6 +6482,15 @@ private:
         return array({Value(static_cast<double>(rt_mouse_x())), Value(static_cast<double>(rt_mouse_y()))});
     }
 
+    static Value builtin_engine_mouse_delta(const std::vector<Value>& args) {
+        (void)args;
+        Value obj = Value::object();
+        auto out = obj.as_object();
+        (*out)["dx"] = Value(static_cast<double>(rt_mouse_delta_x()));
+        (*out)["dy"] = Value(static_cast<double>(rt_mouse_delta_y()));
+        return obj;
+    }
+
     static Value builtin_engine_draw_grid(const std::vector<Value>& args) {
         if (args.size() < 2) return Value();
         rt_draw_grid(static_cast<int>(to_number(args[0])), static_cast<float>(to_number(args[1])));
@@ -6465,6 +6500,35 @@ private:
     static Value builtin_engine_draw_cube(const std::vector<Value>& args) {
         if (args.size() < 3) return Value();
         rt_draw_cube(value_to_vec3(args[0]), value_to_vec3(args[1]), value_to_color(args[2]));
+        return Value();
+    }
+
+    static Value builtin_engine_draw_wire_cube(const std::vector<Value>& args) {
+        if (args.size() < 3) return Value();
+        rt_draw_wire_cube(value_to_vec3(args[0]), value_to_vec3(args[1]), value_to_color(args[2]));
+        return Value();
+    }
+
+    static Value builtin_engine_draw_cylinder(const std::vector<Value>& args) {
+        if (args.size() < 4) return Value();
+        const RTVec3 pos = value_to_vec3(args[0]);
+        const float rad = static_cast<float>(to_number(args[1]));
+        const float h = static_cast<float>(to_number(args[2]));
+        const RTColor col = value_to_color(args[3]);
+        int slices = args.size() > 4 ? static_cast<int>(to_number(args[4])) : 16;
+        rt_draw_cylinder(pos, rad, rad, h, slices, col);
+        return Value();
+    }
+
+    static Value builtin_engine_draw_wire_sphere(const std::vector<Value>& args) {
+        if (args.size() < 3) return Value();
+        rt_draw_wire_sphere(value_to_vec3(args[0]), static_cast<float>(to_number(args[1])), value_to_color(args[2]));
+        return Value();
+    }
+
+    static Value builtin_engine_draw_line_3d(const std::vector<Value>& args) {
+        if (args.size() < 3) return Value();
+        rt_draw_line_3d(value_to_vec3(args[0]), value_to_vec3(args[1]), value_to_color(args[2]));
         return Value();
     }
 
@@ -6747,6 +6811,8 @@ private:
         builtin_engine_begin({});
         if (!args.empty()) {
             builtin_engine_clear({args[0]});
+        } else {
+            rt_clear(RTColor{10, 12, 16, 255});
         }
         return Value();
     }
@@ -6794,6 +6860,7 @@ private:
     }
 
     Value builtin_engine_entity(const std::vector<Value>& args) {
+        if (const auto overrideResult = tryNativeModuleCall("engine.entity", args)) return *overrideResult;
         if (args.size() < 5) {
             return Value();
         }
@@ -7050,7 +7117,19 @@ private:
         if (args.empty()) {
             return Value();
         }
-        engine_current_scene().ambient = value_to_color(args[0]);
+        RTColor ambColor{30, 38, 54, 255};
+        float intensity = 1.0f;
+        if (args.size() >= 3) {
+            ambColor.r = static_cast<unsigned char>(to_number(args[0]));
+            ambColor.g = static_cast<unsigned char>(to_number(args[1]));
+            ambColor.b = static_cast<unsigned char>(to_number(args[2]));
+            if (args.size() > 3) intensity = static_cast<float>(to_number(args[3]));
+        } else {
+            ambColor = value_to_color(args[0]);
+            if (args.size() > 1) intensity = static_cast<float>(to_number(args[1]));
+        }
+        rt_set_ambient_light(ambColor, intensity);
+        engine_current_scene().ambient = ambColor;
         return Value();
     }
 

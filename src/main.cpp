@@ -32,7 +32,7 @@
 #endif
 
 namespace {
-const char* kRayQuiroVersion = "1.0";
+const char* kRayQuiroVersion = "1.1";
 
 std::string rebuildCommandLine(int argc, char* argv[]) {
     std::string cmd;

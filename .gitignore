@@ -10,5 +10,4 @@ rqio
 .cache/
 .agents/
 in-all/
-examples/
 third_party/

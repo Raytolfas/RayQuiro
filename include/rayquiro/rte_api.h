@@ -362,103 +362,349 @@ inline float rt_mouse_y() {
     }
 }
 
-inline void rt_draw_grid(int slices, float spacing) {
+inline float rt_mouse_delta_x() {
+    switch (rte::backendState.activeKind) {
+    case RTBackendKind::Vulkan:
+        return 0.0f;
+    case RTBackendKind::Raylib:
+    default:
 #if RAYQUIRO_HAS_RAYLIB
-    raylib_backend::draw_grid(slices, spacing);
+        return raylib_backend::mouse_delta_x();
 #else
-    (void)slices; (void)spacing;
+        return 0.0f;
 #endif
+    }
+}
+
+inline float rt_mouse_delta_y() {
+    switch (rte::backendState.activeKind) {
+    case RTBackendKind::Vulkan:
+        return 0.0f;
+    case RTBackendKind::Raylib:
+    default:
+#if RAYQUIRO_HAS_RAYLIB
+        return raylib_backend::mouse_delta_y();
+#else
+        return 0.0f;
+#endif
+    }
+}
+
+inline void rt_draw_grid(int slices, float spacing) {
+    switch (rte::backendState.activeKind) {
+    case RTBackendKind::Vulkan:
+        vulkan_backend::draw_grid(slices, spacing);
+        return;
+    case RTBackendKind::Raylib:
+    default:
+#if RAYQUIRO_HAS_RAYLIB
+        raylib_backend::draw_grid(slices, spacing);
+#else
+        (void)slices; (void)spacing;
+#endif
+        return;
+    }
 }
 
 inline void rt_draw_cube(RTVec3 position, RTVec3 size, RTColor color) {
     rte::backendState.frameDrawCalls += 1;
+    switch (rte::backendState.activeKind) {
+    case RTBackendKind::Vulkan:
+        vulkan_backend::draw_cube(position, size, color);
+        return;
+    case RTBackendKind::Raylib:
+    default:
 #if RAYQUIRO_HAS_RAYLIB
-    raylib_backend::draw_cube(position, size, color);
+        raylib_backend::draw_cube(position, size, color);
 #else
-    (void)position; (void)size; (void)color;
+        (void)position; (void)size; (void)color;
 #endif
+        return;
+    }
 }
 
 inline void rt_draw_plane(RTVec3 position, RTVec2 size, RTColor color) {
     rte::backendState.frameDrawCalls += 1;
+    switch (rte::backendState.activeKind) {
+    case RTBackendKind::Vulkan:
+        vulkan_backend::draw_plane(position, size, color);
+        return;
+    case RTBackendKind::Raylib:
+    default:
 #if RAYQUIRO_HAS_RAYLIB
-    raylib_backend::draw_plane(position, size, color);
+        raylib_backend::draw_plane(position, size, color);
 #else
-    (void)position; (void)size; (void)color;
+        (void)position; (void)size; (void)color;
 #endif
+        return;
+    }
 }
 
 inline void rt_draw_sphere(RTVec3 position, float radius, RTColor color) {
     rte::backendState.frameDrawCalls += 1;
+    switch (rte::backendState.activeKind) {
+    case RTBackendKind::Vulkan:
+        vulkan_backend::draw_sphere(position, radius, color);
+        return;
+    case RTBackendKind::Raylib:
+    default:
 #if RAYQUIRO_HAS_RAYLIB
-    raylib_backend::draw_sphere(position, radius, color);
+        raylib_backend::draw_sphere(position, radius, color);
 #else
-    (void)position; (void)radius; (void)color;
+        (void)position; (void)radius; (void)color;
 #endif
+        return;
+    }
+}
+
+inline void rt_draw_cylinder(RTVec3 position, float radiusTop, float radiusBottom, float height, int slices, RTColor color) {
+    rte::backendState.frameDrawCalls += 1;
+    switch (rte::backendState.activeKind) {
+    case RTBackendKind::Vulkan:
+        vulkan_backend::draw_cylinder(position, radiusTop, radiusBottom, height, slices, color);
+        return;
+    case RTBackendKind::Raylib:
+    default:
+#if RAYQUIRO_HAS_RAYLIB
+        raylib_backend::draw_cylinder(position, radiusTop, radiusBottom, height, slices, color);
+#else
+        (void)position; (void)radiusTop; (void)radiusBottom; (void)height; (void)slices; (void)color;
+#endif
+        return;
+    }
+}
+
+inline void rt_draw_cone(RTVec3 position, float radius, float height, int slices, RTColor color) {
+    rt_draw_cylinder(position, 0.0f, radius, height, slices, color);
+}
+
+inline void rt_draw_capsule(RTVec3 position, float radius, float height, int slices, int rings, RTColor color) {
+    rte::backendState.frameDrawCalls += 1;
+    switch (rte::backendState.activeKind) {
+    case RTBackendKind::Vulkan:
+        vulkan_backend::draw_capsule(position, radius, height, slices, rings, color);
+        return;
+    case RTBackendKind::Raylib:
+    default:
+#if RAYQUIRO_HAS_RAYLIB
+        {
+            const float halfH = height * 0.5f;
+            Vector3 start{position.x, position.y - halfH, position.z};
+            Vector3 end{position.x, position.y + halfH, position.z};
+            DrawCapsule(start, end, radius, slices, rings, Color{color.r, color.g, color.b, color.a});
+        }
+#else
+        (void)position; (void)radius; (void)height; (void)slices; (void)rings; (void)color;
+#endif
+        return;
+    }
+}
+
+inline void rt_draw_wire_cube(RTVec3 position, RTVec3 size, RTColor color) {
+    rte::backendState.frameDrawCalls += 1;
+    switch (rte::backendState.activeKind) {
+    case RTBackendKind::Vulkan:
+        vulkan_backend::draw_wire_cube(position, size, color);
+        return;
+    case RTBackendKind::Raylib:
+    default:
+#if RAYQUIRO_HAS_RAYLIB
+        raylib_backend::draw_wire_cube(position, size, color);
+#else
+        (void)position; (void)size; (void)color;
+#endif
+        return;
+    }
+}
+
+inline void rt_draw_wire_sphere(RTVec3 position, float radius, RTColor color) {
+    rte::backendState.frameDrawCalls += 1;
+    switch (rte::backendState.activeKind) {
+    case RTBackendKind::Vulkan:
+        vulkan_backend::draw_sphere(position, radius, color);
+        return;
+    case RTBackendKind::Raylib:
+    default:
+#if RAYQUIRO_HAS_RAYLIB
+        raylib_backend::draw_wire_sphere(position, radius, color);
+#else
+        (void)position; (void)radius; (void)color;
+#endif
+        return;
+    }
+}
+
+inline void rt_draw_line_3d(RTVec3 start, RTVec3 end, RTColor color) {
+    rte::backendState.frameDrawCalls += 1;
+    switch (rte::backendState.activeKind) {
+    case RTBackendKind::Vulkan:
+        vulkan_backend::draw_line_3d(start, end, color);
+        return;
+    case RTBackendKind::Raylib:
+    default:
+#if RAYQUIRO_HAS_RAYLIB
+        raylib_backend::draw_line_3d(start, end, color);
+#else
+        (void)start; (void)end; (void)color;
+#endif
+        return;
+    }
+}
+
+inline void rt_draw_ray(RTVec3 origin, RTVec3 direction, float length, RTColor color) {
+    rte::backendState.frameDrawCalls += 1;
+    switch (rte::backendState.activeKind) {
+    case RTBackendKind::Vulkan:
+        vulkan_backend::draw_ray(origin, direction, length, color);
+        return;
+    case RTBackendKind::Raylib:
+    default:
+#if RAYQUIRO_HAS_RAYLIB
+        {
+            Ray r;
+            r.position = Vector3{origin.x, origin.y, origin.z};
+            r.direction = Vector3{direction.x, direction.y, direction.z};
+            DrawRay(r, Color{color.r, color.g, color.b, color.a});
+        }
+#else
+        (void)origin; (void)direction; (void)length; (void)color;
+#endif
+        return;
+    }
+}
+
+inline void rt_draw_axes(RTVec3 origin, float length) {
+    rt_draw_line_3d(origin, RTVec3{origin.x + length, origin.y, origin.z}, RTColor{255, 60, 60, 255});
+    rt_draw_line_3d(origin, RTVec3{origin.x, origin.y + length, origin.z}, RTColor{60, 220, 60, 255});
+    rt_draw_line_3d(origin, RTVec3{origin.x, origin.y, origin.z + length}, RTColor{60, 100, 255, 255});
 }
 
 inline void rt_draw_text(const char* text, int x, int y, int size, RTColor color) {
+    switch (rte::backendState.activeKind) {
+    case RTBackendKind::Vulkan:
+        vulkan_backend::draw_text(text, x, y, size, color);
+        return;
+    case RTBackendKind::Raylib:
+    default:
 #if RAYQUIRO_HAS_RAYLIB
-    raylib_backend::draw_text(text, x, y, size, color);
+        raylib_backend::draw_text(text, x, y, size, color);
 #else
-    (void)text; (void)x; (void)y; (void)size; (void)color;
+        (void)text; (void)x; (void)y; (void)size; (void)color;
 #endif
+        return;
+    }
 }
 
 inline void rt_draw_fps(int x, int y) {
+    switch (rte::backendState.activeKind) {
+    case RTBackendKind::Vulkan:
+        vulkan_backend::draw_fps(x, y);
+        return;
+    case RTBackendKind::Raylib:
+    default:
 #if RAYQUIRO_HAS_RAYLIB
-    raylib_backend::draw_fps(x, y);
+        raylib_backend::draw_fps(x, y);
 #else
-    (void)x; (void)y;
+        (void)x; (void)y;
 #endif
+        return;
+    }
 }
 
 inline void rt_draw_rect(int x, int y, int w, int h, RTColor color) {
+    switch (rte::backendState.activeKind) {
+    case RTBackendKind::Vulkan:
+        vulkan_backend::draw_rect(x, y, w, h, color);
+        return;
+    case RTBackendKind::Raylib:
+    default:
 #if RAYQUIRO_HAS_RAYLIB
-    raylib_backend::draw_rect(x, y, w, h, color);
+        raylib_backend::draw_rect(x, y, w, h, color);
 #else
-    (void)x; (void)y; (void)w; (void)h; (void)color;
+        (void)x; (void)y; (void)w; (void)h; (void)color;
 #endif
+        return;
+    }
 }
 
 inline void rt_draw_rect_lines(int x, int y, int w, int h, RTColor color) {
+    switch (rte::backendState.activeKind) {
+    case RTBackendKind::Vulkan:
+        vulkan_backend::draw_rect_lines(x, y, w, h, color);
+        return;
+    case RTBackendKind::Raylib:
+    default:
 #if RAYQUIRO_HAS_RAYLIB
-    raylib_backend::draw_rect_lines(x, y, w, h, color);
+        raylib_backend::draw_rect_lines(x, y, w, h, color);
 #else
-    (void)x; (void)y; (void)w; (void)h; (void)color;
+        (void)x; (void)y; (void)w; (void)h; (void)color;
 #endif
+        return;
+    }
 }
 
 inline void rt_draw_circle(int x, int y, float radius, RTColor color) {
+    switch (rte::backendState.activeKind) {
+    case RTBackendKind::Vulkan:
+        vulkan_backend::draw_circle(x, y, radius, color);
+        return;
+    case RTBackendKind::Raylib:
+    default:
 #if RAYQUIRO_HAS_RAYLIB
-    raylib_backend::draw_circle(x, y, radius, color);
+        raylib_backend::draw_circle(x, y, radius, color);
 #else
-    (void)x; (void)y; (void)radius; (void)color;
+        (void)x; (void)y; (void)radius; (void)color;
 #endif
+        return;
+    }
 }
 
 inline void rt_draw_circle_lines(int x, int y, float radius, RTColor color) {
+    switch (rte::backendState.activeKind) {
+    case RTBackendKind::Vulkan:
+        vulkan_backend::draw_circle_lines(x, y, radius, color);
+        return;
+    case RTBackendKind::Raylib:
+    default:
 #if RAYQUIRO_HAS_RAYLIB
-    raylib_backend::draw_circle_lines(x, y, radius, color);
+        raylib_backend::draw_circle_lines(x, y, radius, color);
 #else
-    (void)x; (void)y; (void)radius; (void)color;
+        (void)x; (void)y; (void)radius; (void)color;
 #endif
+        return;
+    }
 }
 
 inline void rt_draw_line(int x1, int y1, int x2, int y2, RTColor color) {
+    switch (rte::backendState.activeKind) {
+    case RTBackendKind::Vulkan:
+        vulkan_backend::draw_line(x1, y1, x2, y2, color);
+        return;
+    case RTBackendKind::Raylib:
+    default:
 #if RAYQUIRO_HAS_RAYLIB
-    raylib_backend::draw_line(x1, y1, x2, y2, color);
+        raylib_backend::draw_line(x1, y1, x2, y2, color);
 #else
-    (void)x1; (void)y1; (void)x2; (void)y2; (void)color;
+        (void)x1; (void)y1; (void)x2; (void)y2; (void)color;
 #endif
+        return;
+    }
 }
 
 inline void rt_draw_pixel(int x, int y, RTColor color) {
+    switch (rte::backendState.activeKind) {
+    case RTBackendKind::Vulkan:
+        vulkan_backend::draw_pixel(x, y, color);
+        return;
+    case RTBackendKind::Raylib:
+    default:
 #if RAYQUIRO_HAS_RAYLIB
-    raylib_backend::draw_pixel(x, y, color);
+        raylib_backend::draw_pixel(x, y, color);
 #else
-    (void)x; (void)y; (void)color;
+        (void)x; (void)y; (void)color;
 #endif
+        return;
+    }
 }
 
 inline int rt_screen_width() {
@@ -509,6 +755,31 @@ inline void rt_set_light_state(RTColor ambient, RTVec3 direction, RTColor color,
     rte::backendState.lightState.colorA = color.a;
     rte::backendState.lightState.intensity = intensity;
     rte::backendState.lightState.enabled = enabled != 0;
+}
+
+inline void rt_clear_point_lights() {
+    rte::backendState.lightState.pointLights.clear();
+}
+
+inline void rt_add_point_light(float x, float y, float z, RTColor color, float intensity, float radius) {
+    RTPointLightState pt;
+    pt.posX = x;
+    pt.posY = y;
+    pt.posZ = z;
+    pt.colorR = color.r;
+    pt.colorG = color.g;
+    pt.colorB = color.b;
+    pt.intensity = intensity;
+    pt.radius = radius;
+    pt.enabled = true;
+    rte::backendState.lightState.pointLights.push_back(pt);
+}
+
+inline void rt_set_ambient_light(RTColor color, float intensity) {
+    float factor = std::clamp(intensity, 0.0f, 2.0f);
+    rte::backendState.lightState.ambientR = static_cast<unsigned char>(std::clamp(static_cast<int>(color.r * factor), 0, 255));
+    rte::backendState.lightState.ambientG = static_cast<unsigned char>(std::clamp(static_cast<int>(color.g * factor), 0, 255));
+    rte::backendState.lightState.ambientB = static_cast<unsigned char>(std::clamp(static_cast<int>(color.b * factor), 0, 255));
 }
 
 inline void rt_set_postfx_state(

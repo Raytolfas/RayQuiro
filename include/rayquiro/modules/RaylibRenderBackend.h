@@ -10,6 +10,7 @@
 #if __has_include(<raylib.h>)
 #define RAYQUIRO_HAS_RAYLIB 1
 #include <raylib.h>
+#include <rlgl.h>
 #else
 #define RAYQUIRO_HAS_RAYLIB 0
 #endif
@@ -111,6 +112,7 @@ inline void begin() {
 
     BeginDrawing();
     rte::backendState.drawingReady = true;
+    rte::backendState.mode3dReady = false;
     rte::backendState.frameDrawCalls = 0;
 }
 
@@ -137,6 +139,10 @@ inline void set_camera(float px, float py, float pz, float tx, float ty, float t
     rte::camera.target = Vector3{tx, ty, tz};
     rte::camera.up = Vector3{ux, uy, uz};
     rte::camera.fovy = fov;
+    if (rte::backendState.mode3dReady) {
+        EndMode3D();
+        BeginMode3D(rte::camera);
+    }
 }
 
 inline float camera_fov() {
@@ -228,6 +234,20 @@ inline float mouse_y() {
     return static_cast<float>(GetMouseY());
 }
 
+inline float mouse_delta_x() {
+    if (!rte::backendState.windowReady) {
+        return 0.0f;
+    }
+    return GetMouseDelta().x;
+}
+
+inline float mouse_delta_y() {
+    if (!rte::backendState.windowReady) {
+        return 0.0f;
+    }
+    return GetMouseDelta().y;
+}
+
 inline int gpu_count() {
     return 1;
 }
@@ -241,12 +261,159 @@ inline void draw_grid(int slices, float spacing) {
     rte::backendState.frameDrawCalls += 1;
 }
 
+inline Color shade_face_color(RTVec3 faceCenter, RTVec3 normal, RTColor baseColor) {
+    float ambR = rte::backendState.lightState.ambientR / 255.0f;
+    float ambG = rte::backendState.lightState.ambientG / 255.0f;
+    float ambB = rte::backendState.lightState.ambientB / 255.0f;
+
+    float lightR = 0.0f;
+    float lightG = 0.0f;
+    float lightB = 0.0f;
+
+    if (rte::backendState.lightState.enabled) {
+        float lx = rte::backendState.lightState.directionX;
+        float ly = rte::backendState.lightState.directionY;
+        float lz = rte::backendState.lightState.directionZ;
+        float len = std::sqrt(lx * lx + ly * ly + lz * lz);
+        if (len > 0.0001f) {
+            lx /= len;
+            ly /= len;
+            lz /= len;
+        }
+        float dot = -(normal.x * lx + normal.y * ly + normal.z * lz);
+        if (dot > 0.0f) {
+            float diff = dot * rte::backendState.lightState.intensity;
+            lightR += (rte::backendState.lightState.colorR / 255.0f) * diff;
+            lightG += (rte::backendState.lightState.colorG / 255.0f) * diff;
+            lightB += (rte::backendState.lightState.colorB / 255.0f) * diff;
+        }
+    } else {
+        float lx = -0.4f;
+        float ly = 0.85f;
+        float lz = -0.35f;
+        float len = std::sqrt(lx * lx + ly * ly + lz * lz);
+        lx /= len;
+        ly /= len;
+        lz /= len;
+        float dot = normal.x * lx + normal.y * ly + normal.z * lz;
+        float diff = std::max(0.0f, dot) * 0.65f;
+        lightR += diff;
+        lightG += diff;
+        lightB += diff;
+    }
+
+    for (const auto& pt : rte::backendState.lightState.pointLights) {
+        if (!pt.enabled) {
+            continue;
+        }
+        float dx = pt.posX - faceCenter.x;
+        float dy = pt.posY - faceCenter.y;
+        float dz = pt.posZ - faceCenter.z;
+        float distSq = dx * dx + dy * dy + dz * dz;
+        float r = pt.radius;
+        if (distSq < r * r && distSq > 0.0001f) {
+            float dist = std::sqrt(distSq);
+            float ldx = dx / dist;
+            float ldy = dy / dist;
+            float ldz = dz / dist;
+            float pDot = normal.x * ldx + normal.y * ldy + normal.z * ldz;
+            if (pDot > 0.0f) {
+                float normDist = dist / r;
+                float atten = (1.0f - normDist) * (1.0f - normDist) * pt.intensity;
+                lightR += (pt.colorR / 255.0f) * pDot * atten;
+                lightG += (pt.colorG / 255.0f) * pDot * atten;
+                lightB += (pt.colorB / 255.0f) * pDot * atten;
+            }
+        }
+    }
+
+    float finalR = std::clamp((baseColor.r / 255.0f) * (ambR + lightR), 0.0f, 1.0f);
+    float finalG = std::clamp((baseColor.g / 255.0f) * (ambG + lightG), 0.0f, 1.0f);
+    float finalB = std::clamp((baseColor.b / 255.0f) * (ambB + lightB), 0.0f, 1.0f);
+
+    return Color{
+        static_cast<unsigned char>(finalR * 255.0f),
+        static_cast<unsigned char>(finalG * 255.0f),
+        static_cast<unsigned char>(finalB * 255.0f),
+        baseColor.a
+    };
+}
+
 inline void draw_cube(RTVec3 position, RTVec3 size, RTColor color) {
     if (!rte::backendState.windowReady) {
         return;
     }
     rte::ensure_mode3d();
-    DrawCubeV(rte::convert_vec3(position), rte::convert_vec3(size), rte::convert_color(color));
+    float x = position.x;
+    float y = position.y;
+    float z = position.z;
+    float hx = size.x * 0.5f;
+    float hy = size.y * 0.5f;
+    float hz = size.z * 0.5f;
+
+    rlBegin(RL_TRIANGLES);
+
+    Color cFront = shade_face_color(RTVec3{x, y, z + hz}, RTVec3{0.0f, 0.0f, 1.0f}, color);
+    rlColor4ub(cFront.r, cFront.g, cFront.b, cFront.a);
+    rlNormal3f(0.0f, 0.0f, 1.0f);
+    rlVertex3f(x - hx, y - hy, z + hz);
+    rlVertex3f(x + hx, y - hy, z + hz);
+    rlVertex3f(x - hx, y + hy, z + hz);
+    rlVertex3f(x + hx, y + hy, z + hz);
+    rlVertex3f(x - hx, y + hy, z + hz);
+    rlVertex3f(x + hx, y - hy, z + hz);
+
+    Color cBack = shade_face_color(RTVec3{x, y, z - hz}, RTVec3{0.0f, 0.0f, -1.0f}, color);
+    rlColor4ub(cBack.r, cBack.g, cBack.b, cBack.a);
+    rlNormal3f(0.0f, 0.0f, -1.0f);
+    rlVertex3f(x - hx, y - hy, z - hz);
+    rlVertex3f(x - hx, y + hy, z - hz);
+    rlVertex3f(x + hx, y - hy, z - hz);
+    rlVertex3f(x + hx, y + hy, z - hz);
+    rlVertex3f(x + hx, y - hy, z - hz);
+    rlVertex3f(x - hx, y + hy, z - hz);
+
+    Color cTop = shade_face_color(RTVec3{x, y + hy, z}, RTVec3{0.0f, 1.0f, 0.0f}, color);
+    rlColor4ub(cTop.r, cTop.g, cTop.b, cTop.a);
+    rlNormal3f(0.0f, 1.0f, 0.0f);
+    rlVertex3f(x - hx, y + hy, z - hz);
+    rlVertex3f(x - hx, y + hy, z + hz);
+    rlVertex3f(x + hx, y + hy, z + hz);
+    rlVertex3f(x + hx, y + hy, z - hz);
+    rlVertex3f(x - hx, y + hy, z - hz);
+    rlVertex3f(x + hx, y + hy, z + hz);
+
+    Color cBottom = shade_face_color(RTVec3{x, y - hy, z}, RTVec3{0.0f, -1.0f, 0.0f}, color);
+    rlColor4ub(cBottom.r, cBottom.g, cBottom.b, cBottom.a);
+    rlNormal3f(0.0f, -1.0f, 0.0f);
+    rlVertex3f(x - hx, y - hy, z - hz);
+    rlVertex3f(x + hx, y - hy, z + hz);
+    rlVertex3f(x - hx, y - hy, z + hz);
+    rlVertex3f(x + hx, y - hy, z - hz);
+    rlVertex3f(x + hx, y - hy, z + hz);
+    rlVertex3f(x - hx, y - hy, z - hz);
+
+    Color cRight = shade_face_color(RTVec3{x + hx, y, z}, RTVec3{1.0f, 0.0f, 0.0f}, color);
+    rlColor4ub(cRight.r, cRight.g, cRight.b, cRight.a);
+    rlNormal3f(1.0f, 0.0f, 0.0f);
+    rlVertex3f(x + hx, y - hy, z - hz);
+    rlVertex3f(x + hx, y + hy, z - hz);
+    rlVertex3f(x + hx, y + hy, z + hz);
+    rlVertex3f(x + hx, y - hy, z + hz);
+    rlVertex3f(x + hx, y - hy, z - hz);
+    rlVertex3f(x + hx, y + hy, z + hz);
+
+    Color cLeft = shade_face_color(RTVec3{x - hx, y, z}, RTVec3{-1.0f, 0.0f, 0.0f}, color);
+    rlColor4ub(cLeft.r, cLeft.g, cLeft.b, cLeft.a);
+    rlNormal3f(-1.0f, 0.0f, 0.0f);
+    rlVertex3f(x - hx, y - hy, z - hz);
+    rlVertex3f(x - hx, y + hy, z + hz);
+    rlVertex3f(x - hx, y + hy, z - hz);
+    rlVertex3f(x - hx, y - hy, z + hz);
+    rlVertex3f(x - hx, y + hy, z + hz);
+    rlVertex3f(x - hx, y - hy, z - hz);
+
+    rlEnd();
     rte::backendState.frameDrawCalls += 1;
 }
 
@@ -255,7 +422,22 @@ inline void draw_plane(RTVec3 position, RTVec2 size, RTColor color) {
         return;
     }
     rte::ensure_mode3d();
-    DrawPlane(rte::convert_vec3(position), rte::convert_vec2(size), rte::convert_color(color));
+    float x = position.x;
+    float y = position.y;
+    float z = position.z;
+    float hx = size.x * 0.5f;
+    float hz = size.y * 0.5f;
+    Color c = shade_face_color(position, RTVec3{0.0f, 1.0f, 0.0f}, color);
+    rlBegin(RL_TRIANGLES);
+    rlColor4ub(c.r, c.g, c.b, c.a);
+    rlNormal3f(0.0f, 1.0f, 0.0f);
+    rlVertex3f(x - hx, y, z - hz);
+    rlVertex3f(x - hx, y, z + hz);
+    rlVertex3f(x + hx, y, z + hz);
+    rlVertex3f(x + hx, y, z - hz);
+    rlVertex3f(x - hx, y, z - hz);
+    rlVertex3f(x + hx, y, z + hz);
+    rlEnd();
     rte::backendState.frameDrawCalls += 1;
 }
 
@@ -264,7 +446,93 @@ inline void draw_sphere(RTVec3 position, float radius, RTColor color) {
         return;
     }
     rte::ensure_mode3d();
-    DrawSphere(rte::convert_vec3(position), radius, rte::convert_color(color));
+    Color c = shade_face_color(position, RTVec3{0.0f, 1.0f, 0.0f}, color);
+    DrawSphere(rte::convert_vec3(position), radius, c);
+    rte::backendState.frameDrawCalls += 1;
+}
+
+inline void draw_cylinder(RTVec3 position, float radiusTop, float radiusBottom, float height, int slices, RTColor color) {
+    if (!rte::backendState.windowReady) {
+        return;
+    }
+    rte::ensure_mode3d();
+    if (slices < 3) {
+        slices = 16;
+    }
+    float h = height * 0.5f;
+    float step = 6.28318530718f / static_cast<float>(slices);
+    rlBegin(RL_TRIANGLES);
+    for (int i = 0; i < slices; ++i) {
+        float a1 = static_cast<float>(i) * step;
+        float a2 = static_cast<float>(i + 1) * step;
+        float cos1 = std::cos(a1);
+        float sin1 = std::sin(a1);
+        float cos2 = std::cos(a2);
+        float sin2 = std::sin(a2);
+        float midA = (a1 + a2) * 0.5f;
+        RTVec3 nMid{std::cos(midA), 0.0f, std::sin(midA)};
+        RTVec3 centerMid{position.x + nMid.x * radiusBottom, position.y, position.z + nMid.z * radiusBottom};
+        Color cSide = shade_face_color(centerMid, nMid, color);
+        rlColor4ub(cSide.r, cSide.g, cSide.b, cSide.a);
+        rlNormal3f(cos1, 0.0f, sin1);
+        rlVertex3f(position.x + cos1 * radiusBottom, position.y - h, position.z + sin1 * radiusBottom);
+        rlNormal3f(cos2, 0.0f, sin2);
+        rlVertex3f(position.x + cos2 * radiusBottom, position.y - h, position.z + sin2 * radiusBottom);
+        rlNormal3f(cos1, 0.0f, sin1);
+        rlVertex3f(position.x + cos1 * radiusTop, position.y + h, position.z + sin1 * radiusTop);
+
+        rlNormal3f(cos2, 0.0f, sin2);
+        rlVertex3f(position.x + cos2 * radiusBottom, position.y - h, position.z + sin2 * radiusBottom);
+        rlNormal3f(cos2, 0.0f, sin2);
+        rlVertex3f(position.x + cos2 * radiusTop, position.y + h, position.z + sin2 * radiusTop);
+        rlNormal3f(cos1, 0.0f, sin1);
+        rlVertex3f(position.x + cos1 * radiusTop, position.y + h, position.z + sin1 * radiusTop);
+
+        if (radiusTop > 0.0f) {
+            Color cTop = shade_face_color(RTVec3{position.x, position.y + h, position.z}, RTVec3{0.0f, 1.0f, 0.0f}, color);
+            rlColor4ub(cTop.r, cTop.g, cTop.b, cTop.a);
+            rlNormal3f(0.0f, 1.0f, 0.0f);
+            rlVertex3f(position.x, position.y + h, position.z);
+            rlVertex3f(position.x + cos1 * radiusTop, position.y + h, position.z + sin1 * radiusTop);
+            rlVertex3f(position.x + cos2 * radiusTop, position.y + h, position.z + sin2 * radiusTop);
+        }
+        if (radiusBottom > 0.0f) {
+            Color cBot = shade_face_color(RTVec3{position.x, position.y - h, position.z}, RTVec3{0.0f, -1.0f, 0.0f}, color);
+            rlColor4ub(cBot.r, cBot.g, cBot.b, cBot.a);
+            rlNormal3f(0.0f, -1.0f, 0.0f);
+            rlVertex3f(position.x, position.y - h, position.z);
+            rlVertex3f(position.x + cos2 * radiusBottom, position.y - h, position.z + sin2 * radiusBottom);
+            rlVertex3f(position.x + cos1 * radiusBottom, position.y - h, position.z + sin1 * radiusBottom);
+        }
+    }
+    rlEnd();
+    rte::backendState.frameDrawCalls += 1;
+}
+
+inline void draw_wire_cube(RTVec3 position, RTVec3 size, RTColor color) {
+    if (!rte::backendState.windowReady) {
+        return;
+    }
+    rte::ensure_mode3d();
+    DrawCubeWires(rte::convert_vec3(position), size.x, size.y, size.z, rte::convert_color(color));
+    rte::backendState.frameDrawCalls += 1;
+}
+
+inline void draw_wire_sphere(RTVec3 position, float radius, RTColor color) {
+    if (!rte::backendState.windowReady) {
+        return;
+    }
+    rte::ensure_mode3d();
+    DrawSphereWires(rte::convert_vec3(position), radius, 12, 12, rte::convert_color(color));
+    rte::backendState.frameDrawCalls += 1;
+}
+
+inline void draw_line_3d(RTVec3 start, RTVec3 end, RTColor color) {
+    if (!rte::backendState.windowReady) {
+        return;
+    }
+    rte::ensure_mode3d();
+    DrawLine3D(rte::convert_vec3(start), rte::convert_vec3(end), rte::convert_color(color));
     rte::backendState.frameDrawCalls += 1;
 }
 

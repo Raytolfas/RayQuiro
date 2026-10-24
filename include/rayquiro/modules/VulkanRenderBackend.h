@@ -4282,6 +4282,87 @@ inline void draw_sphere(RTVec3 position, float radius, RTColor color) {
     }
 }
 
+inline void draw_line_3d(RTVec3 start, RTVec3 end, RTColor color) {
+    RTVec3 dir = vec3_sub(end, start);
+    float len = vec3_length(dir);
+    if (len < 0.0001f) return;
+    RTVec3 norm = vec3_normalize(dir);
+    RTVec3 up = std::abs(norm.y) > 0.99f ? RTVec3{1.0f, 0.0f, 0.0f} : RTVec3{0.0f, 1.0f, 0.0f};
+    RTVec3 side = vec3_mul(vec3_normalize(vec3_cross(norm, up)), 0.02f);
+    append_scene_quad(
+        vec3_sub(start, side),
+        vec3_add(start, side),
+        vec3_add(end, side),
+        vec3_sub(end, side),
+        color
+    );
+}
+
+inline void draw_ray(RTVec3 origin, RTVec3 direction, float length, RTColor color) {
+    draw_line_3d(origin, vec3_add(origin, vec3_mul(vec3_normalize(direction), length)), color);
+}
+
+inline void draw_axes(RTVec3 origin, float length) {
+    draw_ray(origin, RTVec3{1.0f, 0.0f, 0.0f}, length, RTColor{255, 60, 60, 255});
+    draw_ray(origin, RTVec3{0.0f, 1.0f, 0.0f}, length, RTColor{60, 220, 60, 255});
+    draw_ray(origin, RTVec3{0.0f, 0.0f, 1.0f}, length, RTColor{60, 100, 255, 255});
+}
+
+inline void draw_wire_cube(RTVec3 position, RTVec3 size, RTColor color) {
+    const float hx = size.x * 0.5f;
+    const float hy = size.y * 0.5f;
+    const float hz = size.z * 0.5f;
+    const RTVec3 c0{position.x - hx, position.y - hy, position.z - hz};
+    const RTVec3 c1{position.x + hx, position.y - hy, position.z - hz};
+    const RTVec3 c2{position.x + hx, position.y + hy, position.z - hz};
+    const RTVec3 c3{position.x - hx, position.y + hy, position.z - hz};
+    const RTVec3 c4{position.x - hx, position.y - hy, position.z + hz};
+    const RTVec3 c5{position.x + hx, position.y - hy, position.z + hz};
+    const RTVec3 c6{position.x + hx, position.y + hy, position.z + hz};
+    const RTVec3 c7{position.x - hx, position.y + hy, position.z + hz};
+    draw_line_3d(c0, c1, color); draw_line_3d(c1, c2, color); draw_line_3d(c2, c3, color); draw_line_3d(c3, c0, color);
+    draw_line_3d(c4, c5, color); draw_line_3d(c5, c6, color); draw_line_3d(c6, c7, color); draw_line_3d(c7, c4, color);
+    draw_line_3d(c0, c4, color); draw_line_3d(c1, c5, color); draw_line_3d(c2, c6, color); draw_line_3d(c3, c7, color);
+}
+
+inline void draw_cylinder(RTVec3 position, float radiusTop, float radiusBottom, float height, int slices, RTColor color) {
+    const int count = std::max(6, std::min(slices, 32));
+    const float halfH = height * 0.5f;
+    const float topY = position.y + halfH;
+    const float botY = position.y - halfH;
+    for (int i = 0; i < count; ++i) {
+        float a0 = (static_cast<float>(i) / count) * 6.2831853f;
+        float a1 = (static_cast<float>(i + 1) / count) * 6.2831853f;
+        float cos0 = std::cos(a0);
+        float sin0 = std::sin(a0);
+        float cos1 = std::cos(a1);
+        float sin1 = std::sin(a1);
+        RTVec3 t0{position.x + cos0 * radiusTop, topY, position.z + sin0 * radiusTop};
+        RTVec3 t1{position.x + cos1 * radiusTop, topY, position.z + sin1 * radiusTop};
+        RTVec3 b0{position.x + cos0 * radiusBottom, botY, position.z + sin0 * radiusBottom};
+        RTVec3 b1{position.x + cos1 * radiusBottom, botY, position.z + sin1 * radiusBottom};
+        append_scene_quad(b0, b1, t1, t0, color);
+        if (radiusTop > 0.001f) {
+            append_scene_triangle_flat(RTVec3{position.x, topY, position.z}, t0, t1, color);
+        }
+        if (radiusBottom > 0.001f) {
+            append_scene_triangle_flat(RTVec3{position.x, botY, position.z}, b1, b0, color);
+        }
+    }
+}
+
+inline void draw_cone(RTVec3 position, float radius, float height, int slices, RTColor color) {
+    draw_cylinder(position, 0.0f, radius, height, slices, color);
+}
+
+inline void draw_capsule(RTVec3 position, float radius, float height, int slices, int rings, RTColor color) {
+    (void)rings;
+    const float cylinderH = std::max(0.0f, height - radius * 2.0f);
+    draw_cylinder(position, radius, radius, cylinderH, slices, color);
+    draw_sphere(RTVec3{position.x, position.y + cylinderH * 0.5f, position.z}, radius, color);
+    draw_sphere(RTVec3{position.x, position.y - cylinderH * 0.5f, position.z}, radius, color);
+}
+
 inline void draw_text(const char* text, int x, int y, int size, RTColor color) {
     auto& vk = state();
     if (vk.window == nullptr || vk.backbufferDC == nullptr || text == nullptr) {
@@ -4294,6 +4375,75 @@ inline void draw_text(const char* text, int x, int y, int size, RTColor color) {
     TextOutA(vk.backbufferDC, x, y, text, static_cast<int>(std::strlen(text)));
     SelectObject(vk.backbufferDC, oldFont);
     DeleteObject(font);
+    rte::backendState.frameDrawCalls += 1;
+}
+
+inline void draw_rect(int x, int y, int w, int h, RTColor color) {
+    auto& vk = state();
+    if (vk.backbufferDC == nullptr) return;
+    HBRUSH brush = CreateSolidBrush(RGB(color.r, color.g, color.b));
+    RECT rect{x, y, x + w, y + h};
+    ::FillRect(vk.backbufferDC, &rect, brush);
+    DeleteObject(brush);
+    rte::backendState.frameDrawCalls += 1;
+}
+
+inline void draw_rect_lines(int x, int y, int w, int h, RTColor color) {
+    auto& vk = state();
+    if (vk.backbufferDC == nullptr) return;
+    HBRUSH brush = CreateSolidBrush(RGB(color.r, color.g, color.b));
+    RECT rect{x, y, x + w, y + h};
+    FrameRect(vk.backbufferDC, &rect, brush);
+    DeleteObject(brush);
+    rte::backendState.frameDrawCalls += 1;
+}
+
+inline void draw_circle(int x, int y, float radius, RTColor color) {
+    auto& vk = state();
+    if (vk.backbufferDC == nullptr) return;
+    const int r = static_cast<int>(radius);
+    HBRUSH brush = CreateSolidBrush(RGB(color.r, color.g, color.b));
+    HPEN pen = CreatePen(PS_SOLID, 1, RGB(color.r, color.g, color.b));
+    HBRUSH oldBrush = reinterpret_cast<HBRUSH>(SelectObject(vk.backbufferDC, brush));
+    HPEN oldPen = reinterpret_cast<HPEN>(SelectObject(vk.backbufferDC, pen));
+    ::Ellipse(vk.backbufferDC, x - r, y - r, x + r, y + r);
+    SelectObject(vk.backbufferDC, oldBrush);
+    SelectObject(vk.backbufferDC, oldPen);
+    DeleteObject(brush);
+    DeleteObject(pen);
+    rte::backendState.frameDrawCalls += 1;
+}
+
+inline void draw_circle_lines(int x, int y, float radius, RTColor color) {
+    auto& vk = state();
+    if (vk.backbufferDC == nullptr) return;
+    const int r = static_cast<int>(radius);
+    HPEN pen = CreatePen(PS_SOLID, 1, RGB(color.r, color.g, color.b));
+    HPEN oldPen = reinterpret_cast<HPEN>(SelectObject(vk.backbufferDC, pen));
+    HBRUSH oldBrush = reinterpret_cast<HBRUSH>(SelectObject(vk.backbufferDC, GetStockObject(HOLLOW_BRUSH)));
+    ::Ellipse(vk.backbufferDC, x - r, y - r, x + r, y + r);
+    SelectObject(vk.backbufferDC, oldBrush);
+    SelectObject(vk.backbufferDC, oldPen);
+    DeleteObject(pen);
+    rte::backendState.frameDrawCalls += 1;
+}
+
+inline void draw_line(int x1, int y1, int x2, int y2, RTColor color) {
+    auto& vk = state();
+    if (vk.backbufferDC == nullptr) return;
+    HPEN pen = CreatePen(PS_SOLID, 1, RGB(color.r, color.g, color.b));
+    HPEN oldPen = reinterpret_cast<HPEN>(SelectObject(vk.backbufferDC, pen));
+    ::MoveToEx(vk.backbufferDC, x1, y1, nullptr);
+    ::LineTo(vk.backbufferDC, x2, y2);
+    SelectObject(vk.backbufferDC, oldPen);
+    DeleteObject(pen);
+    rte::backendState.frameDrawCalls += 1;
+}
+
+inline void draw_pixel(int x, int y, RTColor color) {
+    auto& vk = state();
+    if (vk.backbufferDC == nullptr) return;
+    ::SetPixel(vk.backbufferDC, x, y, RGB(color.r, color.g, color.b));
     rte::backendState.frameDrawCalls += 1;
 }
 
@@ -4372,6 +4522,13 @@ inline void draw_grid(int slices, float spacing) { (void)slices; (void)spacing; 
 inline void draw_cube(RTVec3 position, RTVec3 size, RTColor color) { (void)position; (void)size; (void)color; }
 inline void draw_plane(RTVec3 position, RTVec2 size, RTColor color) { (void)position; (void)size; (void)color; }
 inline void draw_sphere(RTVec3 position, float radius, RTColor color) { (void)position; (void)radius; (void)color; }
+inline void draw_line_3d(RTVec3 start, RTVec3 end, RTColor color) { (void)start; (void)end; (void)color; }
+inline void draw_ray(RTVec3 origin, RTVec3 direction, float length, RTColor color) { (void)origin; (void)direction; (void)length; (void)color; }
+inline void draw_axes(RTVec3 origin, float length) { (void)origin; (void)length; }
+inline void draw_wire_cube(RTVec3 position, RTVec3 size, RTColor color) { (void)position; (void)size; (void)color; }
+inline void draw_cylinder(RTVec3 position, float radiusTop, float radiusBottom, float height, int slices, RTColor color) { (void)position; (void)radiusTop; (void)radiusBottom; (void)height; (void)slices; (void)color; }
+inline void draw_cone(RTVec3 position, float radius, float height, int slices, RTColor color) { (void)position; (void)radius; (void)height; (void)slices; (void)color; }
+inline void draw_capsule(RTVec3 position, float radius, float height, int slices, int rings, RTColor color) { (void)position; (void)radius; (void)height; (void)slices; (void)rings; (void)color; }
 inline void draw_text(const char* text, int x, int y, int size, RTColor color) { (void)text; (void)x; (void)y; (void)size; (void)color; }
 inline void draw_rect(int x, int y, int w, int h, RTColor color) { (void)x; (void)y; (void)w; (void)h; (void)color; }
 inline void draw_rect_lines(int x, int y, int w, int h, RTColor color) { (void)x; (void)y; (void)w; (void)h; (void)color; }

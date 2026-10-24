@@ -407,22 +407,22 @@ private:
     }
 
     static bool isBuiltinModule(const std::string& moduleName) {
-        return moduleName == "rayquiro.app" ||
-            moduleName == "rayquiro.ui" ||
-            moduleName == "rayquiro.web" ||
-            moduleName == "rayquiro.engine" ||
+        return moduleName == "rayquiro.app" || moduleName == "app" ||
+            moduleName == "rayquiro.ui" || moduleName == "ui" ||
+            moduleName == "rayquiro.web" || moduleName == "web" ||
+            moduleName == "rayquiro.engine" || moduleName == "engine" ||
             moduleName == "raytolfas.engine" ||
-            moduleName == "rayquiro.json" ||
-            moduleName == "rayquiro.time" ||
-            moduleName == "rayquiro.fs" ||
-            moduleName == "rayquiro.env" ||
-            moduleName == "rayquiro.process" ||
-            moduleName == "rayquiro.crypto" ||
-            moduleName == "rayquiro.random" ||
-            moduleName == "rayquiro.math" ||
-            moduleName == "rayquiro.datetime" ||
-            moduleName == "rayquiro.path" ||
-            moduleName == "rayquiro.regex";
+            moduleName == "rayquiro.json" || moduleName == "json" ||
+            moduleName == "rayquiro.time" || moduleName == "time" ||
+            moduleName == "rayquiro.fs" || moduleName == "fs" ||
+            moduleName == "rayquiro.env" || moduleName == "env" ||
+            moduleName == "rayquiro.process" || moduleName == "process" ||
+            moduleName == "rayquiro.crypto" || moduleName == "crypto" ||
+            moduleName == "rayquiro.random" || moduleName == "random" ||
+            moduleName == "rayquiro.math" || moduleName == "math" ||
+            moduleName == "rayquiro.datetime" || moduleName == "datetime" ||
+            moduleName == "rayquiro.path" || moduleName == "path" ||
+            moduleName == "rayquiro.regex" || moduleName == "regex";
     }
 
     static bool isNativeRuntimeModule(const std::string& moduleName) {
@@ -433,21 +433,21 @@ private:
     }
 
     static std::string builtinPrefixForModule(const std::string& moduleName) {
-        if (moduleName == "rayquiro.app") return "app";
-        if (moduleName == "rayquiro.ui") return "ui";
-        if (moduleName == "rayquiro.web") return "web";
-        if (moduleName == "rayquiro.engine" || moduleName == "raytolfas.engine") return "engine";
-        if (moduleName == "rayquiro.json") return "json";
-        if (moduleName == "rayquiro.time") return "time";
-        if (moduleName == "rayquiro.fs") return "fs";
-        if (moduleName == "rayquiro.env") return "env";
-        if (moduleName == "rayquiro.process") return "process";
-        if (moduleName == "rayquiro.crypto") return "crypto";
+        if (moduleName == "rayquiro.app" || moduleName == "app") return "app";
+        if (moduleName == "rayquiro.ui" || moduleName == "ui") return "ui";
+        if (moduleName == "rayquiro.web" || moduleName == "web") return "web";
+        if (moduleName == "rayquiro.engine" || moduleName == "engine" || moduleName == "raytolfas.engine") return "engine";
+        if (moduleName == "rayquiro.json" || moduleName == "json") return "json";
+        if (moduleName == "rayquiro.time" || moduleName == "time") return "time";
+        if (moduleName == "rayquiro.fs" || moduleName == "fs") return "fs";
+        if (moduleName == "rayquiro.env" || moduleName == "env") return "env";
+        if (moduleName == "rayquiro.process" || moduleName == "process") return "process";
+        if (moduleName == "rayquiro.crypto" || moduleName == "crypto") return "crypto";
         if (moduleName == "rayquiro.random" || moduleName == "random") return "random";
         if (moduleName == "rayquiro.math" || moduleName == "math") return "math";
         if (moduleName == "rayquiro.datetime" || moduleName == "datetime") return "datetime";
         if (moduleName == "rayquiro.path" || moduleName == "path") return "path";
-        if (moduleName == "rayquiro.regex") return "regex";
+        if (moduleName == "rayquiro.regex" || moduleName == "regex") return "regex";
         if (isNativeRuntimeModule(moduleName)) {
             return moduleName.substr(std::string("rayquiro.").size());
         }

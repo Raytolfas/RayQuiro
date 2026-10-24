@@ -867,6 +867,104 @@ ScalarValue call_button(const std::vector<ScalarValue>& args) {
     return {};
 }
 
+std::string render_node_to_html(const ScalarValue& node) {
+    if (node.is_string()) return node.str;
+    if (node.is_number()) return node.to_string();
+    if (node.is_bool()) return node.b ? "true" : "false";
+    if (node.is_array()) {
+        std::string res;
+        for (const auto& item : node.arr) {
+            res += render_node_to_html(item);
+        }
+        return res;
+    }
+    if (node.is_object()) {
+        auto itTag = node.obj.find("tag");
+        if (itTag != node.obj.end()) {
+            std::string tag = itTag->second.to_string();
+            std::string out = "<" + tag;
+            auto itProps = node.obj.find("props");
+            if (itProps != node.obj.end() && itProps->second.is_object()) {
+                for (const auto& p : itProps->second.obj) {
+                    out += " " + p.first + "=\"" + p.second.to_string() + "\"";
+                }
+            }
+            for (const auto& p : node.obj) {
+                if (p.first != "tag" && p.first != "props" && p.first != "children" && p.first != "text" && p.first != "__type__") {
+                    out += " " + p.first + "=\"" + p.second.to_string() + "\"";
+                }
+            }
+            if (tag == "br" || tag == "hr" || tag == "img" || tag == "input" || tag == "meta" || tag == "link") {
+                out += " />";
+                return out;
+            }
+            out += ">";
+            auto itChildren = node.obj.find("children");
+            if (itChildren != node.obj.end()) {
+                out += render_node_to_html(itChildren->second);
+            }
+            auto itText = node.obj.find("text");
+            if (itText != node.obj.end()) {
+                out += itText->second.to_string();
+            }
+            out += "</" + tag + ">";
+            return out;
+        }
+        auto itHtml = node.obj.find("html");
+        if (itHtml != node.obj.end()) {
+            return itHtml->second.to_string();
+        }
+    }
+    return node.to_string();
+}
+
+ScalarValue call_element(const std::vector<ScalarValue>& args) {
+    ScalarValue el;
+    el.type = ScalarValue::Object;
+    el.obj["__type__"] = ScalarValue("Element");
+    el.obj["tag"] = args.size() > 0 ? args[0] : ScalarValue("div");
+    if (args.size() > 1 && args[1].is_object()) {
+        el.obj["props"] = args[1];
+    } else {
+        ScalarValue p;
+        p.type = ScalarValue::Object;
+        el.obj["props"] = p;
+    }
+    if (args.size() > 2) {
+        el.obj["children"] = args[2];
+    }
+    return el;
+}
+
+ScalarValue call_render(const std::vector<ScalarValue>& args) {
+    std::string html;
+    for (const auto& a : args) {
+        html += render_node_to_html(a);
+    }
+    auto& web = state();
+    if (web.active) {
+        current_route().body += html;
+    }
+    return ScalarValue(html);
+}
+
+ScalarValue call_template(const std::vector<ScalarValue>& args) {
+    if (args.empty()) return ScalarValue("");
+    std::string tmpl = to_string(args[0]);
+    if (args.size() > 1 && args[1].is_object()) {
+        for (const auto& pair : args[1].obj) {
+            std::string placeholder = "{{" + pair.first + "}}";
+            std::string repl = pair.second.to_string();
+            size_t pos = 0;
+            while ((pos = tmpl.find(placeholder, pos)) != std::string::npos) {
+                tmpl.replace(pos, placeholder.length(), repl);
+                pos += repl.length();
+            }
+        }
+    }
+    return ScalarValue(tmpl);
+}
+
 ScalarValue call_raw(const std::vector<ScalarValue>& args) {
     if (args.empty()) return {};
     prepare_session();
@@ -903,7 +1001,7 @@ ScalarValue call_page(const std::vector<ScalarValue>& args) {
     route.route = "/";
     route.title = web.defaultTitle;
     route.path = requestedPath;
-    route.body = args.size() > 1 ? to_string(args[1]) : "";
+    route.body = args.size() > 1 ? render_node_to_html(args[1]) : "";
     web.routes["/"] = route;
     write_output(web);
     return {};
@@ -924,6 +1022,9 @@ ScalarValue dispatch(const std::string& functionName, const std::vector<ScalarVa
     if (functionName == "p") return call_heading(args, "p");
     if (functionName == "button") return call_button(args);
     if (functionName == "raw" || functionName == "html") return call_raw(args);
+    if (functionName == "render") return call_render(args);
+    if (functionName == "element") return call_element(args);
+    if (functionName == "template") return call_template(args);
     if (functionName == "end") return call_end(args);
     if (functionName == "page") return call_page(args);
     throw std::runtime_error("rayquiro.web does not export web." + functionName);

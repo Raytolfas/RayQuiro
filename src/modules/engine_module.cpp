@@ -80,11 +80,14 @@ struct EngineEntity {
     std::string kind = "cube";
     EngineVec3 position {0.0f, 0.5f, 0.0f};
     EngineVec3 scale {1.0f, 1.0f, 1.0f};
+    EngineVec3 rotation {0.0f, 0.0f, 0.0f};
     EngineColor color {255, 255, 255, 255};
     bool visible = true;
     std::string mesh;
     std::string material;
     std::string texture;
+    std::string parent;
+    std::string tag;
 };
 
 struct EngineScene {
@@ -92,9 +95,11 @@ struct EngineScene {
     std::unordered_map<std::string, EngineMaterial> materials;
     std::unordered_map<std::string, EngineMesh> meshes;
     std::unordered_map<std::string, EngineTexture> textures;
+    std::unordered_map<std::string, RTPointLightState> pointLights;
     EngineColor ambient {30, 38, 54, 255};
     EngineLight sun;
     bool hasSun = false;
+    RTSkyState sky;
 };
 
 struct EnginePostFX {
@@ -129,6 +134,9 @@ struct EngineStore {
     float cameraFov = 45.0f;
     EnginePostFX postfx;
     EngineSceneWatch sceneWatch;
+    float mouseDeltaX = 0.0f;
+    float mouseDeltaY = 0.0f;
+    bool mouseLocked = false;
     std::unordered_map<std::string, EngineScene> scenes;
 };
 
@@ -504,6 +512,22 @@ EngineVec3 vec3_sub(const EngineVec3& a, const EngineVec3& b) {
     return EngineVec3{a.x - b.x, a.y - b.y, a.z - b.z};
 }
 
+EngineVec3 vec3_add(const EngineVec3& a, const EngineVec3& b) {
+    return EngineVec3{a.x + b.x, a.y + b.y, a.z + b.z};
+}
+
+EngineVec3 vec3_mul(const EngineVec3& a, float scalar) {
+    return EngineVec3{a.x * scalar, a.y * scalar, a.z * scalar};
+}
+
+EngineVec3 vec3_cross(const EngineVec3& a, const EngineVec3& b) {
+    return EngineVec3{
+        a.y * b.z - a.z * b.y,
+        a.z * b.x - a.x * b.z,
+        a.x * b.y - a.y * b.x
+    };
+}
+
 float vec3_dot(const EngineVec3& a, const EngineVec3& b) {
     return a.x * b.x + a.y * b.y + a.z * b.z;
 }
@@ -518,6 +542,56 @@ EngineVec3 vec3_normalize(const EngineVec3& value) {
         return EngineVec3{0.0f, 0.0f, -1.0f};
     }
     return EngineVec3{value.x / length, value.y / length, value.z / length};
+}
+
+bool ray_intersects_sphere(const EngineVec3& rayPos, const EngineVec3& rayDir, const EngineVec3& center, float radius, float& outDist) {
+    const EngineVec3 oc = vec3_sub(rayPos, center);
+    const float a = vec3_dot(rayDir, rayDir);
+    const float b = 2.0f * vec3_dot(oc, rayDir);
+    const float c = vec3_dot(oc, oc) - radius * radius;
+    const float discriminant = b * b - 4.0f * a * c;
+    if (discriminant < 0.0f) return false;
+    float dist = (-b - std::sqrt(discriminant)) / (2.0f * a);
+    if (dist < 0.0f) dist = (-b + std::sqrt(discriminant)) / (2.0f * a);
+    if (dist < 0.0f) return false;
+    outDist = dist;
+    return true;
+}
+
+bool ray_intersects_aabb(const EngineVec3& rayPos, const EngineVec3& rayDir, const EngineVec3& minB, const EngineVec3& maxB, float& outDist) {
+    float tmin = (minB.x - rayPos.x) / (std::abs(rayDir.x) > 1e-6f ? rayDir.x : 1e-6f);
+    float tmax = (maxB.x - rayPos.x) / (std::abs(rayDir.x) > 1e-6f ? rayDir.x : 1e-6f);
+    if (tmin > tmax) std::swap(tmin, tmax);
+
+    float tymin = (minB.y - rayPos.y) / (std::abs(rayDir.y) > 1e-6f ? rayDir.y : 1e-6f);
+    float tymax = (maxB.y - rayPos.y) / (std::abs(rayDir.y) > 1e-6f ? rayDir.y : 1e-6f);
+    if (tymin > tymax) std::swap(tymin, tymax);
+
+    if (tmin > tymax || tymin > tmax) return false;
+    if (tymin > tmin) tmin = tymin;
+    if (tymax < tmax) tmax = tymax;
+
+    float tzmin = (minB.z - rayPos.z) / (std::abs(rayDir.z) > 1e-6f ? rayDir.z : 1e-6f);
+    float tzmax = (maxB.z - rayPos.z) / (std::abs(rayDir.z) > 1e-6f ? rayDir.z : 1e-6f);
+    if (tzmin > tzmax) std::swap(tzmin, tzmax);
+
+    if (tmin > tzmax || tzmin > tmax) return false;
+    if (tzmin > tmin) tmin = tzmin;
+    if (tzmax < tmax) tmax = tzmax;
+
+    if (tmin < 0.0f) {
+        if (tmax < 0.0f) return false;
+        outDist = tmax;
+    } else {
+        outDist = tmin;
+    }
+    return true;
+}
+
+bool aabb_intersects_aabb(const EngineVec3& minA, const EngineVec3& maxA, const EngineVec3& minB, const EngineVec3& maxB) {
+    return (minA.x <= maxB.x && maxA.x >= minB.x) &&
+           (minA.y <= maxB.y && maxA.y >= minB.y) &&
+           (minA.z <= maxB.z && maxA.z >= minB.z);
 }
 
 std::vector<double> parse_number_array_text(const std::string& text) {
@@ -545,9 +619,21 @@ std::vector<double> parse_number_array_text(const std::string& text) {
 
 EngineVec3 value_to_vec3(const ScalarValue& value, EngineVec3 fallback = EngineVec3{0.0f, 0.0f, 0.0f}) {
     if (std::holds_alternative<std::string>(value.data)) {
-        const auto values = parse_number_array_text(std::get<std::string>(value.data));
+        const std::string& str = std::get<std::string>(value.data);
+        const auto values = parse_number_array_text(str);
         if (values.size() >= 3) {
             return EngineVec3{static_cast<float>(values[0]), static_cast<float>(values[1]), static_cast<float>(values[2])};
+        }
+        if (str.find('{') != std::string::npos) {
+            try {
+                const JsonNode node = json_parse_document(str);
+                if (node.type == JsonNode::Type::Object) {
+                    float x = node.object.count("x") ? static_cast<float>(node.object.at("x").number) : fallback.x;
+                    float y = node.object.count("y") ? static_cast<float>(node.object.at("y").number) : fallback.y;
+                    float z = node.object.count("z") ? static_cast<float>(node.object.at("z").number) : fallback.z;
+                    return EngineVec3{x, y, z};
+                }
+            } catch (...) {}
         }
     }
     if (std::holds_alternative<double>(value.data)) {
@@ -559,7 +645,8 @@ EngineVec3 value_to_vec3(const ScalarValue& value, EngineVec3 fallback = EngineV
 
 EngineColor value_to_color(const ScalarValue& value, EngineColor fallback = EngineColor{255, 255, 255, 255}) {
     if (std::holds_alternative<std::string>(value.data)) {
-        const auto values = parse_number_array_text(std::get<std::string>(value.data));
+        const std::string& str = std::get<std::string>(value.data);
+        const auto values = parse_number_array_text(str);
         if (values.size() >= 3) {
             return EngineColor{
                 static_cast<int>(values[0]),
@@ -567,6 +654,18 @@ EngineColor value_to_color(const ScalarValue& value, EngineColor fallback = Engi
                 static_cast<int>(values[2]),
                 values.size() > 3 ? static_cast<int>(values[3]) : 255
             };
+        }
+        if (str.find('{') != std::string::npos) {
+            try {
+                const JsonNode node = json_parse_document(str);
+                if (node.type == JsonNode::Type::Object) {
+                    int r = node.object.count("r") ? static_cast<int>(node.object.at("r").number) : fallback.r;
+                    int g = node.object.count("g") ? static_cast<int>(node.object.at("g").number) : fallback.g;
+                    int b = node.object.count("b") ? static_cast<int>(node.object.at("b").number) : fallback.b;
+                    int a = node.object.count("a") ? static_cast<int>(node.object.at("a").number) : fallback.a;
+                    return EngineColor{r, g, b, a};
+                }
+            } catch (...) {}
         }
     }
     return fallback;
@@ -747,11 +846,14 @@ std::string entity_json(const EngineEntity& entity) {
     out << "\"kind\":\"" << json_escape(entity.kind) << "\",";
     out << "\"visible\":" << json_bool(entity.visible) << ",";
     out << "\"position\":[" << entity.position.x << "," << entity.position.y << "," << entity.position.z << "],";
+    out << "\"rotation\":[" << entity.rotation.x << "," << entity.rotation.y << "," << entity.rotation.z << "],";
     out << "\"scale\":[" << entity.scale.x << "," << entity.scale.y << "," << entity.scale.z << "],";
     out << "\"color\":[" << entity.color.r << "," << entity.color.g << "," << entity.color.b << "," << entity.color.a << "],";
     out << "\"mesh\":\"" << json_escape(entity.mesh) << "\",";
     out << "\"material\":\"" << json_escape(entity.material) << "\",";
-    out << "\"texture\":\"" << json_escape(entity.texture) << "\"";
+    out << "\"texture\":\"" << json_escape(entity.texture) << "\",";
+    out << "\"parent\":\"" << json_escape(entity.parent) << "\",";
+    out << "\"tag\":\"" << json_escape(entity.tag) << "\"";
     out << "}";
     return out.str();
 }
@@ -1240,6 +1342,29 @@ int render_scene_entities(EngineStore& store, const std::string& sceneName) {
                 to_rt_vec3(item.position),
                 std::max(0.05f, item.drawRadius),
                 to_rt_color(item.color));
+        } else if (item.drawKind == "cylinder") {
+            rt_draw_cylinder(
+                to_rt_vec3(item.position),
+                item.drawRadius,
+                item.drawRadius,
+                std::max(0.1f, item.drawSize.y),
+                16,
+                to_rt_color(item.color));
+        } else if (item.drawKind == "capsule") {
+            rt_draw_capsule(
+                to_rt_vec3(item.position),
+                item.drawRadius,
+                std::max(0.1f, item.drawSize.y),
+                16,
+                8,
+                to_rt_color(item.color));
+        } else if (item.drawKind == "cone") {
+            rt_draw_cone(
+                to_rt_vec3(item.position),
+                item.drawRadius,
+                std::max(0.1f, item.drawSize.y),
+                16,
+                to_rt_color(item.color));
         } else {
             rt_draw_cube(
                 to_rt_vec3(item.position),
@@ -1489,10 +1614,48 @@ std::string dispatch_module(EngineStore& store, const std::string& functionName,
         return "\"" + json_escape(load_scene_from_file(store, pathValue, sceneName)) + "\"";
     }
     if (functionName == "key_down") {
-        return json_bool(!args.empty() && rt_key_down(static_cast<int>(to_number(args[0]))) != 0);
+        if (args.empty()) return "false";
+        int code = 0;
+        if (std::holds_alternative<std::string>(args[0].data)) {
+            const std::string& s = std::get<std::string>(args[0].data);
+            if (s.size() == 1) code = std::toupper(static_cast<unsigned char>(s[0]));
+            else if (s == "space") code = 32;
+            else if (s == "escape" || s == "esc") code = 256;
+            else if (s == "enter") code = 257;
+            else if (s == "tab") code = 258;
+            else if (s == "shift") code = 340;
+            else if (s == "ctrl") code = 341;
+            else if (s == "up") code = 265;
+            else if (s == "down") code = 264;
+            else if (s == "left") code = 263;
+            else if (s == "right") code = 262;
+            else code = static_cast<int>(to_number(args[0]));
+        } else {
+            code = static_cast<int>(to_number(args[0]));
+        }
+        return json_bool(code != 0 && rt_key_down(code) != 0);
     }
     if (functionName == "key_pressed") {
-        return json_bool(!args.empty() && rt_key_pressed(static_cast<int>(to_number(args[0]))) != 0);
+        if (args.empty()) return "false";
+        int code = 0;
+        if (std::holds_alternative<std::string>(args[0].data)) {
+            const std::string& s = std::get<std::string>(args[0].data);
+            if (s.size() == 1) code = std::toupper(static_cast<unsigned char>(s[0]));
+            else if (s == "space") code = 32;
+            else if (s == "escape" || s == "esc") code = 256;
+            else if (s == "enter") code = 257;
+            else if (s == "tab") code = 258;
+            else if (s == "shift") code = 340;
+            else if (s == "ctrl") code = 341;
+            else if (s == "up") code = 265;
+            else if (s == "down") code = 264;
+            else if (s == "left") code = 263;
+            else if (s == "right") code = 262;
+            else code = static_cast<int>(to_number(args[0]));
+        } else {
+            code = static_cast<int>(to_number(args[0]));
+        }
+        return json_bool(code != 0 && rt_key_pressed(code) != 0);
     }
     if (functionName == "mouse_down") {
         return json_bool(!args.empty() && rt_mouse_down(static_cast<int>(to_number(args[0]))) != 0);
@@ -1575,16 +1738,11 @@ std::string dispatch_module(EngineStore& store, const std::string& functionName,
         return "\"" + json_escape(load_scene_from_file(store, path, sceneName)) + "\"";
     }
     if (functionName == "entity") {
-        if (args.size() < 5) throw std::runtime_error("engine.entity requires name, kind, position, size and color.");
-        EngineEntity& entity = ensure_entity(store, store.currentScene, to_string(args[0]), args.size() > 1 ? to_string(args[1]) : "");
-        entity.position = value_to_vec3(args[2], entity.position);
-        entity.scale = EngineVec3{1.0f, 1.0f, 1.0f};
-        entity.color = value_to_color(args[4], entity.color);
-        if (entity.kind == "sphere") {
-            entity.scale = value_to_vec3(args[3], entity.scale);
-        } else {
-            entity.scale = value_to_vec3(args[3], entity.scale);
-        }
+        if (args.size() < 2) throw std::runtime_error("engine.entity requires at least name and kind.");
+        EngineEntity& entity = ensure_entity(store, store.currentScene, to_string(args[0]), to_string(args[1]));
+        if (args.size() > 2) entity.position = value_to_vec3(args[2], entity.position);
+        if (args.size() > 3) entity.scale = value_to_vec3(args[3], entity.scale);
+        if (args.size() > 4) entity.color = value_to_color(args[4], entity.color);
         if (args.size() > 5) entity.material = to_string(args[5]);
         if (args.size() > 6) entity.mesh = to_string(args[6]);
         if (args.size() > 7) entity.texture = to_string(args[7]);
@@ -1739,9 +1897,19 @@ std::string dispatch_module(EngineStore& store, const std::string& functionName,
         return entity_json(entity);
     }
     if (functionName == "light_ambient") {
-        if (!args.empty()) {
-            ensure_scene(store, store.currentScene).ambient = value_to_color(args[0], ensure_scene(store, store.currentScene).ambient);
+        RTColor ambColor{30, 38, 54, 255};
+        float intensity = 1.0f;
+        if (args.size() >= 3) {
+            ambColor.r = static_cast<unsigned char>(to_number(args[0]));
+            ambColor.g = static_cast<unsigned char>(to_number(args[1]));
+            ambColor.b = static_cast<unsigned char>(to_number(args[2]));
+            if (args.size() > 3) intensity = static_cast<float>(to_number(args[3]));
+        } else if (!args.empty()) {
+            ambColor = to_rt_color(value_to_color(args[0]));
+            if (args.size() > 1) intensity = static_cast<float>(to_number(args[1]));
         }
+        rt_set_ambient_light(ambColor, intensity);
+        ensure_scene(store, store.currentScene).ambient = EngineColor{ambColor.r, ambColor.g, ambColor.b, ambColor.a};
         return "true";
     }
     if (functionName == "light_directional") {
@@ -1813,6 +1981,443 @@ std::string dispatch_module(EngineStore& store, const std::string& functionName,
         if (args.empty()) return "false";
         const std::filesystem::path path = store.projectRoot / store.assetsRoot / to_string(args[0]);
         return json_bool(std::filesystem::exists(path));
+    }
+    if (functionName == "capabilities" || functionName == "backend_capabilities") {
+        const RTBackendCapabilities caps = rt_backend_capabilities(store.requestedBackend);
+        std::ostringstream out;
+        out << "{"
+            << "\"name\":\"" << caps.name << "\","
+            << "\"supports3D\":" << (caps.supports3D ? "true" : "false") << ","
+            << "\"available\":" << (caps.available ? "true" : "false") << ","
+            << "\"placeholder\":" << (caps.placeholder ? "true" : "false") << ","
+            << "\"isVulkanFamily\":" << (caps.isVulkanFamily ? "true" : "false") << ","
+            << "\"supportsPbr\":" << (caps.supportsPbr ? "true" : "false") << ","
+            << "\"supportsMultiLights\":" << (caps.supportsMultiLights ? "true" : "false") << ","
+            << "\"supportsRaycasting\":" << (caps.supportsRaycasting ? "true" : "false") << ","
+            << "\"supportsPostFX\":" << (caps.supportsPostFX ? "true" : "false") << ","
+            << "\"maxLights\":" << caps.maxLights
+            << "}";
+        return out.str();
+    }
+    if (functionName == "entity_transform") {
+        if (args.size() < 2) throw std::runtime_error("engine.entity_transform requires name and position.");
+        EngineEntity& entity = ensure_entity(store, store.currentScene, to_string(args[0]), "");
+        entity.position = value_to_vec3(args[1], entity.position);
+        if (args.size() > 2) entity.rotation = value_to_vec3(args[2], entity.rotation);
+        if (args.size() > 3) entity.scale = value_to_vec3(args[3], entity.scale);
+        return entity_json(entity);
+    }
+    if (functionName == "entity_get") {
+        if (args.empty()) return "null";
+        const auto sceneFound = store.scenes.find(store.currentScene);
+        if (sceneFound == store.scenes.end()) return "null";
+        const auto it = sceneFound->second.entities.find(trim(to_string(args[0])));
+        if (it == sceneFound->second.entities.end()) return "null";
+        return entity_json(it->second);
+    }
+    if (functionName == "entity_parent") {
+        if (args.size() < 2) throw std::runtime_error("engine.entity_parent requires name and parent name.");
+        EngineEntity& entity = ensure_entity(store, store.currentScene, to_string(args[0]), "");
+        entity.parent = to_string(args[1]);
+        return entity_json(entity);
+    }
+    if (functionName == "entity_tag") {
+        if (args.size() < 2) throw std::runtime_error("engine.entity_tag requires name and tag.");
+        EngineEntity& entity = ensure_entity(store, store.currentScene, to_string(args[0]), "");
+        entity.tag = to_string(args[1]);
+        return entity_json(entity);
+    }
+    if (functionName == "entity_has_tag") {
+        if (args.size() < 2) return "false";
+        const auto sceneFound = store.scenes.find(store.currentScene);
+        if (sceneFound == store.scenes.end()) return "false";
+        const auto it = sceneFound->second.entities.find(trim(to_string(args[0])));
+        if (it == sceneFound->second.entities.end()) return "false";
+        return json_bool(it->second.tag == to_string(args[1]));
+    }
+    if (functionName == "entity_rotation" || functionName == "entity_set_rotation") {
+        if (args.size() < 2) throw std::runtime_error("engine.entity_rotation requires name and vec3.");
+        EngineEntity& entity = ensure_entity(store, store.currentScene, to_string(args[0]), "");
+        entity.rotation = value_to_vec3(args[1], entity.rotation);
+        return entity_json(entity);
+    }
+    if (functionName == "entity_get_rotation") {
+        if (args.empty()) return "null";
+        const auto sceneFound = store.scenes.find(store.currentScene);
+        if (sceneFound == store.scenes.end()) return "null";
+        const auto it = sceneFound->second.entities.find(trim(to_string(args[0])));
+        if (it == sceneFound->second.entities.end()) return "null";
+        std::ostringstream out;
+        out << "[" << it->second.rotation.x << "," << it->second.rotation.y << "," << it->second.rotation.z << "]";
+        return out.str();
+    }
+    if (functionName == "entity_get_scale") {
+        if (args.empty()) return "null";
+        const auto sceneFound = store.scenes.find(store.currentScene);
+        if (sceneFound == store.scenes.end()) return "null";
+        const auto it = sceneFound->second.entities.find(trim(to_string(args[0])));
+        if (it == sceneFound->second.entities.end()) return "null";
+        std::ostringstream out;
+        out << "[" << it->second.scale.x << "," << it->second.scale.y << "," << it->second.scale.z << "]";
+        return out.str();
+    }
+    if (functionName == "entities") {
+        const auto sceneFound = store.scenes.find(store.currentScene);
+        std::ostringstream out;
+        out << "[";
+        if (sceneFound != store.scenes.end()) {
+            bool first = true;
+            for (const auto& pair : sceneFound->second.entities) {
+                if (!first) out << ",";
+                first = false;
+                out << "\"" << json_escape(pair.first) << "\"";
+            }
+        }
+        out << "]";
+        return out.str();
+    }
+    if (functionName == "entities_with_tag") {
+        if (args.empty()) return "[]";
+        const std::string tag = to_string(args[0]);
+        const auto sceneFound = store.scenes.find(store.currentScene);
+        std::ostringstream out;
+        out << "[";
+        if (sceneFound != store.scenes.end()) {
+            bool first = true;
+            for (const auto& pair : sceneFound->second.entities) {
+                if (pair.second.tag == tag) {
+                    if (!first) out << ",";
+                    first = false;
+                    out << "\"" << json_escape(pair.first) << "\"";
+                }
+            }
+        }
+        out << "]";
+        return out.str();
+    }
+    if (functionName == "light_point") {
+        if (args.size() < 2) throw std::runtime_error("engine.light_point requires id and position.");
+        EngineScene& scene = ensure_scene(store, store.currentScene);
+        const std::string id = to_string(args[0]);
+        RTPointLightState pt;
+        const EngineVec3 pos = value_to_vec3(args[1], EngineVec3{0.0f, 3.0f, 0.0f});
+        pt.posX = pos.x;
+        pt.posY = pos.y;
+        pt.posZ = pos.z;
+        if (args.size() > 2) {
+            const EngineColor c = value_to_color(args[2], EngineColor{255, 255, 255, 255});
+            pt.colorR = static_cast<unsigned char>(c.r);
+            pt.colorG = static_cast<unsigned char>(c.g);
+            pt.colorB = static_cast<unsigned char>(c.b);
+        }
+        if (args.size() > 3) pt.intensity = static_cast<float>(to_number(args[3]));
+        if (args.size() > 4) pt.radius = static_cast<float>(to_number(args[4]));
+        scene.pointLights[id] = pt;
+        rt_add_point_light(pt.posX, pt.posY, pt.posZ, RTColor{pt.colorR, pt.colorG, pt.colorB, 255}, pt.intensity, pt.radius);
+        return "true";
+    }
+    if (functionName == "light_spot") {
+        if (args.size() < 3) throw std::runtime_error("engine.light_spot requires id, position, direction.");
+        EngineScene& scene = ensure_scene(store, store.currentScene);
+        const std::string id = to_string(args[0]);
+        RTPointLightState pt;
+        const EngineVec3 pos = value_to_vec3(args[1], EngineVec3{0.0f, 3.0f, 0.0f});
+        pt.posX = pos.x;
+        pt.posY = pos.y;
+        pt.posZ = pos.z;
+        if (args.size() > 3) {
+            const EngineColor c = value_to_color(args[3], EngineColor{255, 255, 255, 255});
+            pt.colorR = static_cast<unsigned char>(c.r);
+            pt.colorG = static_cast<unsigned char>(c.g);
+            pt.colorB = static_cast<unsigned char>(c.b);
+        }
+        if (args.size() > 4) pt.intensity = static_cast<float>(to_number(args[4]));
+        if (args.size() > 5) pt.radius = static_cast<float>(to_number(args[5]));
+        scene.pointLights[id] = pt;
+        rt_add_point_light(pt.posX, pt.posY, pt.posZ, RTColor{pt.colorR, pt.colorG, pt.colorB, 255}, pt.intensity, pt.radius);
+        return "true";
+    }
+    if (functionName == "light_remove") {
+        if (args.empty()) return "false";
+        EngineScene& scene = ensure_scene(store, store.currentScene);
+        return json_bool(scene.pointLights.erase(to_string(args[0])) > 0);
+    }
+    if (functionName == "lights_clear") {
+        EngineScene& scene = ensure_scene(store, store.currentScene);
+        scene.pointLights.clear();
+        rt_clear_point_lights();
+        return "true";
+    }
+    if (functionName == "lights") {
+        const auto sceneFound = store.scenes.find(store.currentScene);
+        std::ostringstream out;
+        out << "[";
+        if (sceneFound != store.scenes.end()) {
+            bool first = true;
+            for (const auto& pair : sceneFound->second.pointLights) {
+                if (!first) out << ",";
+                first = false;
+                out << "{"
+                    << "\"id\":\"" << json_escape(pair.first) << "\","
+                    << "\"position\":[" << pair.second.posX << "," << pair.second.posY << "," << pair.second.posZ << "],"
+                    << "\"intensity\":" << pair.second.intensity << ","
+                    << "\"radius\":" << pair.second.radius
+                    << "}";
+            }
+        }
+        out << "]";
+        return out.str();
+    }
+    if (functionName == "ray_sphere") {
+        if (args.size() < 4) throw std::runtime_error("engine.ray_sphere requires rayPos, rayDir, center, radius.");
+        const EngineVec3 rayPos = value_to_vec3(args[0]);
+        const EngineVec3 rayDir = vec3_normalize(value_to_vec3(args[1]));
+        const EngineVec3 center = value_to_vec3(args[2]);
+        const float radius = static_cast<float>(to_number(args[3]));
+        float dist = 0.0f;
+        if (ray_intersects_sphere(rayPos, rayDir, center, radius, dist)) {
+            return json_number(dist);
+        }
+        return "null";
+    }
+    if (functionName == "ray_aabb") {
+        if (args.size() < 4) throw std::runtime_error("engine.ray_aabb requires rayPos, rayDir, min, max.");
+        const EngineVec3 rayPos = value_to_vec3(args[0]);
+        const EngineVec3 rayDir = vec3_normalize(value_to_vec3(args[1]));
+        const EngineVec3 minB = value_to_vec3(args[2]);
+        const EngineVec3 maxB = value_to_vec3(args[3]);
+        float dist = 0.0f;
+        if (ray_intersects_aabb(rayPos, rayDir, minB, maxB, dist)) {
+            return json_number(dist);
+        }
+        return "null";
+    }
+    if (functionName == "aabb_intersects") {
+        if (args.size() < 4) throw std::runtime_error("engine.aabb_intersects requires minA, maxA, minB, maxB.");
+        const EngineVec3 minA = value_to_vec3(args[0]);
+        const EngineVec3 maxA = value_to_vec3(args[1]);
+        const EngineVec3 minB = value_to_vec3(args[2]);
+        const EngineVec3 maxB = value_to_vec3(args[3]);
+        return json_bool(aabb_intersects_aabb(minA, maxA, minB, maxB));
+    }
+    if (functionName == "distance_3d") {
+        if (args.size() < 2) throw std::runtime_error("engine.distance_3d requires two points.");
+        const EngineVec3 a = value_to_vec3(args[0]);
+        const EngineVec3 b = value_to_vec3(args[1]);
+        return json_number(vec3_length(vec3_sub(b, a)));
+    }
+    if (functionName == "raycast") {
+        if (args.size() < 2) throw std::runtime_error("engine.raycast requires origin and direction.");
+        const EngineVec3 rayPos = value_to_vec3(args[0]);
+        const EngineVec3 rayDir = vec3_normalize(value_to_vec3(args[1]));
+        const float maxDist = args.size() > 2 ? static_cast<float>(to_number(args[2])) : 1000.0f;
+        const auto sceneFound = store.scenes.find(store.currentScene);
+        if (sceneFound == store.scenes.end()) return "{\"hit\":false}";
+
+        float closestDist = maxDist;
+        std::string hitEntity;
+        EngineVec3 hitNormal{0.0f, 1.0f, 0.0f};
+
+        for (const auto& pair : sceneFound->second.entities) {
+            const EngineEntity& ent = pair.second;
+            if (!ent.visible) continue;
+            float dist = 0.0f;
+            if (ent.kind == "sphere") {
+                const float radius = std::max(ent.scale.x, std::max(ent.scale.y, ent.scale.z));
+                if (ray_intersects_sphere(rayPos, rayDir, ent.position, radius, dist) && dist < closestDist) {
+                    closestDist = dist;
+                    hitEntity = pair.first;
+                    const EngineVec3 hitPt = vec3_add(rayPos, vec3_mul(rayDir, dist));
+                    hitNormal = vec3_normalize(vec3_sub(hitPt, ent.position));
+                }
+            } else {
+                const float hx = std::max(0.1f, ent.scale.x * 0.5f);
+                const float hy = std::max(0.1f, ent.scale.y * 0.5f);
+                const float hz = std::max(0.1f, ent.scale.z * 0.5f);
+                const EngineVec3 minB{ent.position.x - hx, ent.position.y - hy, ent.position.z - hz};
+                const EngineVec3 maxB{ent.position.x + hx, ent.position.y + hy, ent.position.z + hz};
+                if (ray_intersects_aabb(rayPos, rayDir, minB, maxB, dist) && dist < closestDist) {
+                    closestDist = dist;
+                    hitEntity = pair.first;
+                    hitNormal = EngineVec3{0.0f, 1.0f, 0.0f};
+                }
+            }
+        }
+
+        if (!hitEntity.empty()) {
+            const EngineVec3 hitPt = vec3_add(rayPos, vec3_mul(rayDir, closestDist));
+            std::ostringstream out;
+            out << "{"
+                << "\"hit\":true,"
+                << "\"entity\":\"" << json_escape(hitEntity) << "\","
+                << "\"distance\":" << closestDist << ","
+                << "\"point\":[" << hitPt.x << "," << hitPt.y << "," << hitPt.z << "],"
+                << "\"normal\":[" << hitNormal.x << "," << hitNormal.y << "," << hitNormal.z << "]"
+                << "}";
+            return out.str();
+        }
+        return "{\"hit\":false}";
+    }
+    if (functionName == "camera_get") {
+        const EngineVec3 fwd = vec3_normalize(vec3_sub(store.cameraTarget, store.cameraPosition));
+        const EngineVec3 rgt = vec3_normalize(vec3_cross(fwd, store.cameraUp));
+        std::ostringstream out;
+        out << "{"
+            << "\"position\":[" << store.cameraPosition.x << "," << store.cameraPosition.y << "," << store.cameraPosition.z << "],"
+            << "\"target\":[" << store.cameraTarget.x << "," << store.cameraTarget.y << "," << store.cameraTarget.z << "],"
+            << "\"up\":[" << store.cameraUp.x << "," << store.cameraUp.y << "," << store.cameraUp.z << "],"
+            << "\"fov\":" << store.cameraFov << ","
+            << "\"forward\":[" << fwd.x << "," << fwd.y << "," << fwd.z << "],"
+            << "\"right\":[" << rgt.x << "," << rgt.y << "," << rgt.z << "]"
+            << "}";
+        return out.str();
+    }
+    if (functionName == "camera_move") {
+        if (args.size() < 3) throw std::runtime_error("engine.camera_move requires dx, dy, dz.");
+        const EngineVec3 delta{
+            static_cast<float>(to_number(args[0])),
+            args.size() > 1 ? static_cast<float>(to_number(args[1])) : 0.0f,
+            args.size() > 2 ? static_cast<float>(to_number(args[2])) : 0.0f
+        };
+        store.cameraPosition = vec3_add(store.cameraPosition, delta);
+        store.cameraTarget = vec3_add(store.cameraTarget, delta);
+        rt_set_camera(store.cameraPosition.x, store.cameraPosition.y, store.cameraPosition.z,
+                      store.cameraTarget.x, store.cameraTarget.y, store.cameraTarget.z,
+                      store.cameraUp.x, store.cameraUp.y, store.cameraUp.z, store.cameraFov);
+        return "true";
+    }
+    if (functionName == "camera_fps") {
+        const float dt = args.size() > 0 ? static_cast<float>(to_number(args[0])) : 0.016f;
+        const float speed = args.size() > 1 ? static_cast<float>(to_number(args[1])) : 6.0f;
+        const float sens = args.size() > 2 ? static_cast<float>(to_number(args[2])) : 0.15f;
+
+        float moveFwd = 0.0f;
+        float moveRight = 0.0f;
+        if (rt_key_down('W') || rt_key_down(265)) moveFwd += 1.0f;
+        if (rt_key_down('S') || rt_key_down(264)) moveFwd -= 1.0f;
+        if (rt_key_down('D') || rt_key_down(262)) moveRight += 1.0f;
+        if (rt_key_down('A') || rt_key_down(263)) moveRight -= 1.0f;
+
+        const EngineVec3 fwd = vec3_normalize(vec3_sub(store.cameraTarget, store.cameraPosition));
+        const EngineVec3 rgt = vec3_normalize(vec3_cross(fwd, store.cameraUp));
+        const EngineVec3 moveDir = vec3_add(vec3_mul(fwd, moveFwd), vec3_mul(rgt, moveRight));
+        const float moveLen = vec3_length(moveDir);
+        if (moveLen > 0.001f) {
+            const EngineVec3 delta = vec3_mul(vec3_normalize(moveDir), speed * dt);
+            store.cameraPosition = vec3_add(store.cameraPosition, delta);
+            store.cameraTarget = vec3_add(store.cameraTarget, delta);
+        }
+
+        if (rt_mouse_down(1)) {
+            const float dx = store.mouseDeltaX * sens;
+            const float dy = store.mouseDeltaY * sens;
+            rt_camera_orbit(-dx, -dy, 0.0f);
+        }
+
+        rt_set_camera(store.cameraPosition.x, store.cameraPosition.y, store.cameraPosition.z,
+                      store.cameraTarget.x, store.cameraTarget.y, store.cameraTarget.z,
+                      store.cameraUp.x, store.cameraUp.y, store.cameraUp.z, store.cameraFov);
+        return "true";
+    }
+    if (functionName == "draw_cylinder") {
+        if (args.size() < 4) throw std::runtime_error("engine.draw_cylinder requires position, radius, height, color.");
+        const EngineVec3 pos = value_to_vec3(args[0]);
+        const float radius = static_cast<float>(to_number(args[1]));
+        const float height = static_cast<float>(to_number(args[2]));
+        const EngineColor col = value_to_color(args[3]);
+        rt_draw_cylinder(to_rt_vec3(pos), radius, radius, height, 16, to_rt_color(col));
+        return "true";
+    }
+    if (functionName == "draw_cone") {
+        if (args.size() < 4) throw std::runtime_error("engine.draw_cone requires position, radius, height, color.");
+        const EngineVec3 pos = value_to_vec3(args[0]);
+        const float radius = static_cast<float>(to_number(args[1]));
+        const float height = static_cast<float>(to_number(args[2]));
+        const EngineColor col = value_to_color(args[3]);
+        rt_draw_cone(to_rt_vec3(pos), radius, height, 16, to_rt_color(col));
+        return "true";
+    }
+    if (functionName == "draw_capsule") {
+        if (args.size() < 4) throw std::runtime_error("engine.draw_capsule requires position, radius, height, color.");
+        const EngineVec3 pos = value_to_vec3(args[0]);
+        const float radius = static_cast<float>(to_number(args[1]));
+        const float height = static_cast<float>(to_number(args[2]));
+        const EngineColor col = value_to_color(args[3]);
+        rt_draw_capsule(to_rt_vec3(pos), radius, height, 16, 8, to_rt_color(col));
+        return "true";
+    }
+    if (functionName == "draw_wire_cube") {
+        if (args.size() < 3) throw std::runtime_error("engine.draw_wire_cube requires position, size, color.");
+        const EngineVec3 pos = value_to_vec3(args[0]);
+        const EngineVec3 size = value_to_vec3(args[1], EngineVec3{1.0f, 1.0f, 1.0f});
+        const EngineColor col = value_to_color(args[2]);
+        rt_draw_wire_cube(to_rt_vec3(pos), to_rt_vec3(size), to_rt_color(col));
+        return "true";
+    }
+    if (functionName == "draw_wire_sphere") {
+        if (args.size() < 3) throw std::runtime_error("engine.draw_wire_sphere requires position, radius, color.");
+        const EngineVec3 pos = value_to_vec3(args[0]);
+        const float radius = static_cast<float>(to_number(args[1]));
+        const EngineColor col = value_to_color(args[2]);
+        rt_draw_wire_sphere(to_rt_vec3(pos), radius, to_rt_color(col));
+        return "true";
+    }
+    if (functionName == "draw_line_3d") {
+        if (args.size() < 3) throw std::runtime_error("engine.draw_line_3d requires start, end, color.");
+        const EngineVec3 start = value_to_vec3(args[0]);
+        const EngineVec3 end = value_to_vec3(args[1]);
+        const EngineColor col = value_to_color(args[2]);
+        rt_draw_line_3d(to_rt_vec3(start), to_rt_vec3(end), to_rt_color(col));
+        return "true";
+    }
+    if (functionName == "draw_ray") {
+        if (args.size() < 4) throw std::runtime_error("engine.draw_ray requires origin, direction, length, color.");
+        const EngineVec3 origin = value_to_vec3(args[0]);
+        const EngineVec3 dir = value_to_vec3(args[1]);
+        const float len = static_cast<float>(to_number(args[2]));
+        const EngineColor col = value_to_color(args[3]);
+        rt_draw_ray(to_rt_vec3(origin), to_rt_vec3(dir), len, to_rt_color(col));
+        return "true";
+    }
+    if (functionName == "draw_axes") {
+        const EngineVec3 origin = args.size() > 0 ? value_to_vec3(args[0]) : EngineVec3{0.0f, 0.0f, 0.0f};
+        const float len = args.size() > 1 ? static_cast<float>(to_number(args[1])) : 1.0f;
+        rt_draw_axes(to_rt_vec3(origin), len);
+        return "true";
+    }
+    if (functionName == "axis") {
+        if (args.empty()) return "0.0";
+        const std::string name = to_string(args[0]);
+        float val = 0.0f;
+        if (name == "Horizontal" || name == "horizontal") {
+            if (rt_key_down('D') || rt_key_down(262)) val += 1.0f;
+            if (rt_key_down('A') || rt_key_down(263)) val -= 1.0f;
+        } else if (name == "Vertical" || name == "vertical") {
+            if (rt_key_down('W') || rt_key_down(265)) val += 1.0f;
+            if (rt_key_down('S') || rt_key_down(264)) val -= 1.0f;
+        }
+        return json_number(val);
+    }
+    if (functionName == "mouse_pos") {
+        std::ostringstream out;
+        out << "{\"x\":" << rt_mouse_x() << ",\"y\":" << rt_mouse_y() << "}";
+        return out.str();
+    }
+    if (functionName == "mouse_delta") {
+        std::ostringstream out;
+        out << "{\"dx\":" << rt_mouse_delta_x() << ",\"dy\":" << rt_mouse_delta_y() << "}";
+        return out.str();
+    }
+    if (functionName == "mouse_lock") {
+        if (!args.empty()) store.mouseLocked = to_bool(args[0], false);
+        return json_bool(store.mouseLocked);
+    }
+    if (functionName == "stats") {
+        return render_stats_json(store);
+    }
+    if (functionName == "time") {
+        const double now = static_cast<double>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count()) * 0.001;
+        return json_number(now);
     }
     throw std::runtime_error("__RQIO_FALLBACK__");
 }
