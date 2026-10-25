@@ -196,11 +196,26 @@ private:
             break;
         }
 
-        case OpCode::BuildArray:
+        case OpCode::BuildArray: {
+            int cnt = ins.a;
+            out_ << "{RqValue _arr=rq_arr_new(" << std::max(cnt, 8) << ");";
+            if (cnt > 0) {
+                out_ << "for(int _ai=0;_ai<" << cnt << ";_ai++){rq_push(_arr,_stack[_sp-" << cnt << "+_ai]);}";
+                out_ << "_sp-=" << cnt << ";";
+            }
+            out_ << "_stack[_sp++]=_arr;}\n";
+            break;
+        }
         case OpCode::BuildObject:
             out_ << "_stack[_sp++]=rq_null();\n"; break;
         case OpCode::GetIndex:
-            out_ << "_sp-=2; _stack[_sp++]=rq_null();\n"; break;
+            out_ << "{RqValue _idx=_stack[--_sp],_tgt=_stack[--_sp];_stack[_sp++]=rq_get_index(_tgt,_idx);}\n"; break;
+        case OpCode::SetIndex:
+            out_ << "{RqValue _val=_stack[--_sp],_idx=_stack[--_sp],_tgt=_stack[--_sp];rq_set_index(_tgt,_idx,_val);_stack[_sp++]=_val;}\n"; break;
+        case OpCode::SetLocalIndex:
+            out_ << "{RqValue _val=_stack[--_sp],_idx=_stack[--_sp];rq_set_index(_locals[" << ins.a << "],_idx,_val);_stack[_sp++]=_val;}\n"; break;
+        case OpCode::SetGlobalIndex:
+            out_ << "{RqValue _val=_stack[--_sp],_idx=_stack[--_sp];rq_set_index(_g_" << safeName(cname(ins.a)) << ",_idx,_val);_stack[_sp++]=_val;}\n"; break;
         default:
             out_ << "if(_sp>0)_sp--;\n"; break;
         }
@@ -212,12 +227,22 @@ private:
         if (callee=="num")         return "rq_num_builtin(_ca[0])";
         if (callee=="bool")        return "rq_bool_builtin(_ca[0])";
         if (callee=="type")        return "rq_type_builtin(_ca[0])";
-        if (callee=="math.sqrt")   return "rq_sqrt(_ca[0])";
-        if (callee=="math.abs")    return "rq_abs(_ca[0])";
-        if (callee=="math.floor")  return "rq_floor(_ca[0])";
-        if (callee=="math.ceil")   return "rq_ceil(_ca[0])";
-        if (callee=="math.round")  return "rq_round(_ca[0])";
-        if (callee=="math.pow")    return "rq_pow(_ca[0],_ca[1])";
+        if (callee=="clock.ms" || callee=="time.now_ms" || callee=="clock_ms") return "rq_clock_ms()";
+        if (callee=="len" || callee=="length") return "rq_len(_ca[0])";
+        if (callee=="push")        return "rq_push(_ca[0],_ca[1])";
+        if (callee=="pop")         return "rq_pop(_ca[0])";
+        if (callee=="math.sqrt" || callee=="sqrt") return "rq_sqrt(_ca[0])";
+        if (callee=="math.abs"  || callee=="abs")  return "rq_abs(_ca[0])";
+        if (callee=="math.floor"|| callee=="floor")return "rq_floor(_ca[0])";
+        if (callee=="math.ceil" || callee=="ceil") return "rq_ceil(_ca[0])";
+        if (callee=="math.round"|| callee=="round")return "rq_round(_ca[0])";
+        if (callee=="math.pow"  || callee=="pow")  return "rq_pow(_ca[0],_ca[1])";
+        if (callee=="math.sin"  || callee=="sin")  return "rq_sin(_ca[0])";
+        if (callee=="math.cos"  || callee=="cos")  return "rq_cos(_ca[0])";
+        if (callee=="math.tan"  || callee=="tan")  return "rq_tan(_ca[0])";
+        if (callee=="math.log"  || callee=="log")  return "rq_log(_ca[0])";
+        if (callee=="math.min"  || callee=="min")  return "rq_min(_ca[0],_ca[1])";
+        if (callee=="math.max"  || callee=="max")  return "rq_max(_ca[0],_ca[1])";
         size_t expectedParams = (size_t)argc;
         if (program_) {
             auto fit = program_->functions.find(callee);
@@ -241,8 +266,18 @@ private:
              << "#include <string.h>\n"
              << "#include <math.h>\n"
              << "#include <stdint.h>\n\n"
-             << "typedef enum { RQ_NULL = 0, RQ_NUM = 1, RQ_STR = 2, RQ_BOOL = 3 } RqType;\n"
-             << "typedef struct RqValue { RqType type; union { double num; char* str; int b; } d; } RqValue;\n\n"
+             << "#ifdef _WIN32\n"
+             << "#ifndef WIN32_LEAN_AND_MEAN\n"
+             << "#define WIN32_LEAN_AND_MEAN\n"
+             << "#endif\n"
+             << "#include <windows.h>\n"
+             << "#else\n"
+             << "#include <time.h>\n"
+             << "#endif\n\n"
+             << "typedef enum { RQ_NULL = 0, RQ_NUM = 1, RQ_STR = 2, RQ_BOOL = 3, RQ_ARR = 4 } RqType;\n"
+             << "struct RqArray;\n"
+             << "typedef struct RqValue { RqType type; union { double num; char* str; int b; struct RqArray* arr; } d; } RqValue;\n"
+             << "typedef struct RqArray { RqValue* items; int size; int capacity; } RqArray;\n\n"
              << "static inline RqValue rq_null(void)       { RqValue v; v.type=RQ_NULL; v.d.num=0; return v; }\n"
              << "static inline RqValue rq_num(double n)    { RqValue v; v.type=RQ_NUM; v.d.num=n; return v; }\n"
              << "static inline RqValue rq_bool(int b)      { RqValue v; v.type=RQ_BOOL; v.d.b=(b!=0); return v; }\n"
@@ -251,9 +286,53 @@ private:
              << "    if (!src) { v.d.str=(char*)malloc(1); v.d.str[0]=0; return v; }\n"
              << "    size_t l=strlen(src); v.d.str=(char*)malloc(l+1); memcpy(v.d.str,src,l+1); return v;\n"
              << "}\n"
+             << "static inline RqValue rq_arr_new(int cap) {\n"
+             << "    if (cap < 8) cap = 8;\n"
+             << "    RqArray* a = (RqArray*)malloc(sizeof(RqArray));\n"
+             << "    a->items = (RqValue*)malloc(sizeof(RqValue) * (size_t)cap);\n"
+             << "    a->size = 0; a->capacity = cap;\n"
+             << "    RqValue v; v.type = RQ_ARR; v.d.arr = a;\n"
+             << "    return v;\n"
+             << "}\n"
+             << "static inline RqValue rq_push(RqValue arrVal, RqValue item) {\n"
+             << "    if (arrVal.type == RQ_ARR && arrVal.d.arr) {\n"
+             << "        RqArray* a = arrVal.d.arr;\n"
+             << "        if (a->size >= a->capacity) {\n"
+             << "            a->capacity = a->capacity < 8 ? 8 : a->capacity * 2;\n"
+             << "            a->items = (RqValue*)realloc(a->items, sizeof(RqValue) * (size_t)a->capacity);\n"
+             << "        }\n"
+             << "        a->items[a->size++] = item;\n"
+             << "    }\n"
+             << "    return arrVal;\n"
+             << "}\n"
+             << "static inline RqValue rq_pop(RqValue arrVal) {\n"
+             << "    if (arrVal.type == RQ_ARR && arrVal.d.arr && arrVal.d.arr->size > 0) {\n"
+             << "        return arrVal.d.arr->items[--arrVal.d.arr->size];\n"
+             << "    }\n"
+             << "    return rq_null();\n"
+             << "}\n"
+             << "static inline RqValue rq_len(RqValue v) {\n"
+             << "    if (v.type == RQ_ARR && v.d.arr) return rq_num((double)v.d.arr->size);\n"
+             << "    if (v.type == RQ_STR && v.d.str) return rq_num((double)strlen(v.d.str));\n"
+             << "    return rq_num(0.0);\n"
+             << "}\n"
+             << "static inline RqValue rq_get_index(RqValue target, RqValue indexVal) {\n"
+             << "    if (target.type == RQ_ARR && target.d.arr) {\n"
+             << "        int idx = (int)indexVal.d.num;\n"
+             << "        if (idx >= 0 && idx < target.d.arr->size) return target.d.arr->items[idx];\n"
+             << "    }\n"
+             << "    return rq_null();\n"
+             << "}\n"
+             << "static inline void rq_set_index(RqValue target, RqValue indexVal, RqValue val) {\n"
+             << "    if (target.type == RQ_ARR && target.d.arr) {\n"
+             << "        int idx = (int)indexVal.d.num;\n"
+             << "        if (idx >= 0 && idx < target.d.arr->size) target.d.arr->items[idx] = val;\n"
+             << "        else if (idx == target.d.arr->size) rq_push(target, val);\n"
+             << "    }\n"
+             << "}\n"
              << "static inline int rq_truthy(RqValue v) {\n"
              << "    switch(v.type){case RQ_NULL:return 0;case RQ_BOOL:return v.d.b;\n"
-             << "    case RQ_NUM:return v.d.num!=0.0;case RQ_STR:return v.d.str&&v.d.str[0]!=0;default:return 0;}\n"
+             << "    case RQ_NUM:return v.d.num!=0.0;case RQ_STR:return v.d.str&&v.d.str[0]!=0;case RQ_ARR:return v.d.arr&&v.d.arr->size>0;default:return 0;}\n"
              << "}\n"
              << "static inline char* rq_to_cstr(RqValue v) {\n"
              << "    char buf[64];\n"
@@ -261,6 +340,7 @@ private:
              << "    case RQ_NULL: return strdup(\"null\");\n"
              << "    case RQ_BOOL: return strdup(v.d.b?\"true\":\"false\");\n"
              << "    case RQ_STR:  return strdup(v.d.str?v.d.str:\"\");\n"
+             << "    case RQ_ARR:  return strdup(\"[array]\");\n"
              << "    case RQ_NUM: {\n"
              << "        double n=v.d.num;\n"
              << "        if(n==(long long)n&&n>=-1e15&&n<=1e15) snprintf(buf,sizeof(buf),\"%lld\",(long long)n);\n"
@@ -269,6 +349,28 @@ private:
              << "    default: return strdup(\"\");}\n"
              << "}\n"
              << "static inline RqValue rq_to_str(RqValue v){char*s=rq_to_cstr(v);RqValue r=rq_str_copy(s);free(s);return r;}\n\n"
+             << "#ifdef _WIN32\n"
+             << "static inline RqValue rq_clock_ms(void) {\n"
+             << "    static LARGE_INTEGER freq;\n"
+             << "    static int init = 0;\n"
+             << "    if (!init) { QueryPerformanceFrequency(&freq); init = 1; }\n"
+             << "    LARGE_INTEGER c;\n"
+             << "    QueryPerformanceCounter(&c);\n"
+             << "    return rq_num((double)c.QuadPart * 1000.0 / (double)freq.QuadPart);\n"
+             << "}\n"
+             << "#else\n"
+             << "static inline RqValue rq_clock_ms(void) {\n"
+             << "    struct timespec ts;\n"
+             << "    clock_gettime(CLOCK_MONOTONIC, &ts);\n"
+             << "    return rq_num((double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1000000.0);\n"
+             << "}\n"
+             << "#endif\n\n"
+             << "static inline RqValue rq_sin(RqValue v){return rq_num(sin(v.d.num));}\n"
+             << "static inline RqValue rq_cos(RqValue v){return rq_num(cos(v.d.num));}\n"
+             << "static inline RqValue rq_tan(RqValue v){return rq_num(tan(v.d.num));}\n"
+             << "static inline RqValue rq_log(RqValue v){return rq_num(log(v.d.num));}\n"
+             << "static inline RqValue rq_min(RqValue a,RqValue b){return rq_num(a.d.num<b.d.num?a.d.num:b.d.num);}\n"
+             << "static inline RqValue rq_max(RqValue a,RqValue b){return rq_num(a.d.num>b.d.num?a.d.num:b.d.num);}\n"
              << "static inline RqValue rq_add(RqValue a,RqValue b){\n"
              << "    if(a.type==RQ_STR||b.type==RQ_STR){\n"
              << "        char*sa=rq_to_cstr(a),*sb=rq_to_cstr(b);\n"

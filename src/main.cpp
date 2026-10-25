@@ -32,7 +32,7 @@
 #endif
 
 namespace {
-const char* kRayQuiroVersion = "1.1";
+const char* kRayQuiroVersion = "1.2";
 
 std::string rebuildCommandLine(int argc, char* argv[]) {
     std::string cmd;
@@ -140,7 +140,7 @@ struct ProjectConfig {
 void printHelp() {
     std::cout << "\033[1;36mRayQuiro\033[0m " << kRayQuiroVersion << " — modern, fast programming language\n";
     std::cout << "\n\033[1mUsage:\033[0m\n";
-    std::cout << "  rqio run <script.rq> [--watch]      Run script (Bytecode VM default, --watch for Hot Reload)\n";
+    std::cout << "  rqio run <script.rq> [--watch]      Run script via Bytecode VM (--watch for Hot Reload)\n";
     std::cout << "  rqio test [path]                    Run test suite (*_test.rq or tests/)\n";
     std::cout << "  rqio repl                           Start interactive REPL\n";
     std::cout << "  rqio                                Start REPL (or run project if in rqio.json folder)\n";
@@ -603,7 +603,7 @@ CliOptions parseArguments(int argc, char* argv[]) {
             continue;
         }
         if (arg == "--legacy") {
-            options.legacyMode = true;
+            Log::warn("--legacy interpreter is deprecated in RayQuiro 1.2; running on Bytecode VM.");
             continue;
         }
         if (arg == "--watch" || arg == "-w") {
@@ -955,8 +955,7 @@ int runTestSuite(const CliOptions& cliOptions, const ProjectConfig& projectConfi
 
         try {
             auto resolved = Compiler::resolveForExecution(testFile);
-            if (!cliOptions.legacyMode &&
-                BytecodeCompiler::supports(
+            if (BytecodeCompiler::supports(
                     *resolved.program,
                     resolved.builtinNamespaceAliases,
                     resolved.builtinSymbolAliases)) {
@@ -1395,8 +1394,7 @@ int main(int argc, char* argv[]) {
                 auto resolved = Compiler::resolveForExecution(cliOptions.inputPath);
                 g_scriptArgs = cliOptions.scriptArgs;
 
-                if (!cliOptions.legacyMode &&
-                    BytecodeCompiler::supports(
+                if (BytecodeCompiler::supports(
                         *resolved.program,
                         resolved.builtinNamespaceAliases,
                         resolved.builtinSymbolAliases)) {
