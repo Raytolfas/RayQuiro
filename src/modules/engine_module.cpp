@@ -1972,6 +1972,64 @@ std::string dispatch_module(EngineStore& store, const std::string& functionName,
         rt_draw_fps(x, y);
         return "true";
     }
+    if (functionName == "load_model") {
+        if (args.empty()) return "0";
+        const std::string filename = to_string(args[0]);
+        return json_number(static_cast<double>(rt_load_model(filename.c_str())));
+    }
+    if (functionName == "unload_model") {
+        if (!args.empty()) rt_unload_model(static_cast<int64_t>(to_number(args[0])));
+        return "true";
+    }
+    if (functionName == "draw_model") {
+        if (args.size() < 2) throw std::runtime_error("__RQIO_FALLBACK__");
+        const int64_t id = static_cast<int64_t>(to_number(args[0]));
+        const EngineVec3 pos = value_to_vec3(args[1]);
+        const float scale = args.size() > 2 ? static_cast<float>(to_number(args[2])) : 1.0f;
+        const EngineColor tint = args.size() > 3 ? value_to_color(args[3]) : EngineColor{255, 255, 255, 255};
+        rt_draw_model(id, to_rt_vec3(pos), scale, to_rt_color(tint));
+        return "true";
+    }
+    if (functionName == "draw_model_ex") {
+        if (args.size() < 6) throw std::runtime_error("__RQIO_FALLBACK__");
+        const int64_t id = static_cast<int64_t>(to_number(args[0]));
+        const EngineVec3 pos = value_to_vec3(args[1]);
+        const EngineVec3 rotAxis = value_to_vec3(args[2]);
+        const float rotAngle = static_cast<float>(to_number(args[3]));
+        const EngineVec3 scale = value_to_vec3(args[4], EngineVec3{1.0f, 1.0f, 1.0f});
+        const EngineColor tint = value_to_color(args[5]);
+        rt_draw_model_ex(id, to_rt_vec3(pos), to_rt_vec3(rotAxis), rotAngle, to_rt_vec3(scale), to_rt_color(tint));
+        return "true";
+    }
+    if (functionName == "load_texture") {
+        if (args.empty()) return "0";
+        const std::string filename = to_string(args[0]);
+        return json_number(static_cast<double>(rt_load_texture(filename.c_str())));
+    }
+    if (functionName == "unload_texture") {
+        if (!args.empty()) rt_unload_texture(static_cast<int64_t>(to_number(args[0])));
+        return "true";
+    }
+    if (functionName == "draw_texture") {
+        if (args.size() < 3) throw std::runtime_error("__RQIO_FALLBACK__");
+        const int64_t id = static_cast<int64_t>(to_number(args[0]));
+        const int x = static_cast<int>(to_number(args[1]));
+        const int y = static_cast<int>(to_number(args[2]));
+        const EngineColor tint = args.size() > 3 ? value_to_color(args[3]) : EngineColor{255, 255, 255, 255};
+        rt_draw_texture(id, x, y, to_rt_color(tint));
+        return "true";
+    }
+    if (functionName == "draw_texture_ex") {
+        if (args.size() < 6) throw std::runtime_error("__RQIO_FALLBACK__");
+        const int64_t id = static_cast<int64_t>(to_number(args[0]));
+        const float x = static_cast<float>(to_number(args[1]));
+        const float y = static_cast<float>(to_number(args[2]));
+        const float rot = static_cast<float>(to_number(args[3]));
+        const float scale = static_cast<float>(to_number(args[4]));
+        const EngineColor tint = value_to_color(args[5]);
+        rt_draw_texture_ex(id, x, y, rot, scale, to_rt_color(tint));
+        return "true";
+    }
     if (functionName == "asset_path") {
         if (args.empty()) return "\"" + json_escape(store.assetsRoot) + "\"";
         const std::filesystem::path path = store.projectRoot / store.assetsRoot / to_string(args[0]);

@@ -15,6 +15,9 @@ class Generator {
     RuntimeFeatures features;
     std::unordered_map<std::string, std::string> builtinNamespaceAliases;
     std::unordered_map<std::string, std::string> builtinSymbolAliases;
+    std::unordered_map<std::string, FunctionStmt*> userFunctionMap_;
+    std::unordered_map<std::string, std::vector<std::pair<std::string, std::string>>> structDefaults_;
+    int tempVarCounter_ = 0;
 
     std::string escapeString(const std::string& value) const {
         std::string escaped;
@@ -50,8 +53,9 @@ class Generator {
     }
 
     std::string mangleSymbol(const std::string& name) const {
-        std::string mangled;
-        mangled.reserve(name.size() + 8);
+        if (name.rfind("_rq_", 0) == 0) return name;
+        std::string mangled = "_rq_u_";
+        mangled.reserve(name.size() + 14);
 
         for (char c : name) {
             if (std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_') {
@@ -128,6 +132,18 @@ class Generator {
 
         if (auto arrayExpr = dynamic_cast<ArrayExpr*>(expr)) {
             for (auto& item : arrayExpr->elements) scanExpr(item.get());
+            return;
+        }
+
+        if (auto structInst = dynamic_cast<StructInstExpr*>(expr)) {
+            for (auto& item : structInst->fields) scanExpr(item.second.get());
+            return;
+        }
+
+        if (auto rng = dynamic_cast<RangeExpr*>(expr)) {
+            scanExpr(rng->start.get());
+            scanExpr(rng->end.get());
+            return;
         }
     }
 
@@ -204,12 +220,87 @@ class Generator {
 
         if (auto returnStmt = dynamic_cast<ReturnStmt*>(stmt)) {
             for (const auto& v : returnStmt->values) scanExpr(v.get());
+            return;
+        }
+
+        if (auto arrDestr = dynamic_cast<ArrayDestructureStmt*>(stmt)) {
+            scanExpr(arrDestr->init.get());
+            return;
+        }
+
+        if (auto objDestr = dynamic_cast<ObjectDestructureStmt*>(stmt)) {
+            scanExpr(objDestr->init.get());
+            return;
+        }
+
+        if (auto forIn = dynamic_cast<ForInStmt*>(stmt)) {
+            scanExpr(forIn->iterable.get());
+            scanStmt(forIn->body.get());
+            return;
+        }
+
+        if (auto spawnStmt = dynamic_cast<SpawnStmt*>(stmt)) {
+            scanExpr(spawnStmt->callExpr.get());
+            return;
+        }
+
+        if (auto deferStmt = dynamic_cast<DeferStmt*>(stmt)) {
+            scanStmt(deferStmt->statement.get());
+            return;
+        }
+
+        if (auto testStmt = dynamic_cast<TestStmt*>(stmt)) {
+            scanStmt(testStmt->body.get());
+            return;
+        }
+
+        if (auto tc = dynamic_cast<TryCatchStmt*>(stmt)) {
+            scanStmt(tc->tryBody.get());
+            if (tc->catchBody) scanStmt(tc->catchBody.get());
+            if (tc->finallyBody) scanStmt(tc->finallyBody.get());
+            return;
+        }
+
+        if (auto matchStmt = dynamic_cast<MatchStmt*>(stmt)) {
+            scanExpr(matchStmt->subject.get());
+            for (auto& arm : matchStmt->arms) {
+                if (arm.pattern) scanExpr(arm.pattern.get());
+                if (arm.guard) scanExpr(arm.guard.get());
+                scanStmt(arm.body.get());
+            }
+            return;
         }
     }
 
     std::string builtinName(const std::string& name) const {
         const std::string builtin = canonicalizeBuiltinName(name);
         if (builtin == "print" || builtin == "log.info") return "rq::print";
+        if (builtin == "assert") return "rq::assert_val";
+        if (builtin == "assert_eq") return "rq::assert_eq";
+        if (builtin == "assert_ne") return "rq::assert_ne";
+        if (builtin == "assert_true") return "rq::assert_true";
+        if (builtin == "assert_false") return "rq::assert_false";
+        if (builtin == "assert_null") return "rq::assert_null";
+        if (builtin == "channel") return "rq::channel_create";
+        if (builtin == "buffer.alloc" || builtin == "buffer_alloc") return "rq::buffer_alloc";
+        if (builtin == "buffer.from_string" || builtin == "buffer_from_string") return "rq::buffer_from_string";
+        if (builtin == "buffer.to_string" || builtin == "buffer_to_string") return "rq::buffer_to_string";
+        if (builtin == "buffer.size" || builtin == "buffer_size" || builtin == "buffer.len") return "rq::buffer_size";
+        if (builtin == "buffer.get_u8" || builtin == "buffer_get_u8") return "rq::buffer_get_u8";
+        if (builtin == "buffer.set_u8" || builtin == "buffer_set_u8") return "rq::buffer_set_u8";
+        if (builtin == "buffer.get_i32" || builtin == "buffer_get_i32") return "rq::buffer_get_i32";
+        if (builtin == "buffer.set_i32" || builtin == "buffer_set_i32") return "rq::buffer_set_i32";
+        if (builtin == "buffer.get_f64" || builtin == "buffer_get_f64") return "rq::buffer_get_f64";
+        if (builtin == "buffer.set_f64" || builtin == "buffer_set_f64") return "rq::buffer_set_f64";
+        if (builtin == "buffer.slice" || builtin == "buffer_slice") return "rq::buffer_slice";
+        if (builtin == "struct.calcsize" || builtin == "struct_calcsize") return "rq::struct_calcsize";
+        if (builtin == "struct.pack" || builtin == "struct_pack") return "rq::struct_pack";
+        if (builtin == "struct.unpack" || builtin == "struct_unpack") return "rq::struct_unpack";
+        if (builtin == "ffi.load" || builtin == "ffi_load") return "rq::ffi_load";
+        if (builtin == "ffi.sym" || builtin == "ffi_sym") return "rq::ffi_sym";
+        if (builtin == "ffi.call" || builtin == "ffi_call") return "rq::ffi_call";
+        if (builtin == "ffi.close" || builtin == "ffi_close") return "rq::ffi_close";
+        if (builtin == "ffi.callback" || builtin == "ffi_callback") return "rq::ffi_callback";
         if (builtin == "len") return "rq::len";
         if (builtin == "str") return "rq::str";
         if (builtin == "num") return "rq::num";
@@ -226,6 +317,30 @@ class Generator {
         if (builtin == "trim") return "rq::trim";
         if (builtin == "replace") return "rq::replace";
         if (builtin == "slice") return "rq::slice";
+        if (builtin == "sqrt" || builtin == "math.sqrt") return "rq::sqrt_value";
+        if (builtin == "pow" || builtin == "math.pow") return "rq::pow_value";
+        if (builtin == "abs" || builtin == "math.abs") return "rq::abs_value";
+        if (builtin == "sin" || builtin == "math.sin") return "rq::sin_value";
+        if (builtin == "cos" || builtin == "math.cos") return "rq::cos_value";
+        if (builtin == "tan" || builtin == "math.tan") return "rq::tan_value";
+        if (builtin == "asin" || builtin == "math.asin") return "rq::asin_value";
+        if (builtin == "acos" || builtin == "math.acos") return "rq::acos_value";
+        if (builtin == "atan" || builtin == "math.atan") return "rq::atan_value";
+        if (builtin == "exp" || builtin == "math.exp") return "rq::exp_value";
+        if (builtin == "log" || builtin == "math.log") return "rq::log_value";
+        if (builtin == "log2" || builtin == "math.log2") return "rq::log2_value";
+        if (builtin == "log10" || builtin == "math.log10") return "rq::log10_value";
+        if (builtin == "vec2") return "rq::vec2_value";
+        if (builtin == "vec3") return "rq::vec3_value";
+        if (builtin == "vec_add") return "rq::vec_add_value";
+        if (builtin == "vec_sub") return "rq::vec_sub_value";
+        if (builtin == "vec_mul") return "rq::vec_mul_value";
+        if (builtin == "vec_dot") return "rq::vec_dot_value";
+        if (builtin == "vec_len") return "rq::vec_len_value";
+        if (builtin == "vec_normalize") return "rq::vec_normalize_value";
+        if (builtin == "vec_dist") return "rq::vec_dist_value";
+        if (builtin == "vec_lerp") return "rq::vec_lerp_value";
+        if (builtin == "vec_cross") return "rq::vec_cross_value";
         if (builtin == "floor") return "rq::floor_value";
         if (builtin == "ceil") return "rq::ceil_value";
         if (builtin == "round") return "rq::round_value";
@@ -260,9 +375,17 @@ class Generator {
         if (builtin == "web.end") return "rq::web_end";
         if (builtin == "app.init") return "rq::app_init";
         if (builtin == "app.run") return "rq::app_run";
-        if (builtin == "app.button") return "rq::app_button";
-        if (builtin == "app.text") return "rq::app_text";
+        if (builtin == "app.button") return "rq::app_button_value";
+        if (builtin == "app.text") return "rq::app_text_value";
+        if (builtin == "app.column") return "rq::app_column_value";
+        if (builtin == "app.to_html" || builtin == "app.toHtml") return "rq::app_to_html_value";
+        if (builtin == "app.dark") return "rq::ui_dark_value";
+        if (builtin == "app.rgb") return "rq::ui_rgb_value";
+        if (builtin == "app.blend") return "rq::ui_blend_value";
         if (builtin == "app.msg") return "rq::app_msg";
+        if (builtin == "ui.dark") return "rq::ui_dark_value";
+        if (builtin == "ui.rgb") return "rq::ui_rgb_value";
+        if (builtin == "ui.blend") return "rq::ui_blend_value";
         if (builtin == "ui.init") return "rq::ui_init";
         if (builtin == "ui.style") return "rq::ui_style";
         if (builtin == "ui.hero") return "rq::ui_hero";
@@ -283,7 +406,7 @@ class Generator {
         if (builtin == "process.exe_dir") return "rq::process_exe_dir";
         if (builtin == "os.name") return "rq::os_name";
         if (builtin == "os.arch") return "rq::os_arch";
-        if (builtin == "os.cwd") return "rq::os_cwd";
+        if (builtin == "os.cwd" || builtin == "process.cwd") return "rq::process_cwd";
         if (builtin == "os.chdir") return "rq::os_chdir";
         if (builtin == "os.home") return "rq::os_home";
         if (builtin == "os.temp") return "rq::os_temp";
@@ -304,7 +427,18 @@ class Generator {
         if (builtin == "db.close") return "rq::db_close";
         if (builtin == "env.get") return "rq::env_get";
         if (builtin == "env.set") return "rq::env_set";
+        if (builtin == "env.has") return "rq::env_has";
         if (builtin == "env.path_add") return "rq::env_path_add";
+        if (builtin == "path.join") return "rq::path_join";
+        if (builtin == "path.basename") return "rq::path_basename";
+        if (builtin == "path.dirname") return "rq::path_dirname";
+        if (builtin == "path.ext" || builtin == "path.extname") return "rq::path_ext";
+        if (builtin == "path.exists") return "rq::path_exists";
+        if (builtin == "path.is_abs") return "rq::path_is_abs";
+        if (builtin == "hash.sha256" || builtin == "crypto.sha256") return "rq::sha256_value";
+        if (builtin == "crypto.base64_encode") return "rq::base64_encode_value";
+        if (builtin == "crypto.base64_decode") return "rq::base64_decode_value";
+        if (builtin == "crypto.uuid") return "rq::uuid_value";
         if (builtin == "engine.init") return "rq::engine_init";
         if (builtin == "engine.shutdown") return "rq::engine_shutdown";
         if (builtin == "engine.should_close") return "rq::engine_should_close";
@@ -348,7 +482,19 @@ class Generator {
         if (builtin == "engine.export_scene") return "rq::engine_export_scene";
         if (builtin == "engine.scene_save") return "rq::engine_scene_save";
         if (builtin == "engine.scene_load") return "rq::engine_scene_load";
-        if (builtin == "engine.entity") return "rq::engine_entity";
+        if (builtin == "engine.capabilities" || builtin == "engine.backend_capabilities") return "rq::engine_capabilities_value";
+        if (builtin == "engine.entity") return "rq::engine_entity_value";
+        if (builtin == "engine.entity_get") return "rq::engine_entity_get_value";
+        if (builtin == "engine.entity_transform") return "rq::engine_entity_transform_value";
+        if (builtin == "engine.entity_tag") return "rq::engine_entity_tag_value";
+        if (builtin == "engine.entity_has_tag") return "rq::engine_entity_has_tag_value";
+        if (builtin == "engine.entities_with_tag") return "rq::engine_entities_with_tag_value";
+        if (builtin == "engine.distance_3d") return "rq::engine_distance_3d_value";
+        if (builtin == "engine.ray_sphere") return "rq::engine_ray_sphere_value";
+        if (builtin == "engine.aabb_intersects") return "rq::engine_aabb_intersects_value";
+        if (builtin == "engine.light_point") return "rq::engine_light_point_value";
+        if (builtin == "engine.lights") return "rq::engine_lights_value";
+        if (builtin == "engine.raycast") return "rq::engine_raycast_value";
         if (builtin == "engine.entity_exists") return "rq::engine_entity_exists";
         if (builtin == "engine.entity_remove") return "rq::engine_entity_remove";
         if (builtin == "engine.entity_set_position") return "rq::engine_entity_set_position";
@@ -380,6 +526,14 @@ class Generator {
         if (builtin == "engine.draw_sphere") return "rq::engine_draw_sphere";
         if (builtin == "engine.draw_text") return "rq::engine_draw_text";
         if (builtin == "engine.draw_fps") return "rq::engine_draw_fps";
+        if (builtin == "engine.load_model") return "rq::engine_load_model";
+        if (builtin == "engine.unload_model") return "rq::engine_unload_model";
+        if (builtin == "engine.draw_model") return "rq::engine_draw_model";
+        if (builtin == "engine.draw_model_ex") return "rq::engine_draw_model_ex";
+        if (builtin == "engine.load_texture") return "rq::engine_load_texture";
+        if (builtin == "engine.unload_texture") return "rq::engine_unload_texture";
+        if (builtin == "engine.draw_texture") return "rq::engine_draw_texture";
+        if (builtin == "engine.draw_texture_ex") return "rq::engine_draw_texture_ex";
         return "";
     }
 
@@ -417,6 +571,9 @@ class Generator {
         }
 
         if (auto identifier = dynamic_cast<IdentifierExpr*>(expr)) {
+            if (identifier->name == "pi" || identifier->name == "math.pi") {
+                return "rq::Value(3.14159265358979323846)";
+            }
             return mangleSymbol(identifier->name);
         }
 
@@ -452,13 +609,148 @@ class Generator {
             }
             const std::string canonical = canonicalizeBuiltinName(call->callee);
             if (canonical.find('.') != std::string::npos) {
+                const std::string prefix = canonical.substr(0, canonical.find('.'));
+                const std::string method = canonical.substr(canonical.find('.') + 1);
+                if (prefix != "app" && prefix != "ui" && prefix != "web" && prefix != "engine" &&
+                    prefix != "fs" && prefix != "env" && prefix != "process" && prefix != "os" &&
+                    prefix != "net" && prefix != "http" && prefix != "db" && prefix != "time" &&
+                    prefix != "json" && prefix != "buffer" && prefix != "struct" && prefix != "ffi" &&
+                    prefix != "hash" && prefix != "crypto" && prefix != "path" && prefix != "math" &&
+                    prefix != "datetime") {
+                    return "rq::method_call(" + mangleSymbol(prefix) + ", \"" + escapeString(method) + "\", " + genValueVector(call->args) + ")";
+                }
                 return "rq::native_call(\"" + escapeString(canonical) + "\", " + genValueVector(call->args) + ")";
+            }
+            auto fIt = userFunctionMap_.find(call->callee);
+            if (fIt != userFunctionMap_.end()) {
+                const auto* fn = fIt->second;
+                if (!fn->params.empty() && fn->params.back().isVariadic) {
+                    size_t regCount = fn->params.size() - 1;
+                    std::string argsStr;
+                    for (size_t i = 0; i < regCount; ++i) {
+                        if (i > 0) argsStr += ", ";
+                        if (i < call->args.size()) argsStr += genExpr(call->args[i].get());
+                        else argsStr += "rq::Value()";
+                    }
+                    if (regCount > 0) argsStr += ", ";
+                    std::string restVec = "{";
+                    for (size_t i = regCount; i < call->args.size(); ++i) {
+                        if (i > regCount) restVec += ", ";
+                        restVec += genExpr(call->args[i].get());
+                    }
+                    restVec += "}";
+                    argsStr += "rq::Value::from_array(" + restVec + ")";
+                    return "::" + mangleSymbol(call->callee) + "(" + argsStr + ")";
+                }
+                return "::" + mangleSymbol(call->callee) + "(" + genArgs(call->args) + ")";
             }
             return mangleSymbol(call->callee) + "(" + genArgs(call->args) + ")";
         }
 
+        if (auto dynCall = dynamic_cast<DynCallExpr*>(expr)) {
+            return "(" + genExpr(dynCall->callee.get()) + ")(" + genArgs(dynCall->args) + ")";
+        }
+
+        if (auto lambda = dynamic_cast<LambdaExpr*>(expr)) {
+            std::ostringstream ss;
+            ss << "rq::Value(rq::Value::Fn([=](const std::vector<rq::Value>& _rq_args) -> rq::Value {\n";
+            for (size_t i = 0; i < lambda->params.size(); ++i) {
+                ss << "    rq::Value " << mangleSymbol(lambda->params[i].name)
+                   << " = (_rq_args.size() > " << i << " ? _rq_args[" << i << "] : rq::Value());\n";
+            }
+            if (lambda->body) {
+                for (auto& s : lambda->body->statements) {
+                    genStmt(ss, s.get(), "    ");
+                }
+            }
+            ss << "    return rq::Value();\n";
+            ss << "}))";
+            return ss.str();
+        }
+
+        if (auto nullCoalesce = dynamic_cast<NullCoalesceExpr*>(expr)) {
+            return "rq::coalesce(" + genExpr(nullCoalesce->left.get()) + ", [&](){ return " + genExpr(nullCoalesce->right.get()) + "; })";
+        }
+
+        if (auto optChain = dynamic_cast<OptionalChainExpr*>(expr)) {
+            std::string idx = optChain->index ? genExpr(optChain->index.get()) : ("rq::Value(\"" + escapeString(optChain->field) + "\")");
+            return "rq::optional_chain(" + genExpr(optChain->object.get()) + ", " + idx + ")";
+        }
+
+        if (auto slice = dynamic_cast<SliceExpr*>(expr)) {
+            std::string s = slice->start ? genExpr(slice->start.get()) : "rq::Value()";
+            std::string e = slice->end ? genExpr(slice->end.get()) : "rq::Value()";
+            return "rq::slice_expr(" + genExpr(slice->target.get()) + ", " + s + ", " + e + ")";
+        }
+
+        if (auto tmpl = dynamic_cast<TemplateLiteralExpr*>(expr)) {
+            std::string res = "rq::Value(std::string(\"" + escapeString(tmpl->parts.empty() ? "" : tmpl->parts[0]) + "\")";
+            for (size_t i = 0; i < tmpl->exprs.size(); ++i) {
+                res += " + rq::to_string(" + genExpr(tmpl->exprs[i].get()) + ")";
+                if (i + 1 < tmpl->parts.size()) {
+                    res += " + std::string(\"" + escapeString(tmpl->parts[i + 1]) + "\")";
+                }
+            }
+            res += ")";
+            return res;
+        }
+
+        if (auto comp = dynamic_cast<CompoundAssignExpr*>(expr)) {
+            std::string sym = mangleSymbol(comp->name);
+            std::string val = genExpr(comp->value.get());
+            if (comp->op == "+") return "(" + sym + " = rq::add(" + sym + ", " + val + "))";
+            if (comp->op == "-") return "(" + sym + " = rq::sub(" + sym + ", " + val + "))";
+            if (comp->op == "*") return "(" + sym + " = rq::mul(" + sym + ", " + val + "))";
+            if (comp->op == "/") return "(" + sym + " = rq::div(" + sym + ", " + val + "))";
+            if (comp->op == "%") return "(" + sym + " = rq::mod(" + sym + ", " + val + "))";
+        }
+
+        if (auto post = dynamic_cast<PostfixExpr*>(expr)) {
+            std::string sym = mangleSymbol(post->name);
+            if (post->op == "++") return "([&](){ rq::Value _old = " + sym + "; " + sym + " = rq::add(" + sym + ", rq::Value(1.0)); return _old; }())";
+            if (post->op == "--") return "([&](){ rq::Value _old = " + sym + "; " + sym + " = rq::sub(" + sym + ", rq::Value(1.0)); return _old; }())";
+        }
+
         if (auto arrayExpr = dynamic_cast<ArrayExpr*>(expr)) {
             return "rq::array(" + genValueVector(arrayExpr->elements) + ")";
+        }
+
+        if (auto objExpr = dynamic_cast<ObjectExpr*>(expr)) {
+            std::string res = "rq::object({";
+            for (size_t i = 0; i < objExpr->fields.size(); ++i) {
+                if (i > 0) res += ", ";
+                res += "{\"" + escapeString(objExpr->fields[i].first) + "\", " + genExpr(objExpr->fields[i].second.get()) + "}";
+            }
+            res += "})";
+            return res;
+        }
+
+        if (auto structInst = dynamic_cast<StructInstExpr*>(expr)) {
+            std::vector<std::pair<std::string, std::string>> fieldList;
+            auto sIt = structDefaults_.find(structInst->typeName);
+            if (sIt != structDefaults_.end()) {
+                fieldList = sIt->second;
+            }
+            for (const auto& f : structInst->fields) {
+                bool found = false;
+                for (auto& ex : fieldList) {
+                    if (ex.first == f.first) {
+                        ex.second = genExpr(f.second.get());
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    fieldList.push_back({f.first, genExpr(f.second.get())});
+                }
+            }
+            std::string res = "rq::object({";
+            for (size_t i = 0; i < fieldList.size(); ++i) {
+                if (i > 0) res += ", ";
+                res += "{\"" + escapeString(fieldList[i].first) + "\", " + fieldList[i].second + "}";
+            }
+            res += "})";
+            return res;
         }
 
         if (auto indexExpr = dynamic_cast<IndexExpr*>(expr)) {
@@ -469,6 +761,10 @@ class Generator {
             return "rq::set_index(" + genExpr(setIdx->object.get()) + ", " + genExpr(setIdx->index.get()) + ", " + genExpr(setIdx->value.get()) + ")";
         }
 
+        if (auto rng = dynamic_cast<RangeExpr*>(expr)) {
+            return "rq::range(std::vector<rq::Value>{" + genExpr(rng->start.get()) + ", " + genExpr(rng->end.get()) + "})";
+        }
+
         if (auto assignExpr = dynamic_cast<AssignExpr*>(expr)) {
             return "(" + mangleSymbol(assignExpr->name) + " = " + genExpr(assignExpr->value.get()) + ")";
         }
@@ -476,84 +772,233 @@ class Generator {
         return "rq::Value()";
     }
 
-    void genStmtBlockBody(Stmt* stmt, const std::string& indent) {
+    void genStmtBlockBody(std::ostream& outStream, Stmt* stmt, const std::string& indent) {
         if (auto block = dynamic_cast<BlockStmt*>(stmt)) {
             for (auto& child : block->statements) {
-                genStmt(child.get(), indent);
+                genStmt(outStream, child.get(), indent);
             }
             return;
         }
-        genStmt(stmt, indent);
+        genStmt(outStream, stmt, indent);
     }
 
-    void genStmt(Stmt* stmt, const std::string& indent) {
+    void genStmt(std::ostream& outStream, Stmt* stmt, const std::string& indent, bool isTopLevel = false) {
+        if (!stmt) return;
+
         if (auto varStmt = dynamic_cast<VarStmt*>(stmt)) {
-            out << indent << (varStmt->isLet ? "const " : "") << "rq::Value " << mangleSymbol(varStmt->name) << " = " << genExpr(varStmt->initializer.get()) << ";\n";
+            if (isTopLevel) {
+                outStream << indent << mangleSymbol(varStmt->name) << " = " << genExpr(varStmt->initializer.get()) << ";\n";
+            } else {
+                outStream << indent << (varStmt->isLet ? "const " : "") << "rq::Value " << mangleSymbol(varStmt->name) << " = " << genExpr(varStmt->initializer.get()) << ";\n";
+            }
+            return;
+        }
+
+        if (auto arrDestr = dynamic_cast<ArrayDestructureStmt*>(stmt)) {
+            std::string tmp = "_rq_tmp_" + std::to_string(tempVarCounter_++);
+            outStream << indent << "rq::Value " << tmp << " = " << genExpr(arrDestr->init.get()) << ";\n";
+            for (size_t i = 0; i < arrDestr->names.size(); ++i) {
+                if (arrDestr->names[i].empty()) continue;
+                if (isTopLevel) {
+                    outStream << indent << mangleSymbol(arrDestr->names[i]) << " = rq::index(" << tmp << ", rq::Value(" << std::to_string(i) << ".0));\n";
+                } else {
+                    outStream << indent << "rq::Value " << mangleSymbol(arrDestr->names[i]) << " = rq::index(" << tmp << ", rq::Value(" << std::to_string(i) << ".0));\n";
+                }
+            }
+            return;
+        }
+
+        if (auto objDestr = dynamic_cast<ObjectDestructureStmt*>(stmt)) {
+            std::string tmp = "_rq_tmp_" + std::to_string(tempVarCounter_++);
+            outStream << indent << "rq::Value " << tmp << " = " << genExpr(objDestr->init.get()) << ";\n";
+            for (const auto& [key, local] : objDestr->bindings) {
+                if (isTopLevel) {
+                    outStream << indent << mangleSymbol(local) << " = rq::index(" << tmp << ", rq::Value(\"" << escapeString(key) << "\"));\n";
+                } else {
+                    outStream << indent << "rq::Value " << mangleSymbol(local) << " = rq::index(" << tmp << ", rq::Value(\"" << escapeString(key) << "\"));\n";
+                }
+            }
+            return;
+        }
+
+        if (auto forIn = dynamic_cast<ForInStmt*>(stmt)) {
+            std::string itName = "_rq_it_" + std::to_string(tempVarCounter_++);
+            std::string itemVar = forIn->valVar.empty() ? forIn->keyVar : forIn->valVar;
+            outStream << indent << "rq::Value " << itName << " = " << genExpr(forIn->iterable.get()) << ";\n";
+            outStream << indent << "if (rq::is_array(" << itName << ")) {\n";
+            outStream << indent << "    for (const auto& _item : *" << itName << ".as_array()) {\n";
+            outStream << indent << "        rq::Value " << mangleSymbol(itemVar) << " = _item;\n";
+            genStmtBlockBody(outStream, forIn->body.get(), indent + "        ");
+            outStream << indent << "    }\n";
+            outStream << indent << "}\n";
+            return;
+        }
+
+        if (auto spawnStmt = dynamic_cast<SpawnStmt*>(stmt)) {
+            outStream << indent << "std::thread([=]() mutable {\n";
+            if (dynamic_cast<LambdaExpr*>(spawnStmt->callExpr.get())) {
+                outStream << indent << "    (" << genExpr(spawnStmt->callExpr.get()) << ")();\n";
+            } else if (dynamic_cast<CallExpr*>(spawnStmt->callExpr.get()) || dynamic_cast<DynCallExpr*>(spawnStmt->callExpr.get())) {
+                outStream << indent << "    " << genExpr(spawnStmt->callExpr.get()) << ";\n";
+            } else {
+                std::string exprCode = genExpr(spawnStmt->callExpr.get());
+                outStream << indent << "    auto _rq_spawn_target = " << exprCode << ";\n";
+                outStream << indent << "    if (rq::is_function(_rq_spawn_target)) _rq_spawn_target();\n";
+            }
+            outStream << indent << "}).detach();\n";
+            return;
+        }
+
+        if (auto deferStmt = dynamic_cast<DeferStmt*>(stmt)) {
+            std::string defVar = "_rq_defer_" + std::to_string(tempVarCounter_++);
+            outStream << indent << "rq::_RqDefer " << defVar << "([=]() mutable {\n";
+            genStmt(outStream, deferStmt->statement.get(), indent + "    ");
+            outStream << indent << "});\n";
+            return;
+        }
+
+        if (auto testStmt = dynamic_cast<TestStmt*>(stmt)) {
+            outStream << indent << "{\n";
+            genStmtBlockBody(outStream, testStmt->body.get(), indent + "    ");
+            outStream << indent << "}\n";
+            return;
+        }
+
+        if (auto tc = dynamic_cast<TryCatchStmt*>(stmt)) {
+            outStream << indent << "try {\n";
+            genStmtBlockBody(outStream, tc->tryBody.get(), indent + "    ");
+            outStream << indent << "} catch (const std::exception& _e) {\n";
+            if (!tc->errorParam.empty()) {
+                outStream << indent << "    rq::Value " << mangleSymbol(tc->errorParam) << " = rq::Value(_e.what());\n";
+            }
+            if (tc->catchBody) {
+                genStmtBlockBody(outStream, tc->catchBody.get(), indent + "    ");
+            }
+            outStream << indent << "} catch (...) {\n";
+            if (!tc->errorParam.empty()) {
+                outStream << indent << "    rq::Value " << mangleSymbol(tc->errorParam) << " = rq::Value(\"error\");\n";
+            }
+            if (tc->catchBody) {
+                genStmtBlockBody(outStream, tc->catchBody.get(), indent + "    ");
+            }
+            outStream << indent << "}\n";
+            if (tc->finallyBody) {
+                genStmtBlockBody(outStream, tc->finallyBody.get(), indent);
+            }
+            return;
+        }
+
+        if (auto th = dynamic_cast<ThrowStmt*>(stmt)) {
+            outStream << indent << "throw std::runtime_error(rq::to_string(" << genExpr(th->value.get()) << "));\n";
+            return;
+        }
+
+        if (auto matchStmt = dynamic_cast<MatchStmt*>(stmt)) {
+            std::string subj = "_rq_subj_" + std::to_string(tempVarCounter_++);
+            outStream << indent << "rq::Value " << subj << " = " << genExpr(matchStmt->subject.get()) << ";\n";
+            bool first = true;
+            for (const auto& arm : matchStmt->arms) {
+                bool isWildcard = (!arm.pattern);
+                if (auto id = dynamic_cast<IdentifierExpr*>(arm.pattern.get())) {
+                    if (id->name == "_") isWildcard = true;
+                }
+                if (isWildcard) {
+                    if (arm.guard) {
+                        outStream << indent << (first ? "if" : "else if") << " (rq::truthy(" << genExpr(arm.guard.get()) << ")) {\n";
+                        genStmt(outStream, arm.body.get(), indent + "    ");
+                        outStream << indent << "}\n";
+                        first = false;
+                    } else {
+                        outStream << indent << (first ? "" : "else ") << "{\n";
+                        genStmt(outStream, arm.body.get(), indent + "    ");
+                        outStream << indent << "}\n";
+                        break;
+                    }
+                } else if (auto rng = dynamic_cast<RangeExpr*>(arm.pattern.get())) {
+                    std::string cond = "(rq::truthy(rq::gte(" + subj + ", " + genExpr(rng->start.get()) + ")) && rq::truthy(rq::lte(" + subj + ", " + genExpr(rng->end.get()) + ")))";
+                    if (arm.guard) {
+                        cond += " && rq::truthy(" + genExpr(arm.guard.get()) + ")";
+                    }
+                    outStream << indent << (first ? "if" : "else if") << " (" << cond << ") {\n";
+                    genStmt(outStream, arm.body.get(), indent + "    ");
+                    outStream << indent << "}\n";
+                    first = false;
+                } else {
+                    std::string cond = "(rq::truthy(rq::eq(" + subj + ", " + genExpr(arm.pattern.get()) + ")) || (rq::to_string(" + subj + ") == rq::to_string(" + genExpr(arm.pattern.get()) + ")))";
+                    if (arm.guard) {
+                        cond += " && rq::truthy(" + genExpr(arm.guard.get()) + ")";
+                    }
+                    outStream << indent << (first ? "if" : "else if") << " (" << cond << ") {\n";
+                    genStmt(outStream, arm.body.get(), indent + "    ");
+                    outStream << indent << "}\n";
+                    first = false;
+                }
+            }
             return;
         }
 
         if (auto exprStmt = dynamic_cast<ExprStmt*>(stmt)) {
-            out << indent << genExpr(exprStmt->expr.get()) << ";\n";
+            outStream << indent << genExpr(exprStmt->expr.get()) << ";\n";
             return;
         }
 
         if (auto logStmt = dynamic_cast<LogStmt*>(stmt)) {
-            out << indent << "rq::print(std::vector<rq::Value>{" << genExpr(logStmt->message.get()) << "});\n";
+            outStream << indent << "rq::print(std::vector<rq::Value>{" << genExpr(logStmt->message.get()) << "});\n";
             return;
         }
 
         if (auto blockStmt = dynamic_cast<BlockStmt*>(stmt)) {
-            out << indent << "{\n";
+            outStream << indent << "{\n";
             for (auto& child : blockStmt->statements) {
-                genStmt(child.get(), indent + "    ");
+                genStmt(outStream, child.get(), indent + "    ");
             }
-            out << indent << "}\n";
+            outStream << indent << "}\n";
             return;
         }
 
         if (auto ifStmt = dynamic_cast<IfStmt*>(stmt)) {
-            out << indent << "if (rq::truthy(" << genExpr(ifStmt->condition.get()) << ")) {\n";
-            genStmtBlockBody(ifStmt->thenBranch.get(), indent + "    ");
-            out << indent << "}";
+            outStream << indent << "if (rq::truthy(" << genExpr(ifStmt->condition.get()) << ")) {\n";
+            genStmtBlockBody(outStream, ifStmt->thenBranch.get(), indent + "    ");
+            outStream << indent << "}";
             if (ifStmt->elseBranch) {
-                out << " else {\n";
-                genStmtBlockBody(ifStmt->elseBranch.get(), indent + "    ");
-                out << indent << "}";
+                outStream << " else {\n";
+                genStmtBlockBody(outStream, ifStmt->elseBranch.get(), indent + "    ");
+                outStream << indent << "}";
             }
-            out << "\n";
+            outStream << "\n";
             return;
         }
 
         if (auto whileStmt = dynamic_cast<WhileStmt*>(stmt)) {
-            out << indent << "while (rq::truthy(" << genExpr(whileStmt->condition.get()) << ")) {\n";
-            genStmtBlockBody(whileStmt->body.get(), indent + "    ");
-            out << indent << "}\n";
+            outStream << indent << "while (rq::truthy(" << genExpr(whileStmt->condition.get()) << ")) {\n";
+            genStmtBlockBody(outStream, whileStmt->body.get(), indent + "    ");
+            outStream << indent << "}\n";
             return;
         }
 
         if (auto returnStmt = dynamic_cast<ReturnStmt*>(stmt)) {
             if (returnStmt->values.empty()) {
-                out << indent << "return rq::Value();\n";
+                outStream << indent << "return rq::Value();\n";
             } else if (returnStmt->values.size() == 1) {
-                out << indent << "return " << genExpr(returnStmt->values[0].get()) << ";\n";
+                outStream << indent << "return " << genExpr(returnStmt->values[0].get()) << ";\n";
             } else {
-                out << indent << "return rq::Value::from_array({";
+                outStream << indent << "return rq::Value::from_array({";
                 for (size_t i = 0; i < returnStmt->values.size(); ++i) {
-                    if (i > 0) out << ",";
-                    out << genExpr(returnStmt->values[i].get());
+                    if (i > 0) outStream << ",";
+                    outStream << genExpr(returnStmt->values[i].get());
                 }
-                out << "});\n";
+                outStream << "});\n";
             }
             return;
         }
 
         if (dynamic_cast<BreakStmt*>(stmt)) {
-            out << indent << "break;\n";
+            outStream << indent << "break;\n";
             return;
         }
 
         if (dynamic_cast<ContinueStmt*>(stmt)) {
-            out << indent << "continue;\n";
+            outStream << indent << "continue;\n";
         }
     }
 
@@ -574,7 +1019,19 @@ public:
             {"time", "time"},
             {"fs", "fs"},
             {"env", "env"},
-            {"process", "process"}
+            {"process", "process"},
+            {"os", "os"},
+            {"net", "net"},
+            {"http", "http"},
+            {"db", "db"},
+            {"buffer", "buffer"},
+            {"struct", "struct"},
+            {"ffi", "ffi"},
+            {"hash", "hash"},
+            {"crypto", "crypto"},
+            {"path", "path"},
+            {"math", "math"},
+            {"datetime", "datetime"}
         };
         builtinSymbolAliases.clear();
         for (const auto& entry : namespaceAliases) {
@@ -587,12 +1044,23 @@ public:
             scanStmt(statement.get());
         }
 
+        structDefaults_.clear();
+        for (auto& statement : root->statements) {
+            if (auto sStmt = dynamic_cast<StructStmt*>(statement.get())) {
+                auto& defs = structDefaults_[sStmt->name];
+                for (auto& f : sStmt->fields) {
+                    defs.push_back({f.first, f.second ? genExpr(f.second.get()) : "rq::Value()"});
+                }
+            }
+        }
+
         out.open(outputPath);
         out << "#include <algorithm>\n";
         out << "#include <chrono>\n";
         out << "#include <cmath>\n";
         out << "#include <cctype>\n";
         out << "#include <cstdlib>\n";
+        out << "#include <cstdio>\n";
         out << "#include <filesystem>\n";
         out << "#include <fstream>\n";
         out << "#include <iostream>\n";
@@ -605,6 +1073,13 @@ public:
         out << "#include <unordered_map>\n";
         out << "#include <variant>\n";
         out << "#include <vector>\n";
+        out << "#include <cstring>\n";
+        out << "#include <functional>\n";
+        out << "#include <iomanip>\n";
+        out << "#include <queue>\n";
+        out << "#include <mutex>\n";
+        out << "#include <condition_variable>\n";
+        out << "#include <atomic>\n";
         if (!features.usesApp && !features.usesUi) {
             out << "#ifdef _WIN32\n";
             out << "#ifndef WIN32_LEAN_AND_MEAN\n";
@@ -628,6 +1103,13 @@ public:
             out << "#include <ws2tcpip.h>\n";
         }
         if (!features.usesApp && !features.usesUi) {
+            out << "#define Rectangle Win32Rectangle\n";
+            out << "#define CloseWindow Win32CloseWindow\n";
+            out << "#define ShowCursor Win32ShowCursor\n";
+            out << "#define DrawText Win32DrawText\n";
+            out << "#define DrawTextEx Win32DrawTextEx\n";
+            out << "#define LoadImage Win32LoadImage\n";
+            out << "#define PlaySound Win32PlaySound\n";
             out << "#include <windows.h>\n";
             out << "#undef Rectangle\n";
             out << "#undef CloseWindow\n";
@@ -663,12 +1145,17 @@ public:
 
         RuntimeEmitter::emit(out, features);
 
+        userFunctionMap_.clear();
         for (auto& statement : root->statements) {
             if (auto functionStmt = dynamic_cast<FunctionStmt*>(statement.get())) {
+                userFunctionMap_[functionStmt->name] = functionStmt;
                 out << "rq::Value " << mangleSymbol(functionStmt->name) << "(";
                 for (size_t i = 0; i < functionStmt->params.size(); ++i) {
                     if (i) out << ", ";
                     out << "rq::Value " << mangleSymbol(functionStmt->params[i].name);
+                    if (functionStmt->params[i].defaultValue) {
+                        out << " = " << genExpr(functionStmt->params[i].defaultValue.get());
+                    }
                 }
                 out << ");\n";
             }
@@ -678,6 +1165,14 @@ public:
         for (auto& statement : root->statements) {
             if (auto varStmt = dynamic_cast<VarStmt*>(statement.get())) {
                 out << "rq::Value " << mangleSymbol(varStmt->name) << ";\n";
+            } else if (auto arrDestr = dynamic_cast<ArrayDestructureStmt*>(statement.get())) {
+                for (const auto& name : arrDestr->names) {
+                    if (!name.empty()) out << "rq::Value " << mangleSymbol(name) << ";\n";
+                }
+            } else if (auto objDestr = dynamic_cast<ObjectDestructureStmt*>(statement.get())) {
+                for (const auto& [k, v] : objDestr->bindings) {
+                    out << "rq::Value " << mangleSymbol(v) << ";\n";
+                }
             }
         }
         out << "\n";
@@ -691,7 +1186,7 @@ public:
                 }
                 out << ") {\n";
                 for (auto& bodyStmt : functionStmt->body->statements) {
-                    genStmt(bodyStmt.get(), "    ");
+                    genStmt(out, bodyStmt.get(), "    ");
                 }
                 out << "    return rq::Value();\n";
                 out << "}\n\n";
@@ -703,7 +1198,10 @@ public:
             if (dynamic_cast<FunctionStmt*>(statement.get())) continue;
             if (dynamic_cast<ImportStmt*>(statement.get())) continue;
             if (dynamic_cast<FromImportStmt*>(statement.get())) continue;
-            genStmt(statement.get(), "    ");
+            if (dynamic_cast<StructStmt*>(statement.get())) continue;
+            if (dynamic_cast<EnumStmt*>(statement.get())) continue;
+            if (dynamic_cast<InterfaceStmt*>(statement.get())) continue;
+            genStmt(out, statement.get(), "    ", true);
         }
         out << "    return 0;\n";
         out << "}\n";

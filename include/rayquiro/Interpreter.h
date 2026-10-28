@@ -2803,6 +2803,14 @@ private:
         if (builtin == "engine.draw_sphere") return builtin_engine_draw_sphere(args);
         if (builtin == "engine.draw_text") return builtin_engine_draw_text(args);
         if (builtin == "engine.draw_fps") return builtin_engine_draw_fps(args);
+        if (builtin == "engine.load_model") return builtin_engine_load_model(args);
+        if (builtin == "engine.unload_model") return builtin_engine_unload_model(args);
+        if (builtin == "engine.draw_model") return builtin_engine_draw_model(args);
+        if (builtin == "engine.draw_model_ex") return builtin_engine_draw_model_ex(args);
+        if (builtin == "engine.load_texture") return builtin_engine_load_texture(args);
+        if (builtin == "engine.unload_texture") return builtin_engine_unload_texture(args);
+        if (builtin == "engine.draw_texture") return builtin_engine_draw_texture(args);
+        if (builtin == "engine.draw_texture_ex") return builtin_engine_draw_texture_ex(args);
         if (builtin == "engine.draw_rect") return builtin_engine_draw_rect(args);
         if (builtin == "engine.draw_rect_lines") return builtin_engine_draw_rect_lines(args);
         if (builtin == "engine.draw_circle") return builtin_engine_draw_circle(args);
@@ -6573,6 +6581,70 @@ private:
     static Value builtin_engine_draw_fps(const std::vector<Value>& args) {
         if (args.size() < 2) return Value();
         rt_draw_fps(static_cast<int>(to_number(args[0])), static_cast<int>(to_number(args[1])));
+        return Value();
+    }
+
+    static Value builtin_engine_load_model(const std::vector<Value>& args) {
+        if (args.empty()) return Value(0.0);
+        return Value(static_cast<double>(rt_load_model(to_string(args[0]).c_str())));
+    }
+
+    static Value builtin_engine_unload_model(const std::vector<Value>& args) {
+        if (!args.empty()) rt_unload_model(static_cast<int64_t>(to_number(args[0])));
+        return Value();
+    }
+
+    static Value builtin_engine_draw_model(const std::vector<Value>& args) {
+        if (args.size() < 2) return Value();
+        int64_t id = static_cast<int64_t>(to_number(args[0]));
+        RTVec3 pos = value_to_vec3(args[1]);
+        float scale = args.size() > 2 ? static_cast<float>(to_number(args[2])) : 1.0f;
+        RTColor tint = args.size() > 3 ? value_to_color(args[3]) : RTColor{255, 255, 255, 255};
+        rt_draw_model(id, pos, scale, tint);
+        return Value();
+    }
+
+    static Value builtin_engine_draw_model_ex(const std::vector<Value>& args) {
+        if (args.size() < 6) return Value();
+        int64_t id = static_cast<int64_t>(to_number(args[0]));
+        RTVec3 pos = value_to_vec3(args[1]);
+        RTVec3 rotAxis = value_to_vec3(args[2]);
+        float rotAngle = static_cast<float>(to_number(args[3]));
+        RTVec3 scale = value_to_vec3(args[4]);
+        RTColor tint = value_to_color(args[5]);
+        rt_draw_model_ex(id, pos, rotAxis, rotAngle, scale, tint);
+        return Value();
+    }
+
+    static Value builtin_engine_load_texture(const std::vector<Value>& args) {
+        if (args.empty()) return Value(0.0);
+        return Value(static_cast<double>(rt_load_texture(to_string(args[0]).c_str())));
+    }
+
+    static Value builtin_engine_unload_texture(const std::vector<Value>& args) {
+        if (!args.empty()) rt_unload_texture(static_cast<int64_t>(to_number(args[0])));
+        return Value();
+    }
+
+    static Value builtin_engine_draw_texture(const std::vector<Value>& args) {
+        if (args.size() < 3) return Value();
+        int64_t id = static_cast<int64_t>(to_number(args[0]));
+        int x = static_cast<int>(to_number(args[1]));
+        int y = static_cast<int>(to_number(args[2]));
+        RTColor tint = args.size() > 3 ? value_to_color(args[3]) : RTColor{255, 255, 255, 255};
+        rt_draw_texture(id, x, y, tint);
+        return Value();
+    }
+
+    static Value builtin_engine_draw_texture_ex(const std::vector<Value>& args) {
+        if (args.size() < 6) return Value();
+        int64_t id = static_cast<int64_t>(to_number(args[0]));
+        float x = static_cast<float>(to_number(args[1]));
+        float y = static_cast<float>(to_number(args[2]));
+        float rot = static_cast<float>(to_number(args[3]));
+        float scale = static_cast<float>(to_number(args[4]));
+        RTColor tint = value_to_color(args[5]);
+        rt_draw_texture_ex(id, x, y, rot, scale, tint);
         return Value();
     }
 

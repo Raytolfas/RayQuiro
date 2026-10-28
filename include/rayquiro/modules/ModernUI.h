@@ -1,7 +1,23 @@
 #pragma once
 
+#ifdef _WIN32
+#define Rectangle Win32Rectangle
+#define CloseWindow Win32CloseWindow
+#define ShowCursor Win32ShowCursor
+#define DrawText Win32DrawText
+#define DrawTextEx Win32DrawTextEx
+#define LoadImage Win32LoadImage
+#define PlaySound Win32PlaySound
 #include <windows.h>
 #include <windowsx.h>
+#undef Rectangle
+#undef CloseWindow
+#undef ShowCursor
+#undef DrawText
+#undef DrawTextEx
+#undef LoadImage
+#undef PlaySound
+#endif
 
 #include <algorithm>
 #include <cctype>

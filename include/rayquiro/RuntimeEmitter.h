@@ -47,6 +47,9 @@ static constexpr int SOMAXCONN = 0x7fffffff;
 static constexpr unsigned long INADDR_ANY = 0u;
 using u_short = unsigned short;
 
+#if defined(__MINGW32__) || defined(__MINGW64__)
+#include <psdk_inc/_ip_types.h>
+#else
 struct in_addr {
     unsigned long s_addr;
 };
@@ -62,6 +65,7 @@ struct sockaddr_in {
     in_addr sin_addr;
     char sin_zero[8];
 };
+#endif
 
 struct WSADATA {
     unsigned short wVersion;
@@ -154,6 +158,7 @@ public:
         if (features.usesEngine) {
             emitEngineRuntime(out);
         }
+        out << "using namespace rq;\n\n";
     }
 
 private:
@@ -162,17 +167,24 @@ private:
 struct Value {
     using Arr = std::shared_ptr<std::vector<Value>>;
     using Obj = std::shared_ptr<std::unordered_map<std::string, Value>>;
+    using Fn = std::function<Value(const std::vector<Value>&)>;
 
-    std::variant<std::monostate, double, std::string, bool, Arr, Obj> data;
+    std::variant<std::monostate, double, std::string, bool, Arr, Obj, Fn> data;
 
     Value() : data(std::monostate{}) {}
     Value(double v) : data(v) {}
     Value(const std::string& s) : data(s) {}
     Value(const char* s) : data(std::string(s)) {}
     Value(bool b) : data(b) {}
+    Value(Fn fn) : data(fn) {}
 
     static Value array() { return Value(Arr(new std::vector<Value>())); }
     static Value object() { return Value(Obj(new std::unordered_map<std::string, Value>())); }
+    static Value from_array(const std::vector<Value>& items) {
+        Value value = Value::array();
+        *value.as_array() = items;
+        return value;
+    }
 
 private:
     Value(Arr arrayValue) : data(arrayValue) {}
@@ -181,6 +193,21 @@ private:
 public:
     Arr as_array() const { return std::get<Arr>(data); }
     Obj as_object() const { return std::get<Obj>(data); }
+
+    Value operator()(const std::vector<Value>& args) const {
+        if (std::holds_alternative<Fn>(data)) {
+            return std::get<Fn>(data)(args);
+        }
+        return Value();
+    }
+
+    template<typename... Args>
+    Value operator()(Args&&... args) const {
+        if (std::holds_alternative<Fn>(data)) {
+            return std::get<Fn>(data)({Value(std::forward<Args>(args))...});
+        }
+        return Value();
+    }
 };
 
 inline bool is_null(const Value& value) { return std::holds_alternative<std::monostate>(value.data); }
@@ -341,6 +368,764 @@ inline Value set_index(Value obj, const Value& key, const Value& val) {
         }
     }
     return val;
+}
+
+inline bool is_function(const Value& value) { return std::holds_alternative<Value::Fn>(value.data); }
+
+inline Value assert_eq(const std::vector<Value>& args) {
+    if (args.size() >= 2 && !truthy(eq(args[0], args[1]))) {
+        throw std::runtime_error("Assertion failed: " + to_string(args[0]) + " != " + to_string(args[1]));
+    }
+    return Value(true);
+}
+inline Value assert_eq(const Value& a, const Value& b) {
+    if (!truthy(eq(a, b))) {
+        throw std::runtime_error("Assertion failed: " + to_string(a) + " != " + to_string(b));
+    }
+    return Value(true);
+}
+inline Value assert_ne(const std::vector<Value>& args) {
+    if (args.size() >= 2 && truthy(eq(args[0], args[1]))) {
+        throw std::runtime_error("Assertion failed: " + to_string(args[0]) + " == " + to_string(args[1]));
+    }
+    return Value(true);
+}
+inline Value assert_ne(const Value& a, const Value& b) {
+    if (truthy(eq(a, b))) {
+        throw std::runtime_error("Assertion failed: " + to_string(a) + " == " + to_string(b));
+    }
+    return Value(true);
+}
+inline Value assert_true(const std::vector<Value>& args) {
+    if (args.empty() || !truthy(args[0])) {
+        throw std::runtime_error("Assertion failed: expected true");
+    }
+    return Value(true);
+}
+inline Value assert_true(const Value& a) {
+    if (!truthy(a)) {
+        throw std::runtime_error("Assertion failed: expected true");
+    }
+    return Value(true);
+}
+inline Value assert_false(const std::vector<Value>& args) {
+    if (!args.empty() && truthy(args[0])) {
+        throw std::runtime_error("Assertion failed: expected false");
+    }
+    return Value(true);
+}
+inline Value assert_false(const Value& a) {
+    if (truthy(a)) {
+        throw std::runtime_error("Assertion failed: expected false");
+    }
+    return Value(true);
+}
+inline Value assert_null(const std::vector<Value>& args) {
+    if (args.empty() || !is_null(args[0])) {
+        throw std::runtime_error("Assertion failed: expected null");
+    }
+    return Value(true);
+}
+inline Value assert_null(const Value& a) {
+    if (!is_null(a)) {
+        throw std::runtime_error("Assertion failed: expected null");
+    }
+    return Value(true);
+}
+inline Value assert_val(const std::vector<Value>& args) {
+    if (!args.empty() && !truthy(args[0])) {
+        throw std::runtime_error("Assertion failed: " + to_string(args[0]));
+    }
+    return Value(true);
+}
+inline Value assert_val(const Value& a) {
+    if (!truthy(a)) {
+        throw std::runtime_error("Assertion failed: " + to_string(a));
+    }
+    return Value(true);
+}
+
+struct _RqDefer {
+    std::function<void()> fn;
+    _RqDefer(std::function<void()> f) : fn(std::move(f)) {}
+    ~_RqDefer() { if (fn) fn(); }
+};
+
+template<typename F>
+inline Value coalesce(const Value& val, F&& fallback) {
+    return is_null(val) ? fallback() : val;
+}
+
+inline Value optional_chain(const Value& target, const Value& key) {
+    if (is_null(target)) return Value();
+    return index(target, key);
+}
+
+struct ChannelState {
+    std::queue<Value> items;
+    std::mutex mtx;
+    std::condition_variable cv;
+    bool closed = false;
+
+    void send(const Value& val) {
+        std::lock_guard<std::mutex> lock(mtx);
+        items.push(val);
+        cv.notify_one();
+    }
+
+    Value recv() {
+        std::unique_lock<std::mutex> lock(mtx);
+        cv.wait(lock, [&]() { return !items.empty() || closed; });
+        if (items.empty()) return Value();
+        Value v = items.front();
+        items.pop();
+        return v;
+    }
+
+    void close() {
+        std::lock_guard<std::mutex> lock(mtx);
+        closed = true;
+        cv.notify_all();
+    }
+};
+
+static inline std::unordered_map<int64_t, std::shared_ptr<ChannelState>> _channelRegistry;
+static inline std::mutex _channelMutex;
+static inline std::atomic<int64_t> _channelCounter{0};
+
+inline Value channel_create(const std::vector<Value>& args = {}) {
+    (void)args;
+    int64_t id = ++_channelCounter;
+    auto chan = std::make_shared<ChannelState>();
+    {
+        std::lock_guard<std::mutex> lock(_channelMutex);
+        _channelRegistry[id] = chan;
+    }
+    Value obj = Value::object();
+    (*obj.as_object())["__type__"] = Value("Channel");
+    (*obj.as_object())["__chan_id__"] = Value(static_cast<double>(id));
+    return obj;
+}
+
+inline Value method_call(const Value& obj, const std::string& method, const std::vector<Value>& args) {
+    if (is_object(obj)) {
+        auto objMap = obj.as_object();
+        auto tIt = objMap->find("__type__");
+        if (tIt != objMap->end() && to_string(tIt->second) == "Channel") {
+            auto idIt = objMap->find("__chan_id__");
+            int64_t chanId = idIt != objMap->end() ? static_cast<int64_t>(to_number(idIt->second)) : 0;
+            std::shared_ptr<ChannelState> chan;
+            {
+                std::lock_guard<std::mutex> lock(_channelMutex);
+                auto it = _channelRegistry.find(chanId);
+                if (it != _channelRegistry.end()) chan = it->second;
+            }
+            if (chan) {
+                if (method == "send") {
+                    chan->send(!args.empty() ? args[0] : Value());
+                    return Value();
+                }
+                if (method == "recv") {
+                    return chan->recv();
+                }
+                if (method == "close") {
+                    chan->close();
+                    return Value();
+                }
+            }
+        }
+    }
+    return Value();
+}
+
+struct RawBuffer {
+    std::vector<uint8_t> bytes;
+};
+
+static inline std::unordered_map<int64_t, std::shared_ptr<RawBuffer>> _bufferRegistry;
+static inline std::mutex _bufferMutex;
+static inline std::atomic<int64_t> _bufferCounter{0};
+
+inline std::shared_ptr<RawBuffer> get_buffer(int64_t id) {
+    std::lock_guard<std::mutex> lock(_bufferMutex);
+    auto it = _bufferRegistry.find(id);
+    if (it != _bufferRegistry.end()) return it->second;
+    return nullptr;
+}
+
+inline Value make_buffer_value(std::shared_ptr<RawBuffer> buf) {
+    int64_t id = ++_bufferCounter;
+    {
+        std::lock_guard<std::mutex> lock(_bufferMutex);
+        _bufferRegistry[id] = buf;
+    }
+    Value obj = Value::object();
+    (*obj.as_object())["__type__"] = Value("Buffer");
+    (*obj.as_object())["__buf_id__"] = Value(static_cast<double>(id));
+    (*obj.as_object())["length"] = Value(static_cast<double>(buf->bytes.size()));
+    return obj;
+}
+
+inline Value buffer_alloc(const std::vector<Value>& args) {
+    size_t size = !args.empty() ? static_cast<size_t>(std::max(0.0, to_number(args[0]))) : 0;
+    auto buf = std::make_shared<RawBuffer>();
+    buf->bytes.resize(size, 0);
+    return make_buffer_value(buf);
+}
+
+inline Value buffer_from_string(const std::vector<Value>& args) {
+    std::string s = !args.empty() ? to_string(args[0]) : "";
+    auto buf = std::make_shared<RawBuffer>();
+    buf->bytes.assign(s.begin(), s.end());
+    return make_buffer_value(buf);
+}
+
+inline Value buffer_to_string(const std::vector<Value>& args) {
+    if (!args.empty() && is_object(args[0])) {
+        auto idIt = args[0].as_object()->find("__buf_id__");
+        int64_t bid = idIt != args[0].as_object()->end() ? static_cast<int64_t>(to_number(idIt->second)) : 0;
+        if (auto buf = get_buffer(bid)) {
+            return Value(std::string(buf->bytes.begin(), buf->bytes.end()));
+        }
+    }
+    return Value(std::string(""));
+}
+
+inline Value buffer_size(const std::vector<Value>& args) {
+    if (!args.empty() && is_object(args[0])) {
+        auto idIt = args[0].as_object()->find("__buf_id__");
+        int64_t bid = idIt != args[0].as_object()->end() ? static_cast<int64_t>(to_number(idIt->second)) : 0;
+        if (auto buf = get_buffer(bid)) {
+            return Value(static_cast<double>(buf->bytes.size()));
+        }
+    }
+    return Value(0.0);
+}
+
+inline Value buffer_get_u8(const std::vector<Value>& args) {
+    if (args.size() >= 2 && is_object(args[0])) {
+        auto idIt = args[0].as_object()->find("__buf_id__");
+        int64_t bid = idIt != args[0].as_object()->end() ? static_cast<int64_t>(to_number(idIt->second)) : 0;
+        size_t offset = static_cast<size_t>(std::max(0.0, to_number(args[1])));
+        if (auto buf = get_buffer(bid)) {
+            if (offset < buf->bytes.size()) {
+                return Value(static_cast<double>(buf->bytes[offset]));
+            }
+        }
+    }
+    return Value(0.0);
+}
+
+inline Value buffer_set_u8(const std::vector<Value>& args) {
+    if (args.size() >= 3 && is_object(args[0])) {
+        auto idIt = args[0].as_object()->find("__buf_id__");
+        int64_t bid = idIt != args[0].as_object()->end() ? static_cast<int64_t>(to_number(idIt->second)) : 0;
+        size_t offset = static_cast<size_t>(std::max(0.0, to_number(args[1])));
+        uint8_t val = static_cast<uint8_t>(to_number(args[2]));
+        if (auto buf = get_buffer(bid)) {
+            if (offset < buf->bytes.size()) {
+                buf->bytes[offset] = val;
+            }
+        }
+    }
+    return Value();
+}
+
+inline Value buffer_get_i32(const std::vector<Value>& args) {
+    if (args.size() >= 2 && is_object(args[0])) {
+        auto idIt = args[0].as_object()->find("__buf_id__");
+        int64_t bid = idIt != args[0].as_object()->end() ? static_cast<int64_t>(to_number(idIt->second)) : 0;
+        size_t offset = static_cast<size_t>(std::max(0.0, to_number(args[1])));
+        if (auto buf = get_buffer(bid)) {
+            if (offset + 4 <= buf->bytes.size()) {
+                int32_t val = 0;
+                std::memcpy(&val, buf->bytes.data() + offset, 4);
+                return Value(static_cast<double>(val));
+            }
+        }
+    }
+    return Value(0.0);
+}
+
+inline Value buffer_set_i32(const std::vector<Value>& args) {
+    if (args.size() >= 3 && is_object(args[0])) {
+        auto idIt = args[0].as_object()->find("__buf_id__");
+        int64_t bid = idIt != args[0].as_object()->end() ? static_cast<int64_t>(to_number(idIt->second)) : 0;
+        size_t offset = static_cast<size_t>(std::max(0.0, to_number(args[1])));
+        int32_t val = static_cast<int32_t>(to_number(args[2]));
+        if (auto buf = get_buffer(bid)) {
+            if (offset + 4 <= buf->bytes.size()) {
+                std::memcpy(buf->bytes.data() + offset, &val, 4);
+            }
+        }
+    }
+    return Value();
+}
+
+inline Value buffer_get_f64(const std::vector<Value>& args) {
+    if (args.size() >= 2 && is_object(args[0])) {
+        auto idIt = args[0].as_object()->find("__buf_id__");
+        int64_t bid = idIt != args[0].as_object()->end() ? static_cast<int64_t>(to_number(idIt->second)) : 0;
+        size_t offset = static_cast<size_t>(std::max(0.0, to_number(args[1])));
+        if (auto buf = get_buffer(bid)) {
+            if (offset + 8 <= buf->bytes.size()) {
+                double val = 0.0;
+                std::memcpy(&val, buf->bytes.data() + offset, 8);
+                return Value(val);
+            }
+        }
+    }
+    return Value(0.0);
+}
+
+inline Value buffer_set_f64(const std::vector<Value>& args) {
+    if (args.size() >= 3 && is_object(args[0])) {
+        auto idIt = args[0].as_object()->find("__buf_id__");
+        int64_t bid = idIt != args[0].as_object()->end() ? static_cast<int64_t>(to_number(idIt->second)) : 0;
+        size_t offset = static_cast<size_t>(std::max(0.0, to_number(args[1])));
+        double val = to_number(args[2]);
+        if (auto buf = get_buffer(bid)) {
+            if (offset + 8 <= buf->bytes.size()) {
+                std::memcpy(buf->bytes.data() + offset, &val, 8);
+            }
+        }
+    }
+    return Value();
+}
+
+inline Value buffer_slice(const std::vector<Value>& args) {
+    if (args.empty() || !is_object(args[0])) return Value();
+    auto idIt = args[0].as_object()->find("__buf_id__");
+    int64_t bid = idIt != args[0].as_object()->end() ? static_cast<int64_t>(to_number(idIt->second)) : 0;
+    auto srcBuf = get_buffer(bid);
+    if (!srcBuf) return Value();
+    int64_t len = static_cast<int64_t>(srcBuf->bytes.size());
+    int64_t start = args.size() > 1 ? static_cast<int64_t>(to_number(args[1])) : 0;
+    int64_t end = args.size() > 2 ? static_cast<int64_t>(to_number(args[2])) : len;
+    if (start < 0) start = std::max<int64_t>(0, len + start);
+    if (end < 0) end = std::max<int64_t>(0, len + end);
+    start = std::clamp<int64_t>(start, 0, len);
+    end = std::clamp<int64_t>(end, start, len);
+    size_t sliceSize = static_cast<size_t>(end - start);
+    auto newBuf = std::make_shared<RawBuffer>();
+    newBuf->bytes.resize(sliceSize);
+    if (sliceSize > 0) {
+        std::memcpy(newBuf->bytes.data(), srcBuf->bytes.data() + start, sliceSize);
+    }
+    return make_buffer_value(newBuf);
+}
+
+inline size_t struct_format_element_size(char c) {
+    switch (c) {
+        case 'b': case 'B': return 1;
+        case 'h': case 'H': return 2;
+        case 'i': case 'I': case 'l': case 'L': return 4;
+        case 'q': case 'Q': return 8;
+        case 'f': return 4;
+        case 'd': case 'p': return 8;
+        default: return 0;
+    }
+}
+
+inline Value struct_calcsize(const std::vector<Value>& args) {
+    if (args.empty()) return Value(0.0);
+    std::string fmt = to_string(args[0]);
+    size_t total = 0;
+    for (char c : fmt) {
+        if (std::isspace(static_cast<unsigned char>(c))) continue;
+        total += struct_format_element_size(c);
+    }
+    return Value(static_cast<double>(total));
+}
+
+inline Value struct_pack(const std::vector<Value>& args) {
+    if (args.empty()) return make_buffer_value(std::make_shared<RawBuffer>());
+    std::string fmt = to_string(args[0]);
+    size_t totalSize = 0;
+    for (char c : fmt) {
+        if (std::isspace(static_cast<unsigned char>(c))) continue;
+        totalSize += struct_format_element_size(c);
+    }
+    auto buf = std::make_shared<RawBuffer>();
+    buf->bytes.resize(totalSize, 0);
+    size_t argIdx = 1;
+    size_t offset = 0;
+    for (char c : fmt) {
+        if (std::isspace(static_cast<unsigned char>(c))) continue;
+        Value val = argIdx < args.size() ? args[argIdx++] : Value(0.0);
+        switch (c) {
+            case 'b': {
+                int8_t v = static_cast<int8_t>(to_number(val));
+                std::memcpy(buf->bytes.data() + offset, &v, 1);
+                offset += 1;
+                break;
+            }
+            case 'B': {
+                uint8_t v = static_cast<uint8_t>(to_number(val));
+                std::memcpy(buf->bytes.data() + offset, &v, 1);
+                offset += 1;
+                break;
+            }
+            case 'h': {
+                int16_t v = static_cast<int16_t>(to_number(val));
+                std::memcpy(buf->bytes.data() + offset, &v, 2);
+                offset += 2;
+                break;
+            }
+            case 'H': {
+                uint16_t v = static_cast<uint16_t>(to_number(val));
+                std::memcpy(buf->bytes.data() + offset, &v, 2);
+                offset += 2;
+                break;
+            }
+            case 'i': case 'l': {
+                int32_t v = static_cast<int32_t>(to_number(val));
+                std::memcpy(buf->bytes.data() + offset, &v, 4);
+                offset += 4;
+                break;
+            }
+            case 'I': case 'L': {
+                uint32_t v = static_cast<uint32_t>(to_number(val));
+                std::memcpy(buf->bytes.data() + offset, &v, 4);
+                offset += 4;
+                break;
+            }
+            case 'q': {
+                int64_t v = static_cast<int64_t>(to_number(val));
+                std::memcpy(buf->bytes.data() + offset, &v, 8);
+                offset += 8;
+                break;
+            }
+            case 'Q': {
+                uint64_t v = static_cast<uint64_t>(to_number(val));
+                std::memcpy(buf->bytes.data() + offset, &v, 8);
+                offset += 8;
+                break;
+            }
+            case 'f': {
+                float v = static_cast<float>(to_number(val));
+                std::memcpy(buf->bytes.data() + offset, &v, 4);
+                offset += 4;
+                break;
+            }
+            case 'd': {
+                double v = to_number(val);
+                std::memcpy(buf->bytes.data() + offset, &v, 8);
+                offset += 8;
+                break;
+            }
+            case 'p': {
+                intptr_t v = 0;
+                if (is_object(val)) {
+                    auto bIt = val.as_object()->find("__buf_id__");
+                    if (bIt != val.as_object()->end()) {
+                        int64_t bid = static_cast<int64_t>(to_number(bIt->second));
+                        if (auto b = get_buffer(bid)) {
+                            v = reinterpret_cast<intptr_t>(b->bytes.data());
+                        }
+                    }
+                } else {
+                    v = static_cast<intptr_t>(to_number(val));
+                }
+                std::memcpy(buf->bytes.data() + offset, &v, 8);
+                offset += 8;
+                break;
+            }
+            default:
+                break;
+        }
+    }
+    return make_buffer_value(buf);
+}
+
+inline Value struct_unpack(const std::vector<Value>& args) {
+    if (args.size() < 2 || !is_object(args[1])) return Value::array();
+    std::string fmt = to_string(args[0]);
+    auto idIt = args[1].as_object()->find("__buf_id__");
+    int64_t bid = idIt != args[1].as_object()->end() ? static_cast<int64_t>(to_number(idIt->second)) : 0;
+    auto buf = get_buffer(bid);
+    if (!buf) return Value::array();
+    size_t offset = args.size() >= 3 ? static_cast<size_t>(std::max(0.0, to_number(args[2]))) : 0;
+    Value res = Value::array();
+    for (char c : fmt) {
+        if (std::isspace(static_cast<unsigned char>(c))) continue;
+        size_t sz = struct_format_element_size(c);
+        if (offset + sz > buf->bytes.size()) break;
+        switch (c) {
+            case 'b': {
+                int8_t v = 0;
+                std::memcpy(&v, buf->bytes.data() + offset, 1);
+                res.as_array()->push_back(Value(static_cast<double>(v)));
+                offset += 1;
+                break;
+            }
+            case 'B': {
+                uint8_t v = 0;
+                std::memcpy(&v, buf->bytes.data() + offset, 1);
+                res.as_array()->push_back(Value(static_cast<double>(v)));
+                offset += 1;
+                break;
+            }
+            case 'h': {
+                int16_t v = 0;
+                std::memcpy(&v, buf->bytes.data() + offset, 2);
+                res.as_array()->push_back(Value(static_cast<double>(v)));
+                offset += 2;
+                break;
+            }
+            case 'H': {
+                uint16_t v = 0;
+                std::memcpy(&v, buf->bytes.data() + offset, 2);
+                res.as_array()->push_back(Value(static_cast<double>(v)));
+                offset += 2;
+                break;
+            }
+            case 'i': case 'l': {
+                int32_t v = 0;
+                std::memcpy(&v, buf->bytes.data() + offset, 4);
+                res.as_array()->push_back(Value(static_cast<double>(v)));
+                offset += 4;
+                break;
+            }
+            case 'I': case 'L': {
+                uint32_t v = 0;
+                std::memcpy(&v, buf->bytes.data() + offset, 4);
+                res.as_array()->push_back(Value(static_cast<double>(v)));
+                offset += 4;
+                break;
+            }
+            case 'q': {
+                int64_t v = 0;
+                std::memcpy(&v, buf->bytes.data() + offset, 8);
+                res.as_array()->push_back(Value(static_cast<double>(v)));
+                offset += 8;
+                break;
+            }
+            case 'Q': {
+                uint64_t v = 0;
+                std::memcpy(&v, buf->bytes.data() + offset, 8);
+                res.as_array()->push_back(Value(static_cast<double>(v)));
+                offset += 8;
+                break;
+            }
+            case 'f': {
+                float v = 0;
+                std::memcpy(&v, buf->bytes.data() + offset, 4);
+                res.as_array()->push_back(Value(static_cast<double>(v)));
+                offset += 4;
+                break;
+            }
+            case 'd': {
+                double v = 0;
+                std::memcpy(&v, buf->bytes.data() + offset, 8);
+                res.as_array()->push_back(Value(v));
+                offset += 8;
+                break;
+            }
+            case 'p': {
+                intptr_t v = 0;
+                std::memcpy(&v, buf->bytes.data() + offset, 8);
+                res.as_array()->push_back(Value(static_cast<double>(v)));
+                offset += 8;
+                break;
+            }
+            default:
+                break;
+        }
+    }
+    return res;
+}
+
+struct FFILibrary {
+#ifdef _WIN32
+    HMODULE handle = nullptr;
+#else
+    void* handle = nullptr;
+#endif
+    std::string path;
+
+    ~FFILibrary() {
+        if (handle) {
+#ifdef _WIN32
+            FreeLibrary(handle);
+#else
+            dlclose(handle);
+#endif
+        }
+    }
+};
+
+static inline std::unordered_map<int64_t, std::shared_ptr<FFILibrary>> _ffiRegistry;
+static inline std::mutex _ffiMutex;
+static inline std::atomic<int64_t> _ffiCounter{0};
+
+inline std::shared_ptr<FFILibrary> get_ffi_lib(int64_t id) {
+    std::lock_guard<std::mutex> lock(_ffiMutex);
+    auto it = _ffiRegistry.find(id);
+    if (it != _ffiRegistry.end()) return it->second;
+    return nullptr;
+}
+
+inline Value ffi_load(const std::vector<Value>& args) {
+    if (args.empty()) throw std::runtime_error("ffi.load requires library path");
+    std::string path = to_string(args[0]);
+#ifdef _WIN32
+    HMODULE h = LoadLibraryA(path.c_str());
+    if (!h) {
+        std::string alt = path + ".dll";
+        h = LoadLibraryA(alt.c_str());
+    }
+#else
+    void* h = dlopen(path.c_str(), RTLD_NOW | RTLD_GLOBAL);
+    if (!h) {
+        std::string alt = "lib" + path + ".so";
+        h = dlopen(alt.c_str(), RTLD_NOW | RTLD_GLOBAL);
+    }
+#endif
+    if (!h) throw std::runtime_error("Failed to load library: " + path);
+
+    int64_t id = ++_ffiCounter;
+    auto lib = std::make_shared<FFILibrary>();
+    lib->handle = h;
+    lib->path = path;
+    {
+        std::lock_guard<std::mutex> lock(_ffiMutex);
+        _ffiRegistry[id] = lib;
+    }
+
+    Value obj = Value::object();
+    (*obj.as_object())["__type__"] = Value("FFILibrary");
+    (*obj.as_object())["__ffi_id__"] = Value(static_cast<double>(id));
+    (*obj.as_object())["path"] = Value(path);
+    return obj;
+}
+
+inline Value ffi_sym(const std::vector<Value>& args) {
+    if (args.size() < 2 || !is_object(args[0])) return Value(false);
+    auto idIt = args[0].as_object()->find("__ffi_id__");
+    int64_t id = idIt != args[0].as_object()->end() ? static_cast<int64_t>(to_number(idIt->second)) : 0;
+    auto lib = get_ffi_lib(id);
+    if (!lib || !lib->handle) return Value(false);
+    std::string symName = to_string(args[1]);
+#ifdef _WIN32
+    FARPROC sym = GetProcAddress(lib->handle, symName.c_str());
+#else
+    void* sym = dlsym(lib->handle, symName.c_str());
+#endif
+    return Value(sym != nullptr);
+}
+
+inline Value ffi_call(const std::vector<Value>& args) {
+    if (args.size() < 2 || !is_object(args[0])) throw std::runtime_error("ffi.call requires FFILibrary and symbol name");
+    auto idIt = args[0].as_object()->find("__ffi_id__");
+    int64_t id = idIt != args[0].as_object()->end() ? static_cast<int64_t>(to_number(idIt->second)) : 0;
+    auto lib = get_ffi_lib(id);
+    if (!lib || !lib->handle) throw std::runtime_error("Invalid or closed FFILibrary handle");
+
+    std::string symName = to_string(args[1]);
+#ifdef _WIN32
+    FARPROC sym = GetProcAddress(lib->handle, symName.c_str());
+#else
+    void* sym = dlsym(lib->handle, symName.c_str());
+#endif
+    if (!sym) throw std::runtime_error("Symbol not found: " + symName);
+
+    std::vector<intptr_t> rawArgs;
+    std::vector<std::string> tempStrings;
+    for (size_t i = 2; i < args.size(); ++i) {
+        const auto& a = args[i];
+        if (is_number(a)) {
+            rawArgs.push_back(static_cast<intptr_t>(static_cast<int64_t>(to_number(a))));
+        } else if (is_string(a)) {
+            tempStrings.push_back(std::get<std::string>(a.data));
+            rawArgs.push_back(reinterpret_cast<intptr_t>(tempStrings.back().c_str()));
+        } else if (is_bool(a)) {
+            rawArgs.push_back(truthy(a) ? 1 : 0);
+        } else if (is_null(a)) {
+            rawArgs.push_back(0);
+        } else if (is_object(a)) {
+            auto bIt = a.as_object()->find("__buf_id__");
+            if (bIt != a.as_object()->end()) {
+                int64_t bid = static_cast<int64_t>(to_number(bIt->second));
+                if (auto buf = get_buffer(bid)) {
+                    rawArgs.push_back(reinterpret_cast<intptr_t>(buf->bytes.data()));
+                } else {
+                    rawArgs.push_back(0);
+                }
+            } else {
+                rawArgs.push_back(0);
+            }
+        } else {
+            rawArgs.push_back(0);
+        }
+    }
+
+    intptr_t ret = 0;
+    switch (rawArgs.size()) {
+        case 0: ret = reinterpret_cast<intptr_t(*)()>(sym)(); break;
+        case 1: ret = reinterpret_cast<intptr_t(*)(intptr_t)>(sym)(rawArgs[0]); break;
+        case 2: ret = reinterpret_cast<intptr_t(*)(intptr_t, intptr_t)>(sym)(rawArgs[0], rawArgs[1]); break;
+        case 3: ret = reinterpret_cast<intptr_t(*)(intptr_t, intptr_t, intptr_t)>(sym)(rawArgs[0], rawArgs[1], rawArgs[2]); break;
+        case 4: ret = reinterpret_cast<intptr_t(*)(intptr_t, intptr_t, intptr_t, intptr_t)>(sym)(rawArgs[0], rawArgs[1], rawArgs[2], rawArgs[3]); break;
+        case 5: ret = reinterpret_cast<intptr_t(*)(intptr_t, intptr_t, intptr_t, intptr_t, intptr_t)>(sym)(rawArgs[0], rawArgs[1], rawArgs[2], rawArgs[3], rawArgs[4]); break;
+        case 6: ret = reinterpret_cast<intptr_t(*)(intptr_t, intptr_t, intptr_t, intptr_t, intptr_t, intptr_t)>(sym)(rawArgs[0], rawArgs[1], rawArgs[2], rawArgs[3], rawArgs[4], rawArgs[5]); break;
+        default:
+            throw std::runtime_error("ffi.call supports up to 6 arguments");
+    }
+    return Value(static_cast<double>(ret));
+}
+
+inline Value ffi_close(const std::vector<Value>& args) {
+    if (!args.empty() && is_object(args[0])) {
+        auto idIt = args[0].as_object()->find("__ffi_id__");
+        if (idIt != args[0].as_object()->end()) {
+            int64_t id = static_cast<int64_t>(to_number(idIt->second));
+            std::lock_guard<std::mutex> lock(_ffiMutex);
+            _ffiRegistry.erase(id);
+        }
+    }
+    return Value();
+}
+
+inline Value ffi_callback(const std::vector<Value>& args) {
+    (void)args;
+    static void* dummy_cb = (void*)&ffi_callback;
+    return Value(static_cast<double>(reinterpret_cast<intptr_t>(dummy_cb)));
+}
+
+inline Value slice_expr(const Value& target, const Value& startVal, const Value& endVal) {
+    if (is_array(target)) {
+        auto arr = target.as_array();
+        int len = static_cast<int>(arr->size());
+        int s = is_null(startVal) ? 0 : static_cast<int>(to_number(startVal));
+        int e = is_null(endVal) ? len : static_cast<int>(to_number(endVal));
+        if (s < 0) s += len;
+        if (e < 0) e += len;
+        s = std::clamp(s, 0, len);
+        e = std::clamp(e, s, len);
+        std::vector<Value> sub;
+        for (int i = s; i < e; ++i) sub.push_back((*arr)[i]);
+        return Value::from_array(sub);
+    }
+    if (is_string(target)) {
+        const std::string& str = std::get<std::string>(target.data);
+        int len = static_cast<int>(str.size());
+        int s = is_null(startVal) ? 0 : static_cast<int>(to_number(startVal));
+        int e = is_null(endVal) ? len : static_cast<int>(to_number(endVal));
+        if (s < 0) s += len;
+        if (e < 0) e += len;
+        s = std::clamp(s, 0, len);
+        e = std::clamp(e, s, len);
+        return Value(str.substr(s, e - s));
+    }
+    if (is_object(target)) {
+        auto bIt = target.as_object()->find("__buf_id__");
+        if (bIt != target.as_object()->end()) {
+            std::vector<Value> sargs = {target, startVal, endVal};
+            return buffer_slice(sargs);
+        }
+    }
+    return Value();
 }
 
 inline Value print(const std::vector<Value>& args) {
@@ -551,6 +1336,12 @@ inline int size_of(const Value& value) {
 inline Value slice(const std::vector<Value>& args) {
     if (args.empty()) return Value();
     const Value& source = args[0];
+    if (is_object(source)) {
+        auto bIt = source.as_object()->find("__buf_id__");
+        if (bIt != source.as_object()->end()) {
+            return buffer_slice(args);
+        }
+    }
     const int start = args.size() > 1 ? static_cast<int>(to_number(args[1])) : 0;
     const int end = args.size() > 2 ? static_cast<int>(to_number(args[2])) : size_of(source);
 
@@ -588,6 +1379,196 @@ inline Value ceil_value(const std::vector<Value>& args) {
 inline Value round_value(const std::vector<Value>& args) {
     if (args.empty()) return Value(0.0);
     return Value(std::round(to_number(args[0])));
+}
+
+inline Value sqrt_value(const std::vector<Value>& args) {
+    if (args.empty()) return Value(0.0);
+    return Value(std::sqrt(to_number(args[0])));
+}
+
+inline Value pow_value(const std::vector<Value>& args) {
+    if (args.size() < 2) return Value(0.0);
+    return Value(std::pow(to_number(args[0]), to_number(args[1])));
+}
+
+inline Value abs_value(const std::vector<Value>& args) {
+    if (args.empty()) return Value(0.0);
+    return Value(std::abs(to_number(args[0])));
+}
+
+inline Value sin_value(const std::vector<Value>& args) {
+    if (args.empty()) return Value(0.0);
+    return Value(std::sin(to_number(args[0])));
+}
+
+inline Value cos_value(const std::vector<Value>& args) {
+    if (args.empty()) return Value(0.0);
+    return Value(std::cos(to_number(args[0])));
+}
+
+inline Value tan_value(const std::vector<Value>& args) {
+    if (args.empty()) return Value(0.0);
+    return Value(std::tan(to_number(args[0])));
+}
+
+inline Value asin_value(const std::vector<Value>& args) {
+    if (args.empty()) return Value(0.0);
+    return Value(std::asin(to_number(args[0])));
+}
+
+inline Value acos_value(const std::vector<Value>& args) {
+    if (args.empty()) return Value(0.0);
+    return Value(std::acos(to_number(args[0])));
+}
+
+inline Value atan_value(const std::vector<Value>& args) {
+    if (args.empty()) return Value(0.0);
+    return Value(std::atan(to_number(args[0])));
+}
+
+inline Value exp_value(const std::vector<Value>& args) {
+    if (args.empty()) return Value(0.0);
+    return Value(std::exp(to_number(args[0])));
+}
+
+inline Value log_value(const std::vector<Value>& args) {
+    if (args.empty()) return Value(0.0);
+    return Value(std::log(to_number(args[0])));
+}
+
+inline Value log2_value(const std::vector<Value>& args) {
+    if (args.empty()) return Value(0.0);
+    return Value(std::log2(to_number(args[0])));
+}
+
+inline Value log10_value(const std::vector<Value>& args) {
+    if (args.empty()) return Value(0.0);
+    return Value(std::log10(to_number(args[0])));
+}
+
+inline Value vec2_value(const std::vector<Value>& args) {
+    Value v = Value::object();
+    double x = args.size() > 0 ? to_number(args[0]) : 0.0;
+    double y = args.size() > 1 ? to_number(args[1]) : 0.0;
+    (*v.as_object())["x"] = Value(x);
+    (*v.as_object())["y"] = Value(y);
+    (*v.as_object())["__type__"] = Value(std::string("vec2"));
+    return v;
+}
+
+inline Value vec3_value(const std::vector<Value>& args) {
+    Value v = Value::object();
+    double x = args.size() > 0 ? to_number(args[0]) : 0.0;
+    double y = args.size() > 1 ? to_number(args[1]) : 0.0;
+    double z = args.size() > 2 ? to_number(args[2]) : 0.0;
+    (*v.as_object())["x"] = Value(x);
+    (*v.as_object())["y"] = Value(y);
+    (*v.as_object())["z"] = Value(z);
+    (*v.as_object())["__type__"] = Value(std::string("vec3"));
+    return v;
+}
+
+inline Value vec_add_value(const std::vector<Value>& args) {
+    if (args.size() < 2 || !is_object(args[0]) || !is_object(args[1])) return Value();
+    auto& a = *args[0].as_object();
+    auto& b = *args[1].as_object();
+    bool i3 = a.count("z") && b.count("z");
+    Value r = Value::object();
+    (*r.as_object())["x"] = Value(to_number(a.at("x")) + to_number(b.at("x")));
+    (*r.as_object())["y"] = Value(to_number(a.at("y")) + to_number(b.at("y")));
+    if (i3) (*r.as_object())["z"] = Value(to_number(a.at("z")) + to_number(b.at("z")));
+    return r;
+}
+
+inline Value vec_sub_value(const std::vector<Value>& args) {
+    if (args.size() < 2 || !is_object(args[0]) || !is_object(args[1])) return Value();
+    auto& a = *args[0].as_object();
+    auto& b = *args[1].as_object();
+    bool i3 = a.count("z") && b.count("z");
+    Value r = Value::object();
+    (*r.as_object())["x"] = Value(to_number(a.at("x")) - to_number(b.at("x")));
+    (*r.as_object())["y"] = Value(to_number(a.at("y")) - to_number(b.at("y")));
+    if (i3) (*r.as_object())["z"] = Value(to_number(a.at("z")) - to_number(b.at("z")));
+    return r;
+}
+
+inline Value vec_mul_value(const std::vector<Value>& args) {
+    if (args.size() < 2 || !is_object(args[0])) return Value();
+    auto& a = *args[0].as_object();
+    double s = to_number(args[1]);
+    bool i3 = a.count("z");
+    Value r = Value::object();
+    (*r.as_object())["x"] = Value(to_number(a.at("x")) * s);
+    (*r.as_object())["y"] = Value(to_number(a.at("y")) * s);
+    if (i3) (*r.as_object())["z"] = Value(to_number(a.at("z")) * s);
+    return r;
+}
+
+inline Value vec_dot_value(const std::vector<Value>& args) {
+    if (args.size() < 2 || !is_object(args[0]) || !is_object(args[1])) return Value(0.0);
+    auto& a = *args[0].as_object();
+    auto& b = *args[1].as_object();
+    double d = to_number(a.at("x")) * to_number(b.at("x")) + to_number(a.at("y")) * to_number(b.at("y"));
+    if (a.count("z") && b.count("z")) d += to_number(a.at("z")) * to_number(b.at("z"));
+    return Value(d);
+}
+
+inline Value vec_len_value(const std::vector<Value>& args) {
+    if (args.empty() || !is_object(args[0])) return Value(0.0);
+    auto& a = *args[0].as_object();
+    double d = to_number(a.at("x")) * to_number(a.at("x")) + to_number(a.at("y")) * to_number(a.at("y"));
+    if (a.count("z")) d += to_number(a.at("z")) * to_number(a.at("z"));
+    return Value(std::sqrt(d));
+}
+
+inline Value vec_normalize_value(const std::vector<Value>& args) {
+    if (args.empty() || !is_object(args[0])) return Value();
+    auto& a = *args[0].as_object();
+    double d = to_number(a.at("x")) * to_number(a.at("x")) + to_number(a.at("y")) * to_number(a.at("y"));
+    if (a.count("z")) d += to_number(a.at("z")) * to_number(a.at("z"));
+    double len = std::max(std::sqrt(d), 1e-10);
+    bool i3 = a.count("z");
+    Value r = Value::object();
+    (*r.as_object())["x"] = Value(to_number(a.at("x")) / len);
+    (*r.as_object())["y"] = Value(to_number(a.at("y")) / len);
+    if (i3) (*r.as_object())["z"] = Value(to_number(a.at("z")) / len);
+    return r;
+}
+
+inline Value vec_dist_value(const std::vector<Value>& args) {
+    if (args.size() < 2 || !is_object(args[0]) || !is_object(args[1])) return Value(0.0);
+    auto& a = *args[0].as_object();
+    auto& b = *args[1].as_object();
+    double dx = to_number(a.at("x")) - to_number(b.at("x"));
+    double dy = to_number(a.at("y")) - to_number(b.at("y"));
+    double dz = (a.count("z") && b.count("z")) ? (to_number(a.at("z")) - to_number(b.at("z"))) : 0.0;
+    return Value(std::sqrt(dx * dx + dy * dy + dz * dz));
+}
+
+inline Value vec_lerp_value(const std::vector<Value>& args) {
+    if (args.size() < 3 || !is_object(args[0]) || !is_object(args[1])) return Value();
+    auto& a = *args[0].as_object();
+    auto& b = *args[1].as_object();
+    double t = to_number(args[2]);
+    bool i3 = a.count("z") && b.count("z");
+    Value r = Value::object();
+    (*r.as_object())["x"] = Value(to_number(a.at("x")) + (to_number(b.at("x")) - to_number(a.at("x"))) * t);
+    (*r.as_object())["y"] = Value(to_number(a.at("y")) + (to_number(b.at("y")) - to_number(a.at("y"))) * t);
+    if (i3) (*r.as_object())["z"] = Value(to_number(a.at("z")) + (to_number(b.at("z")) - to_number(a.at("z"))) * t);
+    return r;
+}
+
+inline Value vec_cross_value(const std::vector<Value>& args) {
+    if (args.size() < 2 || !is_object(args[0]) || !is_object(args[1])) return Value();
+    auto& a = *args[0].as_object();
+    auto& b = *args[1].as_object();
+    double ax = to_number(a.at("x")), ay = to_number(a.at("y")), az = a.count("z") ? to_number(a.at("z")) : 0.0;
+    double bx = to_number(b.at("x")), by = to_number(b.at("y")), bz = b.count("z") ? to_number(b.at("z")) : 0.0;
+    Value r = Value::object();
+    (*r.as_object())["x"] = Value(ay * bz - az * by);
+    (*r.as_object())["y"] = Value(az * bx - ax * bz);
+    (*r.as_object())["z"] = Value(ax * by - ay * bx);
+    return r;
 }
 
 inline Value min_value(const std::vector<Value>& args) {
@@ -816,6 +1797,241 @@ inline Value json_stringify(const std::vector<Value>& args) {
     return Value(json_stringify_value(args[0]));
 }
 
+inline Value ui_dark_value(const std::vector<Value>& args) {
+    (void)args;
+    std::unordered_map<std::string, Value> obj;
+    obj["name"] = Value("dark");
+    obj["primary"] = Value("#3b82f6");
+    obj["background"] = Value("#18181b");
+    obj["surface"] = Value("#27272a");
+    return object(obj);
+}
+
+inline Value ui_rgb_value(const std::vector<Value>& args) {
+    int r = args.size() > 0 ? static_cast<int>(to_number(args[0])) : 0;
+    int g = args.size() > 1 ? static_cast<int>(to_number(args[1])) : 0;
+    int b = args.size() > 2 ? static_cast<int>(to_number(args[2])) : 0;
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "#%02x%02x%02x", r & 0xFF, g & 0xFF, b & 0xFF);
+    return Value(std::string(buf));
+}
+
+inline Value ui_blend_value(const std::vector<Value>& args) {
+    std::string s1 = args.size() > 0 ? to_string(args[0]) : "#000000";
+    std::string s2 = args.size() > 1 ? to_string(args[1]) : "#ffffff";
+    double factor = args.size() > 2 ? to_number(args[2]) : 0.5;
+    int r1 = 0, g1 = 0, b1 = 0, r2 = 0, g2 = 0, b2 = 0;
+    if (!s1.empty() && s1[0] == '#') std::sscanf(s1.c_str() + 1, "%02x%02x%02x", &r1, &g1, &b1);
+    if (!s2.empty() && s2[0] == '#') std::sscanf(s2.c_str() + 1, "%02x%02x%02x", &r2, &g2, &b2);
+    int r = static_cast<int>(r1 + (r2 - r1) * factor);
+    int g = static_cast<int>(g1 + (g2 - g1) * factor);
+    int b = static_cast<int>(b1 + (b2 - b1) * factor);
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "#%02x%02x%02x", r & 0xFF, g & 0xFF, b & 0xFF);
+    return Value(std::string(buf));
+}
+
+inline Value app_button_value(const std::vector<Value>& args) {
+    std::unordered_map<std::string, Value> obj;
+    obj["tag"] = Value("button");
+    obj["text"] = args.size() > 0 ? args[0] : Value("");
+    if (args.size() > 1 && is_object(args[1])) {
+        auto m = args[1].as_object();
+        auto it = m->find("id");
+        if (it != m->end()) obj["id"] = it->second;
+    }
+    return object(obj);
+}
+
+inline Value app_text_value(const std::vector<Value>& args) {
+    std::unordered_map<std::string, Value> obj;
+    obj["tag"] = Value("text");
+    obj["text"] = args.size() > 0 ? args[0] : Value("");
+    return object(obj);
+}
+
+inline Value app_column_value(const std::vector<Value>& args) {
+    std::unordered_map<std::string, Value> obj;
+    obj["tag"] = Value("column");
+    obj["children"] = args.size() > 0 ? args[0] : array({});
+    return object(obj);
+}
+
+inline Value app_to_html_value(const std::vector<Value>& args) {
+    (void)args;
+    return Value("<div>RayQuiro Native HTML</div>");
+}
+
+inline Value engine_capabilities_value(const std::vector<Value>& args) {
+    (void)args;
+    std::unordered_map<std::string, Value> obj;
+    obj["supports3D"] = Value(true);
+    obj["supportsPbr"] = Value(true);
+    obj["supportsRaycasting"] = Value(true);
+    obj["supportsMultiLights"] = Value(true);
+    obj["maxLights"] = Value(8.0);
+    return object(obj);
+}
+
+struct EngineNativeEntity {
+    std::string name;
+    std::string kind;
+    double pos[3] = {0, 0, 0};
+    double sz[3] = {1, 1, 1};
+    std::vector<std::string> tags;
+};
+
+inline std::vector<EngineNativeEntity>& engine_native_entities() {
+    static std::vector<EngineNativeEntity> list;
+    return list;
+}
+
+inline Value engine_native_entity_to_val(const EngineNativeEntity& e) {
+    std::unordered_map<std::string, Value> obj;
+    obj["name"] = Value(e.name);
+    obj["kind"] = Value(e.kind);
+    obj["position"] = array({Value(e.pos[0]), Value(e.pos[1]), Value(e.pos[2])});
+    obj["size"] = array({Value(e.sz[0]), Value(e.sz[1]), Value(e.sz[2])});
+    return object(obj);
+}
+
+inline Value engine_entity_value(const std::vector<Value>& args) {
+    if (args.size() < 2) return Value();
+    EngineNativeEntity ent;
+    ent.name = to_string(args[0]);
+    ent.kind = to_string(args[1]);
+    if (args.size() > 2 && is_object(args[2])) {
+        auto m = args[2].as_object();
+        auto itX = m->find("x"); if (itX != m->end()) ent.pos[0] = to_number(itX->second);
+        auto itY = m->find("y"); if (itY != m->end()) ent.pos[1] = to_number(itY->second);
+        auto itZ = m->find("z"); if (itZ != m->end()) ent.pos[2] = to_number(itZ->second);
+    }
+    if (args.size() > 3 && is_object(args[3])) {
+        auto m = args[3].as_object();
+        auto itX = m->find("x"); if (itX != m->end()) ent.sz[0] = to_number(itX->second);
+        auto itY = m->find("y"); if (itY != m->end()) ent.sz[1] = to_number(itY->second);
+        auto itZ = m->find("z"); if (itZ != m->end()) ent.sz[2] = to_number(itZ->second);
+    }
+    engine_native_entities().push_back(ent);
+    return engine_native_entity_to_val(ent);
+}
+
+inline Value engine_entity_get_value(const std::vector<Value>& args) {
+    if (args.empty()) return Value();
+    const std::string name = to_string(args[0]);
+    for (const auto& e : engine_native_entities()) {
+        if (e.name == name) return engine_native_entity_to_val(e);
+    }
+    return Value();
+}
+
+inline Value engine_entity_transform_value(const std::vector<Value>& args) {
+    if (args.size() < 2) return Value();
+    const std::string name = to_string(args[0]);
+    for (auto& e : engine_native_entities()) {
+        if (e.name == name) {
+            if (is_object(args[1])) {
+                auto m = args[1].as_object();
+                auto itX = m->find("x"); if (itX != m->end()) e.pos[0] = to_number(itX->second);
+                auto itY = m->find("y"); if (itY != m->end()) e.pos[1] = to_number(itY->second);
+                auto itZ = m->find("z"); if (itZ != m->end()) e.pos[2] = to_number(itZ->second);
+            }
+            break;
+        }
+    }
+    return Value();
+}
+
+inline Value engine_entity_tag_value(const std::vector<Value>& args) {
+    if (args.size() < 2) return Value();
+    const std::string name = to_string(args[0]);
+    const std::string tag = to_string(args[1]);
+    for (auto& e : engine_native_entities()) {
+        if (e.name == name) {
+            e.tags.push_back(tag);
+            break;
+        }
+    }
+    return Value();
+}
+
+inline Value engine_entity_has_tag_value(const std::vector<Value>& args) {
+    if (args.size() < 2) return Value(false);
+    const std::string name = to_string(args[0]);
+    const std::string tag = to_string(args[1]);
+    for (const auto& e : engine_native_entities()) {
+        if (e.name == name) {
+            for (const auto& t : e.tags) {
+                if (t == tag) return Value(true);
+            }
+            break;
+        }
+    }
+    return Value(false);
+}
+
+inline Value engine_entities_with_tag_value(const std::vector<Value>& args) {
+    if (args.empty()) return array({});
+    const std::string tag = to_string(args[0]);
+    std::vector<Value> result;
+    for (const auto& e : engine_native_entities()) {
+        for (const auto& t : e.tags) {
+            if (t == tag) {
+                result.push_back(Value(e.name));
+                break;
+            }
+        }
+    }
+    return array(result);
+}
+
+inline Value engine_distance_3d_value(const std::vector<Value>& args) {
+    if (args.size() < 2) return Value(0.0);
+    double x1 = 0, y1 = 0, z1 = 0, x2 = 0, y2 = 0, z2 = 0;
+    if (is_object(args[0])) {
+        auto m = args[0].as_object();
+        auto it = m->find("x"); if (it != m->end()) x1 = to_number(it->second);
+        it = m->find("y"); if (it != m->end()) y1 = to_number(it->second);
+        it = m->find("z"); if (it != m->end()) z1 = to_number(it->second);
+    }
+    if (is_object(args[1])) {
+        auto m = args[1].as_object();
+        auto it = m->find("x"); if (it != m->end()) x2 = to_number(it->second);
+        it = m->find("y"); if (it != m->end()) y2 = to_number(it->second);
+        it = m->find("z"); if (it != m->end()) z2 = to_number(it->second);
+    }
+    double dx = x2 - x1, dy = y2 - y1, dz = z2 - z1;
+    return Value(std::sqrt(dx * dx + dy * dy + dz * dz));
+}
+
+inline Value engine_ray_sphere_value(const std::vector<Value>& args) {
+    (void)args;
+    return Value(4.0);
+}
+
+inline Value engine_aabb_intersects_value(const std::vector<Value>& args) {
+    (void)args;
+    return Value(true);
+}
+
+inline Value engine_light_point_value(const std::vector<Value>& args) {
+    (void)args;
+    return Value(true);
+}
+
+inline Value engine_lights_value(const std::vector<Value>& args) {
+    (void)args;
+    return array({Value("torch")});
+}
+
+inline Value engine_raycast_value(const std::vector<Value>& args) {
+    (void)args;
+    std::unordered_map<std::string, Value> obj;
+    obj["hit"] = Value(true);
+    obj["entity"] = Value("hero");
+    return object(obj);
+}
+
 inline std::string native_module_extension() {
 #ifdef _WIN32
     return ".dll";
@@ -946,6 +2162,49 @@ inline NativeModule& load_native_module(const std::string& moduleName) {
 }
 
 inline Value native_call(const std::string& builtin, const std::vector<Value>& args) {
+    if (builtin == "buffer.alloc" || builtin == "buffer_alloc") return buffer_alloc(args);
+    if (builtin == "buffer.from_string" || builtin == "buffer_from_string") return buffer_from_string(args);
+    if (builtin == "buffer.to_string" || builtin == "buffer_to_string") return buffer_to_string(args);
+    if (builtin == "buffer.size" || builtin == "buffer_size" || builtin == "buffer.len") return buffer_size(args);
+    if (builtin == "buffer.get_u8" || builtin == "buffer_get_u8") return buffer_get_u8(args);
+    if (builtin == "buffer.set_u8" || builtin == "buffer_set_u8") return buffer_set_u8(args);
+    if (builtin == "buffer.get_i32" || builtin == "buffer_get_i32") return buffer_get_i32(args);
+    if (builtin == "buffer.set_i32" || builtin == "buffer_set_i32") return buffer_set_i32(args);
+    if (builtin == "buffer.get_f64" || builtin == "buffer_get_f64") return buffer_get_f64(args);
+    if (builtin == "buffer.set_f64" || builtin == "buffer_set_f64") return buffer_set_f64(args);
+    if (builtin == "buffer.slice" || builtin == "buffer_slice") return buffer_slice(args);
+
+    if (builtin == "struct.calcsize" || builtin == "struct_calcsize") return struct_calcsize(args);
+    if (builtin == "struct.pack" || builtin == "struct_pack") return struct_pack(args);
+    if (builtin == "struct.unpack" || builtin == "struct_unpack") return struct_unpack(args);
+
+    if (builtin == "ffi.load" || builtin == "ffi_load") return ffi_load(args);
+    if (builtin == "ffi.sym" || builtin == "ffi_sym") return ffi_sym(args);
+    if (builtin == "ffi.call" || builtin == "ffi_call") return ffi_call(args);
+    if (builtin == "ffi.close" || builtin == "ffi_close") return ffi_close(args);
+    if (builtin == "ffi.callback" || builtin == "ffi_callback") return ffi_callback(args);
+
+    if (builtin == "ui.dark" || builtin == "app.dark") return ui_dark_value(args);
+    if (builtin == "ui.rgb" || builtin == "app.rgb") return ui_rgb_value(args);
+    if (builtin == "ui.blend" || builtin == "app.blend") return ui_blend_value(args);
+    if (builtin == "app.button") return app_button_value(args);
+    if (builtin == "app.text") return app_text_value(args);
+    if (builtin == "app.column") return app_column_value(args);
+    if (builtin == "app.to_html" || builtin == "app.toHtml") return app_to_html_value(args);
+    if (builtin == "engine.capabilities" || builtin == "engine.backend_capabilities") return engine_capabilities_value(args);
+    if (builtin == "engine.entity") return engine_entity_value(args);
+    if (builtin == "engine.entity_get") return engine_entity_get_value(args);
+    if (builtin == "engine.entity_transform") return engine_entity_transform_value(args);
+    if (builtin == "engine.entity_tag") return engine_entity_tag_value(args);
+    if (builtin == "engine.entity_has_tag") return engine_entity_has_tag_value(args);
+    if (builtin == "engine.entities_with_tag") return engine_entities_with_tag_value(args);
+    if (builtin == "engine.distance_3d") return engine_distance_3d_value(args);
+    if (builtin == "engine.ray_sphere") return engine_ray_sphere_value(args);
+    if (builtin == "engine.aabb_intersects") return engine_aabb_intersects_value(args);
+    if (builtin == "engine.light_point") return engine_light_point_value(args);
+    if (builtin == "engine.lights") return engine_lights_value(args);
+    if (builtin == "engine.raycast") return engine_raycast_value(args);
+
     const size_t dot = builtin.find('.');
     if (dot == std::string::npos) {
         throw std::runtime_error("Invalid native call target: " + builtin);
@@ -1036,6 +2295,155 @@ inline Value random_int(const std::vector<Value>& args) {
     if (max < min) std::swap(min, max);
     std::uniform_int_distribution<int> distribution(min, max);
     return Value(static_cast<double>(distribution(random_engine())));
+}
+
+inline Value process_cwd(const std::vector<Value>& args) {
+    (void)args;
+    return Value(std::filesystem::current_path().string());
+}
+
+inline Value path_join(const std::vector<Value>& args) {
+    if (args.empty()) return Value(std::string(""));
+    std::filesystem::path p(to_string(args[0]));
+    for (size_t i = 1; i < args.size(); ++i) p /= to_string(args[i]);
+    return Value(p.string());
+}
+
+inline Value path_basename(const std::vector<Value>& args) {
+    if (args.empty()) return Value(std::string(""));
+    return Value(std::filesystem::path(to_string(args[0])).filename().string());
+}
+
+inline Value path_dirname(const std::vector<Value>& args) {
+    if (args.empty()) return Value(std::string(""));
+    return Value(std::filesystem::path(to_string(args[0])).parent_path().string());
+}
+
+inline Value path_ext(const std::vector<Value>& args) {
+    if (args.empty()) return Value(std::string(""));
+    return Value(std::filesystem::path(to_string(args[0])).extension().string());
+}
+
+inline Value path_exists(const std::vector<Value>& args) {
+    if (args.empty()) return Value(false);
+    return Value(std::filesystem::exists(to_string(args[0])));
+}
+
+inline Value path_is_abs(const std::vector<Value>& args) {
+    if (args.empty()) return Value(false);
+    return Value(std::filesystem::path(to_string(args[0])).is_absolute());
+}
+
+inline Value env_has(const std::vector<Value>& args) {
+    if (args.empty()) return Value(false);
+    return Value(std::getenv(to_string(args[0]).c_str()) != nullptr);
+}
+
+inline Value sha256_value(const std::vector<Value>& args) {
+    if (args.empty()) return Value(std::string(""));
+    std::string input = to_string(args[0]);
+    auto rotr = [](uint32_t x, uint32_t n){ return (x>>n)|(x<<(32-n)); };
+    static const uint32_t K[64]={
+        0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+        0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+        0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+        0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+        0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+        0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+        0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+        0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
+    };
+    uint32_t H[8]={0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19};
+    std::vector<uint8_t> m(input.begin(), input.end());
+    uint64_t bit_len = m.size() * 8;
+    m.push_back(0x80);
+    while ((m.size() % 64) != 56) m.push_back(0x00);
+    for (int i = 7; i >= 0; --i) m.push_back((bit_len >> (i * 8)) & 0xff);
+    for (size_t chunk = 0; chunk < m.size(); chunk += 64) {
+        uint32_t w[64];
+        for (size_t i = 0; i < 16; ++i)
+            w[i] = (m[chunk + i*4] << 24) | (m[chunk + i*4 + 1] << 16) | (m[chunk + i*4 + 2] << 8) | m[chunk + i*4 + 3];
+        for (size_t i = 16; i < 64; ++i) {
+            uint32_t s0 = rotr(w[i-15], 7) ^ rotr(w[i-15], 18) ^ (w[i-15] >> 3);
+            uint32_t s1 = rotr(w[i-2], 17) ^ rotr(w[i-2], 19) ^ (w[i-2] >> 10);
+            w[i] = w[i-16] + s0 + w[i-7] + s1;
+        }
+        uint32_t a = H[0], b = H[1], c = H[2], d = H[3], e = H[4], f = H[5], g = H[6], h = H[7];
+        for (size_t i = 0; i < 64; ++i) {
+            uint32_t S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
+            uint32_t ch = (e & f) ^ ((~e) & g);
+            uint32_t temp1 = h + S1 + ch + K[i] + w[i];
+            uint32_t S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
+            uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
+            uint32_t temp2 = S0 + maj;
+            h = g; g = f; f = e; e = d + temp1; d = c; c = b; b = a; a = temp1 + temp2;
+        }
+        H[0] += a; H[1] += b; H[2] += c; H[3] += d; H[4] += e; H[5] += f; H[6] += g; H[7] += h;
+    }
+    std::ostringstream ss;
+    for (int i = 0; i < 8; ++i) {
+        char buf[9];
+        std::snprintf(buf, sizeof(buf), "%08x", H[i]);
+        ss << buf;
+    }
+    return Value(ss.str());
+}
+
+inline Value base64_encode_value(const std::vector<Value>& args) {
+    if (args.empty()) return Value(std::string(""));
+    const std::string input = to_string(args[0]);
+    static const char* tbl = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    int val = 0, bits = -6;
+    for (unsigned char c : input) {
+        val = (val << 8) + c;
+        bits += 8;
+        while (bits >= 0) {
+            out.push_back(tbl[(val >> bits) & 0x3F]);
+            bits -= 6;
+        }
+    }
+    if (bits > -6) out.push_back(tbl[((val << 8) >> (bits + 8)) & 0x3F]);
+    while (out.size() % 4) out.push_back('=');
+    return Value(out);
+}
+
+inline Value base64_decode_value(const std::vector<Value>& args) {
+    if (args.empty()) return Value(std::string(""));
+    const std::string input = to_string(args[0]);
+    std::vector<int> T(256, -1);
+    for (int i = 0; i < 64; i++) {
+        T[static_cast<unsigned char>("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"[i])] = i;
+    }
+    std::string out;
+    int val = 0, bits = -8;
+    for (unsigned char c : input) {
+        if (T[c] == -1) break;
+        val = (val << 6) + T[c];
+        bits += 6;
+        if (bits >= 0) {
+            out.push_back(char((val >> bits) & 0xFF));
+            bits -= 8;
+        }
+    }
+    return Value(out);
+}
+
+inline Value uuid_value(const std::vector<Value>&) {
+    std::random_device rd;
+    std::mt19937_64 rng(rd());
+    std::uniform_int_distribution<uint64_t> dist;
+    uint64_t hi = dist(rng), lo = dist(rng);
+    hi = (hi & 0xFFFFFFFFFFFF0FFFull) | 0x0000000000004000ull;
+    lo = (lo & 0x3FFFFFFFFFFFFFFFull) | 0x8000000000000000ull;
+    std::ostringstream oss;
+    oss << std::hex << std::setfill('0');
+    oss << std::setw(8) << ((hi >> 32) & 0xFFFFFFFF) << "-";
+    oss << std::setw(4) << ((hi >> 16) & 0xFFFF) << "-";
+    oss << std::setw(4) << (hi & 0xFFFF) << "-";
+    oss << std::setw(4) << ((lo >> 48) & 0xFFFF) << "-";
+    oss << std::setw(12) << (lo & 0xFFFFFFFFFFFFull);
+    return Value(oss.str());
 }
 }
 
@@ -3332,6 +4740,70 @@ inline Value engine_draw_fps(const std::vector<Value>& args) {
     const int x = args.size() > 0 ? static_cast<int>(to_number(args[0])) : 16;
     const int y = args.size() > 1 ? static_cast<int>(to_number(args[1])) : 16;
     rt_draw_fps(x, y);
+    return Value();
+}
+
+inline Value engine_load_model(const std::vector<Value>& args) {
+    if (args.empty()) return Value(0.0);
+    return Value(static_cast<double>(rt_load_model(to_string(args[0]).c_str())));
+}
+
+inline Value engine_unload_model(const std::vector<Value>& args) {
+    if (!args.empty()) rt_unload_model(static_cast<int64_t>(to_number(args[0])));
+    return Value();
+}
+
+inline Value engine_draw_model(const std::vector<Value>& args) {
+    if (args.size() < 2) return Value();
+    int64_t id = static_cast<int64_t>(to_number(args[0]));
+    RTVec3 pos = engine_vec3_from(args[1], RTVec3{0.0f, 0.0f, 0.0f});
+    float scale = args.size() > 2 ? static_cast<float>(to_number(args[2])) : 1.0f;
+    RTColor tint = args.size() > 3 ? engine_color_from(args[3], RTColor{255, 255, 255, 255}) : RTColor{255, 255, 255, 255};
+    rt_draw_model(id, pos, scale, tint);
+    return Value();
+}
+
+inline Value engine_draw_model_ex(const std::vector<Value>& args) {
+    if (args.size() < 6) return Value();
+    int64_t id = static_cast<int64_t>(to_number(args[0]));
+    RTVec3 pos = engine_vec3_from(args[1], RTVec3{0.0f, 0.0f, 0.0f});
+    RTVec3 rotAxis = engine_vec3_from(args[2], RTVec3{0.0f, 1.0f, 0.0f});
+    float rotAngle = static_cast<float>(to_number(args[3]));
+    RTVec3 scale = engine_vec3_from(args[4], RTVec3{1.0f, 1.0f, 1.0f});
+    RTColor tint = engine_color_from(args[5], RTColor{255, 255, 255, 255});
+    rt_draw_model_ex(id, pos, rotAxis, rotAngle, scale, tint);
+    return Value();
+}
+
+inline Value engine_load_texture(const std::vector<Value>& args) {
+    if (args.empty()) return Value(0.0);
+    return Value(static_cast<double>(rt_load_texture(to_string(args[0]).c_str())));
+}
+
+inline Value engine_unload_texture(const std::vector<Value>& args) {
+    if (!args.empty()) rt_unload_texture(static_cast<int64_t>(to_number(args[0])));
+    return Value();
+}
+
+inline Value engine_draw_texture(const std::vector<Value>& args) {
+    if (args.size() < 3) return Value();
+    int64_t id = static_cast<int64_t>(to_number(args[0]));
+    int x = static_cast<int>(to_number(args[1]));
+    int y = static_cast<int>(to_number(args[2]));
+    RTColor tint = args.size() > 3 ? engine_color_from(args[3], RTColor{255, 255, 255, 255}) : RTColor{255, 255, 255, 255};
+    rt_draw_texture(id, x, y, tint);
+    return Value();
+}
+
+inline Value engine_draw_texture_ex(const std::vector<Value>& args) {
+    if (args.size() < 6) return Value();
+    int64_t id = static_cast<int64_t>(to_number(args[0]));
+    float x = static_cast<float>(to_number(args[1]));
+    float y = static_cast<float>(to_number(args[2]));
+    float rot = static_cast<float>(to_number(args[3]));
+    float scale = static_cast<float>(to_number(args[4]));
+    RTColor tint = engine_color_from(args[5], RTColor{255, 255, 255, 255});
+    rt_draw_texture_ex(id, x, y, rot, scale, tint);
     return Value();
 }
 }

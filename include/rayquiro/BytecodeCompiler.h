@@ -57,6 +57,7 @@ private:
     const std::unordered_map<std::string, std::string>& builtinNamespaceAliases_;
     const std::unordered_map<std::string, std::string>& builtinSymbolAliases_;
     std::unordered_set<std::string> userFunctions_;
+    std::vector<std::vector<Stmt*>> deferScopes_;
 
     BytecodeCompiler(
         const std::unordered_map<std::string, std::string>& namespaceAliases,
@@ -99,9 +100,13 @@ private:
         BytecodeFunction function;
         function.name = functionStmt.name;
         for (const auto& p : functionStmt.params)
+        {
             function.params.push_back(p.name);
+            if (p.isVariadic) function.isVariadic = true;
+        }
 
         LocalScope scope;
+        deferScopes_.push_back({});
         for (const auto& p : functionStmt.params) {
             scope.locals[p.name] = scope.nextSlot++;
         }
@@ -124,6 +129,13 @@ private:
         for (const auto& statement : functionStmt.body->statements) {
             compileStmt(statement.get(), function, scope, false);
         }
+        if (!deferScopes_.empty()) {
+            const auto& defers = deferScopes_.back();
+            for (auto it = defers.rbegin(); it != defers.rend(); ++it) {
+                compileStmt(*it, function, scope, false);
+            }
+            deferScopes_.pop_back();
+        }
         if (scope.locals.size() > functionStmt.params.size()) {
             int count = 0;
             for (const auto& pair : scope.locals) {
@@ -142,7 +154,7 @@ private:
 
     bool supportsStmt(Stmt* stmt) const {
         if (!stmt) return true;
-        if (dynamic_cast<DeferStmt*>(stmt) != nullptr) return false;
+        if (auto ds = dynamic_cast<DeferStmt*>(stmt)) return supportsStmt(ds->statement.get());
         if (dynamic_cast<SpawnStmt*>(stmt) != nullptr) return false;
         if (dynamic_cast<SwitchStmt*>(stmt) != nullptr) return false;
         if (auto ts = dynamic_cast<TestStmt*>(stmt)) return supportsStmt(ts->body.get());
@@ -184,7 +196,7 @@ private:
         }
         if (auto fs = dynamic_cast<FunctionStmt*>(stmt)) {
             for (const auto& p : fs->params) {
-                if (p.isVariadic) return false;
+
                 if (p.defaultValue && !supportsExpr(p.defaultValue.get())) return false;
             }
             return supportsStmt(fs->body.get());
@@ -237,6 +249,24 @@ private:
     }
 
     static bool isSupportedBuiltin(const std::string& name) {
+        if (name.rfind("engine.", 0) == 0 ||
+            name.rfind("ui.", 0) == 0 ||
+            name.rfind("app.", 0) == 0 ||
+            name.rfind("web.", 0) == 0 ||
+            name.rfind("crypto.", 0) == 0 ||
+            name.rfind("hash.", 0) == 0 ||
+            name.rfind("fs.", 0) == 0 ||
+            name.rfind("os.", 0) == 0 ||
+            name.rfind("json.", 0) == 0 ||
+            name.rfind("time.", 0) == 0 ||
+            name.rfind("datetime.", 0) == 0 ||
+            name.rfind("path.", 0) == 0 ||
+            name.rfind("regex.", 0) == 0 ||
+            name.rfind("buffer.", 0) == 0 ||
+            name.rfind("struct.", 0) == 0 ||
+            name.rfind("ffi.", 0) == 0) {
+            return true;
+        }
         return name == "print" ||
             name == "str" ||
             name == "to_string" ||
@@ -559,7 +589,25 @@ private:
                     compileExpr(v.get(), function, scope);
                 emit(function, OpCode::BuildArray, static_cast<int>(returnStmt->values.size()));
             }
+            if (!deferScopes_.empty() && !deferScopes_.back().empty()) {
+                int retSlot = scope.nextSlot++;
+                emit(function, OpCode::SetLocal, retSlot);
+                emit(function, OpCode::Pop);
+                const auto& defers = deferScopes_.back();
+                for (auto it = defers.rbegin(); it != defers.rend(); ++it) {
+                    compileStmt(*it, function, scope, false);
+                }
+                emit(function, OpCode::GetLocal, retSlot);
+            }
             emit(function, OpCode::Return);
+            return;
+        }
+
+        if (auto deferStmt = dynamic_cast<DeferStmt*>(stmt)) {
+            if (!deferScopes_.empty()) {
+                deferScopes_.back().push_back(deferStmt->statement.get());
+            }
+            return;
             return;
         }
 
@@ -645,6 +693,16 @@ private:
 
         if (auto throwStmt = dynamic_cast<ThrowStmt*>(stmt)) {
             compileExpr(throwStmt->value.get(), function, scope);
+            int tmpSlot = scope.nextSlot++;
+            emit(function, OpCode::SetLocal, tmpSlot);
+            emit(function, OpCode::Pop);
+            if (!deferScopes_.empty() && !deferScopes_.back().empty()) {
+                const auto& defers = deferScopes_.back();
+                for (auto it = defers.rbegin(); it != defers.rend(); ++it) {
+                    compileStmt(*it, function, scope, false);
+                }
+            }
+            emit(function, OpCode::GetLocal, tmpSlot);
             emit(function, OpCode::Throw);
             return;
         }
@@ -667,12 +725,12 @@ private:
                 compileStmt(tryCatch->catchBody.get(), function, scope, false);
             }
 
+            int finallyStart = static_cast<int>(function.code.size());
+            patchJump(function, tryEndIdx, finallyStart);
+
             if (tryCatch->finallyBody) {
                 compileStmt(tryCatch->finallyBody.get(), function, scope, false);
             }
-
-            int afterCatch = static_cast<int>(function.code.size());
-            patchJump(function, tryEndIdx, afterCatch);
             return;
         }
 

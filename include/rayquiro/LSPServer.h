@@ -19,6 +19,7 @@
 #include "nlohmann_json.h"
 #include "Lexer.h"
 #include "Parser.h"
+#include "TypeChecker.h"
 
 class LSPServer {
     std::unordered_map<std::string, std::string> documents_;
@@ -98,6 +99,25 @@ class LSPServer {
             auto tokens = lexer.tokenize();
             Parser parser(tokens);
             auto program = parser.parse();
+            TypeChecker checker;
+            checker.checkProgram(program.get());
+            for (const auto& td : checker.diagnostics()) {
+                dap::json diag;
+                dap::json range;
+                dap::json startPos;
+                startPos["line"] = td.line > 0 ? td.line - 1 : 0;
+                startPos["character"] = td.col > 0 ? td.col - 1 : 0;
+                dap::json endPos;
+                endPos["line"] = td.line > 0 ? td.line - 1 : 0;
+                endPos["character"] = td.col > 0 ? td.col + 5 : 5;
+                range["start"] = startPos;
+                range["end"] = endPos;
+                diag["range"] = range;
+                diag["severity"] = td.isError ? 1 : 2;
+                diag["source"] = "rayquiro";
+                diag["message"] = td.message;
+                diagArray.push_back(diag);
+            }
         } catch (const std::exception& e) {
             std::string msg = e.what();
             int errLine = 0;
@@ -475,6 +495,14 @@ class LSPServer {
             items.push_back(makeCompletionItem("draw_ray", 3, target + ".draw_ray(ox, oy, oz, dx, dy, dz, length, color) -> null", "Draw 3D ray"));
             items.push_back(makeCompletionItem("draw_grid", 3, target + ".draw_grid(slices, spacing) -> null", "Draw 3D reference ground grid"));
             items.push_back(makeCompletionItem("draw_axes", 3, target + ".draw_axes(length) -> null", "Draw 3D XYZ coordinate axes"));
+            items.push_back(makeCompletionItem("load_model", 3, target + ".load_model(path) -> number", "Load 3D model (glTF/GLB/OBJ) and return model ID"));
+            items.push_back(makeCompletionItem("unload_model", 3, target + ".unload_model(id) -> null", "Unload 3D model from GPU memory"));
+            items.push_back(makeCompletionItem("draw_model", 3, target + ".draw_model(id, pos, scale, tint) -> null", "Draw 3D model at position with scale and tint"));
+            items.push_back(makeCompletionItem("draw_model_ex", 3, target + ".draw_model_ex(id, pos, rot_axis, rot_angle, scale, tint) -> null", "Draw 3D model with transform"));
+            items.push_back(makeCompletionItem("load_texture", 3, target + ".load_texture(path) -> number", "Load 2D texture (PNG/JPG) and return texture ID"));
+            items.push_back(makeCompletionItem("unload_texture", 3, target + ".unload_texture(id) -> null", "Unload 2D texture from GPU memory"));
+            items.push_back(makeCompletionItem("draw_texture", 3, target + ".draw_texture(id, x, y, tint) -> null", "Draw 2D texture at position with tint"));
+            items.push_back(makeCompletionItem("draw_texture_ex", 3, target + ".draw_texture_ex(id, x, y, rot, scale, tint) -> null", "Draw 2D texture with rotation, scale and tint"));
             items.push_back(makeCompletionItem("create_entity", 3, target + ".create_entity(tag) -> number", "Create scene entity and return ID"));
             items.push_back(makeCompletionItem("set_entity_position", 3, target + ".set_entity_position(id, x, y, z) -> null", "Set entity 3D position"));
             items.push_back(makeCompletionItem("set_entity_rotation", 3, target + ".set_entity_rotation(id, rx, ry, rz) -> null", "Set entity 3D rotation euler angles"));

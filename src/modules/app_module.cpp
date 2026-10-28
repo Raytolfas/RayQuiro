@@ -14,6 +14,8 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <filesystem>
+#include <fstream>
 
 namespace {
 
@@ -358,6 +360,184 @@ static std::string render_html(const AppJsonValue& el) {
     return "<" + htmlTag + (!id.empty() ? (" id=\"" + id + "\"") : "") + propsAttr + styleAttr + ">" + inner + "</" + htmlTag + ">";
 }
 
+static std::string escape_slint_str(const std::string& s) {
+    std::string out;
+    for (char c : s) {
+        if (c == '"') out += "\\\"";
+        else if (c == '\\') out += "\\\\";
+        else if (c == '\n') out += "\\n";
+        else if (c == '\r') continue;
+        else if (c == '\t') out += "\\t";
+        else out += c;
+    }
+    return out;
+}
+
+static std::string render_slint_node(const AppJsonValue& el, int indent = 12) {
+    if (el.type != AppJsonValue::Object) return "";
+    std::string tag = "column";
+    auto itTag = el.obj.find("tag");
+    if (itTag != el.obj.end()) tag = itTag->second.to_string();
+
+    std::string text;
+    auto itText = el.obj.find("text");
+    if (itText != el.obj.end()) text = itText->second.to_string();
+
+    std::vector<AppJsonValue> children;
+    auto itChildren = el.obj.find("children");
+    if (itChildren != el.obj.end() && itChildren->second.type == AppJsonValue::Array) {
+        children = itChildren->second.arr;
+    }
+
+    std::string pad(indent, ' ');
+    std::string innerPad(indent + 4, ' ');
+
+    if (tag == "button") {
+        return pad + "AppButton {\n" + innerPad + "text: \"" + escape_slint_str(text.empty() ? "Button" : text) + "\";\n" + pad + "}\n";
+    }
+
+    if (tag == "text" || tag == "label") {
+        return pad + "Text {\n" + innerPad + "text: \"" + escape_slint_str(text) + "\";\n" + innerPad + "color: #a1a1aa;\n" + innerPad + "font-size: 13px;\n" + pad + "}\n";
+    }
+
+    if (tag == "h1" || tag == "h2" || tag == "h3" || tag == "h4" || tag == "h5" || tag == "h6" || tag == "heading") {
+        std::string fsize = "16px";
+        if (tag == "h1") fsize = "22px";
+        else if (tag == "h2") fsize = "18px";
+        else if (tag == "h3") fsize = "15px";
+        return pad + "Text {\n" + innerPad + "text: \"" + escape_slint_str(text) + "\";\n" + innerPad + "color: #f4f4f5;\n" + innerPad + "font-size: " + fsize + ";\n" + innerPad + "font-weight: 700;\n" + pad + "}\n";
+    }
+
+    if (tag == "input" || tag == "text_input" || tag == "textInput") {
+        std::string placeholder;
+        auto itProps = el.obj.find("props");
+        if (itProps != el.obj.end() && itProps->second.type == AppJsonValue::Object) {
+            auto itPh = itProps->second.obj.find("placeholder");
+            if (itPh != itProps->second.obj.end()) placeholder = itPh->second.to_string();
+        }
+        return pad + "LineEdit {\n" + innerPad + "placeholder-text: \"" + escape_slint_str(placeholder) + "\";\n" + innerPad + "text: \"" + escape_slint_str(text) + "\";\n" + innerPad + "height: 34px;\n" + pad + "}\n";
+    }
+
+    if (tag == "textarea") {
+        return pad + "TextEdit {\n" + innerPad + "text: \"" + escape_slint_str(text) + "\";\n" + innerPad + "height: 80px;\n" + pad + "}\n";
+    }
+
+    if (tag == "checkbox") {
+        bool checked = false;
+        auto itProps = el.obj.find("props");
+        if (itProps != el.obj.end() && itProps->second.type == AppJsonValue::Object) {
+            auto itChk = itProps->second.obj.find("checked");
+            if (itChk != itProps->second.obj.end()) checked = itChk->second.to_bool(false);
+        }
+        return pad + "CheckBox {\n" + innerPad + "text: \"" + escape_slint_str(text) + "\";\n" + innerPad + "checked: " + (checked ? "true" : "false") + ";\n" + pad + "}\n";
+    }
+
+    if (tag == "slider") {
+        return pad + "Slider {\n" + innerPad + "minimum: 0;\n" + innerPad + "maximum: 100;\n" + innerPad + "value: 50;\n" + pad + "}\n";
+    }
+
+    if (tag == "progress") {
+        return pad + "ProgressIndicator {\n" + innerPad + "progress: 0.5;\n" + pad + "}\n";
+    }
+
+    if (tag == "hr" || tag == "divider" || tag == "separator") {
+        return pad + "Rectangle {\n" + innerPad + "height: 1px;\n" + innerPad + "background: #3f3f46;\n" + pad + "}\n";
+    }
+
+    if (tag == "row") {
+        std::string res = pad + "HorizontalLayout {\n" + innerPad + "spacing: 12px;\n" + innerPad + "alignment: start;\n";
+        for (const auto& child : children) {
+            res += render_slint_node(child, indent + 4);
+        }
+        res += pad + "}\n";
+        return res;
+    }
+
+    if (tag == "column") {
+        std::string res = pad + "VerticalLayout {\n" + innerPad + "spacing: 12px;\n" + innerPad + "alignment: start;\n";
+        for (const auto& child : children) {
+            res += render_slint_node(child, indent + 4);
+        }
+        res += pad + "}\n";
+        return res;
+    }
+
+    if (tag == "card" || tag == "box") {
+        std::string res = pad + "Rectangle {\n" + innerPad + "background: #27272a;\n" + innerPad + "border-radius: 8px;\n" + innerPad + "border-width: 1px;\n" + innerPad + "border-color: #3f3f46;\n";
+        res += innerPad + "VerticalLayout {\n" + innerPad + "    padding: 16px;\n" + innerPad + "    spacing: 10px;\n";
+        for (const auto& child : children) {
+            res += render_slint_node(child, indent + 8);
+        }
+        res += innerPad + "}\n" + pad + "}\n";
+        return res;
+    }
+
+    std::string res = pad + "VerticalLayout {\n" + innerPad + "spacing: 8px;\n";
+    for (const auto& child : children) {
+        res += render_slint_node(child, indent + 4);
+    }
+    res += pad + "}\n";
+    return res;
+}
+
+static std::string compile_element_to_slint_app(const AppJsonValue& root, const std::string& title, int width, int height) {
+    std::string out = R"(import { Button, Slider, LineEdit, TextEdit, CheckBox, ProgressIndicator, ScrollView } from "std-widgets.slint";
+
+component AppButton inherits Rectangle {
+    in property <string> text: "Action";
+    in property <bool> primary: false;
+    callback clicked();
+
+    height: 34px;
+    border-radius: 6px;
+    background: root.primary ? (touch.has-hover ? #2563eb : #3b82f6) : (touch.has-hover ? #323238 : #27272a);
+    border-width: 1px;
+    border-color: root.primary ? #3b82f6 : #3f3f46;
+    animate background { duration: 100ms; }
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+
+    HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 14px;
+        alignment: center;
+        Text {
+            text: root.text;
+            color: #f4f4f5;
+            font-size: 13px;
+            font-weight: 500;
+            vertical-alignment: center;
+        }
+    }
+}
+
+export component MainWindow inherits Window {
+    title: ")";
+    out += escape_slint_str(title);
+    out += R"(";
+    background: #18181b;
+    preferred-width: )";
+    out += std::to_string(width) + "px;\n";
+    out += "    preferred-height: " + std::to_string(height) + "px;\n";
+    out += R"(    min-width: 640px;
+    min-height: 480px;
+
+    ScrollView {
+        VerticalLayout {
+            padding: 20px;
+            spacing: 16px;
+            alignment: start;
+)";
+    out += render_slint_node(root, 12);
+    out += R"(        }
+    }
+}
+)";
+    return out;
+}
+
 RayQuiroApp& runtime() {
     return RayQuiroApp::instance();
 }
@@ -421,7 +601,174 @@ static int extract_window_id(const std::vector<AppJsonValue>& args) {
 }
 #endif
 
+static bool parse_hex_color(const std::string& raw, int& r, int& g, int& b) {
+    std::string hex = raw;
+    while (!hex.empty() && (hex.front() == ' ' || hex.front() == '\t')) hex.erase(hex.begin());
+    while (!hex.empty() && (hex.back() == ' ' || hex.back() == '\t')) hex.pop_back();
+    if (hex.empty()) return false;
+    if (hex[0] == '#') hex = hex.substr(1);
+    if (hex.size() == 3) {
+        try {
+            int cr = std::stoi(hex.substr(0, 1), nullptr, 16);
+            int cg = std::stoi(hex.substr(1, 1), nullptr, 16);
+            int cb = std::stoi(hex.substr(2, 1), nullptr, 16);
+            r = cr * 17;
+            g = cg * 17;
+            b = cb * 17;
+            return true;
+        } catch (...) {
+            return false;
+        }
+    }
+    if (hex.size() == 6 || hex.size() == 8) {
+        try {
+            r = std::stoi(hex.substr(0, 2), nullptr, 16);
+            g = std::stoi(hex.substr(2, 2), nullptr, 16);
+            b = std::stoi(hex.substr(4, 2), nullptr, 16);
+            return true;
+        } catch (...) {
+            return false;
+        }
+    }
+    return false;
+}
+
+static std::string make_hex(int r, int g, int b) {
+    r = std::max(0, std::min(255, r));
+    g = std::max(0, std::min(255, g));
+    b = std::max(0, std::min(255, b));
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "#%02x%02x%02x", r, g, b);
+    return std::string(buf);
+}
+
+static std::string blend_colors(const std::string& c1, const std::string& c2, double t) {
+    int r1 = 0, g1 = 0, b1 = 0;
+    int r2 = 0, g2 = 0, b2 = 0;
+    if (!parse_hex_color(c1, r1, g1, b1)) { r1 = 0; g1 = 0; b1 = 0; }
+    if (!parse_hex_color(c2, r2, g2, b2)) { r2 = 255; g2 = 255; b2 = 255; }
+    t = std::max(0.0, std::min(1.0, t));
+    int r = static_cast<int>(r1 + (r2 - r1) * t);
+    int g = static_cast<int>(g1 + (g2 - g1) * t);
+    int b = static_cast<int>(b1 + (b2 - b1) * t);
+    return make_hex(r, g, b);
+}
+
+static std::string lighten_color(const std::string& c, double factor) {
+    int r = 0, g = 0, b = 0;
+    if (!parse_hex_color(c, r, g, b)) return "#ffffff";
+    factor = std::max(0.0, std::min(1.0, factor));
+    r = static_cast<int>(r + (255 - r) * factor);
+    g = static_cast<int>(g + (255 - g) * factor);
+    b = static_cast<int>(b + (255 - b) * factor);
+    return make_hex(r, g, b);
+}
+
+static std::string darken_color(const std::string& c, double factor) {
+    int r = 0, g = 0, b = 0;
+    if (!parse_hex_color(c, r, g, b)) return "#000000";
+    factor = std::max(0.0, std::min(1.0, factor));
+    r = static_cast<int>(r * (1.0 - factor));
+    g = static_cast<int>(g * (1.0 - factor));
+    b = static_cast<int>(b * (1.0 - factor));
+    return make_hex(r, g, b);
+}
+
+static std::string get_app_theme_json(const std::string& name) {
+    if (name == "light") {
+        return "{\"name\":\"light\",\"background\":\"#ffffff\",\"surface\":\"#f4f4f5\",\"border\":\"#e4e4e7\",\"text\":\"#09090b\",\"textMuted\":\"#71717a\",\"primary\":\"#2563eb\",\"primaryHover\":\"#1d4ed8\",\"secondary\":\"#64748b\",\"success\":\"#16a34a\",\"warning\":\"#ca8a04\",\"danger\":\"#dc2626\",\"radius\":8,\"font\":\"Segoe UI\"}";
+    }
+    if (name == "nord") {
+        return "{\"name\":\"nord\",\"background\":\"#2e3440\",\"surface\":\"#3b4252\",\"border\":\"#4c566a\",\"text\":\"#eceff4\",\"textMuted\":\"#d8dee9\",\"primary\":\"#88c0d0\",\"primaryHover\":\"#81a1c1\",\"secondary\":\"#4c566a\",\"success\":\"#a3be8c\",\"warning\":\"#ebcb8b\",\"danger\":\"#bf616a\",\"radius\":6,\"font\":\"Segoe UI\"}";
+    }
+    return "{\"name\":\"dark\",\"background\":\"#18181b\",\"surface\":\"#27272a\",\"border\":\"#3f3f46\",\"text\":\"#f4f4f5\",\"textMuted\":\"#a1a1aa\",\"primary\":\"#3b82f6\",\"primaryHover\":\"#2563eb\",\"secondary\":\"#64748b\",\"success\":\"#22c55e\",\"warning\":\"#eab308\",\"danger\":\"#ef4444\",\"radius\":8,\"font\":\"Segoe UI\"}";
+}
+
+static const char* g_default_slint_app = R"(import { Button } from "std-widgets.slint";
+
+export component MainWindow inherits Window {
+    title: "RayQuiro Application";
+    width: 800px;
+    height: 600px;
+    background: #0f172a;
+
+    VerticalLayout {
+        alignment: center;
+        spacing: 16px;
+
+        Text {
+            text: "RayQuiro Application";
+            color: #f8fafc;
+            font-size: 24px;
+            font-weight: 700;
+            horizontal-alignment: center;
+        }
+
+        Text {
+            text: "Build native UI declaratively using rayquiro.app widgets in pure .rq";
+            color: #94a3b8;
+            font-size: 14px;
+            horizontal-alignment: center;
+        }
+    }
+}
+)";
+
 std::string dispatch(const std::string& functionName, const std::vector<AppJsonValue>& args) {
+    if (functionName == "stylesheet") {
+        if (!args.empty()) runtime().set_style(args[0].to_string());
+        return "null";
+    }
+    if (functionName == "dark") return get_app_theme_json("dark");
+    if (functionName == "light") return get_app_theme_json("light");
+    if (functionName == "nord") return get_app_theme_json("nord");
+    if (functionName == "rgb") {
+        int r = args.size() > 0 ? args[0].to_int() : 0;
+        int g = args.size() > 1 ? args[1].to_int() : 0;
+        int b = args.size() > 2 ? args[2].to_int() : 0;
+        return "\"" + make_hex(r, g, b) + "\"";
+    }
+    if (functionName == "rgba") {
+        int r = args.size() > 0 ? args[0].to_int() : 0;
+        int g = args.size() > 1 ? args[1].to_int() : 0;
+        int b = args.size() > 2 ? args[2].to_int() : 0;
+        double a = args.size() > 3 ? args[3].to_number(1.0) : 1.0;
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "\"rgba(%d, %d, %d, %.3g)\"", r, g, b, a);
+        return std::string(buf);
+    }
+    if (functionName == "hex") {
+        int r = 0, g = 0, b = 0;
+        if (!args.empty() && parse_hex_color(args[0].to_string(), r, g, b)) {
+            return "\"" + make_hex(r, g, b) + "\"";
+        }
+        return "\"#000000\"";
+    }
+    if (functionName == "blend") {
+        std::string c1 = args.size() > 0 ? args[0].to_string() : "#000000";
+        std::string c2 = args.size() > 1 ? args[1].to_string() : "#ffffff";
+        double t = args.size() > 2 ? args[2].to_number(0.5) : 0.5;
+        return "\"" + blend_colors(c1, c2, t) + "\"";
+    }
+    if (functionName == "lighten") {
+        std::string c = args.size() > 0 ? args[0].to_string() : "#000000";
+        double f = args.size() > 1 ? args[1].to_number(0.1) : 0.1;
+        return "\"" + lighten_color(c, f) + "\"";
+    }
+    if (functionName == "darken") {
+        std::string c = args.size() > 0 ? args[0].to_string() : "#ffffff";
+        double f = args.size() > 1 ? args[1].to_number(0.1) : 0.1;
+        return "\"" + darken_color(c, f) + "\"";
+    }
+    if (functionName == "alpha") {
+        std::string c = args.size() > 0 ? args[0].to_string() : "#000000";
+        double a = args.size() > 1 ? args[1].to_number(1.0) : 1.0;
+        int r = 0, g = 0, b = 0;
+        parse_hex_color(c, r, g, b);
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "\"rgba(%d, %d, %d, %.3g)\"", r, g, b, a);
+        return std::string(buf);
+    }
     if (functionName == "button") {
         std::string text = args.size() > 0 ? args[0].to_string() : "Button";
         int bx = args.size() > 1 && args[1].type == AppJsonValue::Number ? args[1].to_int(-1) : -1;
@@ -576,6 +923,22 @@ std::string dispatch(const std::string& functionName, const std::vector<AppJsonV
         if (args.empty()) return "\"\"";
         return "\"" + escape_json(render_html(args[0])) + "\"";
     }
+    if (functionName == "to_slint" || functionName == "toSlint") {
+        if (args.empty()) return "\"\"";
+        std::string title = "RayQuiro Application";
+        int width = 960;
+        int height = 680;
+        AppJsonValue root = args[0];
+        if (args.size() > 1 && args[1].type == AppJsonValue::Object) {
+            auto itT = args[1].obj.find("title");
+            if (itT != args[1].obj.end()) title = itT->second.to_string();
+            auto itW = args[1].obj.find("width");
+            if (itW != args[1].obj.end()) width = itW->second.to_int(960);
+            auto itH = args[1].obj.find("height");
+            if (itH != args[1].obj.end()) height = itH->second.to_int(680);
+        }
+        return "\"" + escape_json(compile_element_to_slint_app(root, title, width, height)) + "\"";
+    }
 
 #ifdef _WIN32
     if (functionName == "window") {
@@ -700,7 +1063,6 @@ std::string dispatch(const std::string& functionName, const std::vector<AppJsonV
         runtime().init(args.size() > 0 ? args[0].to_string() : "RayQuiro", args.size() > 1 ? args[1].to_int(900) : 900, args.size() > 2 ? args[2].to_int(600) : 600);
         return "null";
     }
-    if (functionName == "run") { runtime().run(); return "null"; }
     if (functionName == "style") {
         if (!args.empty()) runtime().set_style(args[0].to_string());
         return "null";
@@ -722,6 +1084,103 @@ std::string dispatch(const std::string& functionName, const std::vector<AppJsonV
     if (functionName == "msg") {
         RayQuiroApp::show_message(args.size() > 0 ? args[0].to_string() : "RayQuiro", args.size() > 1 ? args[1].to_string() : "");
         return "null";
+    }
+    if (functionName == "has_slint" || functionName == "slint_available") {
+        std::filesystem::path localTool = std::filesystem::current_path() / "tools" / "slint" / "slint-viewer.exe";
+        if (std::filesystem::exists(localTool) || std::filesystem::exists("tools/slint/slint-viewer.exe")) return "true";
+        return std::system("where slint-viewer >nul 2>&1") == 0 ? "true" : "false";
+    }
+    if (functionName == "run" || functionName == "studio" || functionName == "desktop" || functionName == "slint" || functionName == "slint_run" || functionName == "run_slint" || functionName == "slint_launch" || functionName == "slint_check" || functionName == "slint_screenshot") {
+        std::filesystem::path localTool = std::filesystem::current_path() / "tools" / "slint" / "slint-viewer.exe";
+        bool hasSlintTool = std::filesystem::exists(localTool) || std::filesystem::exists("tools/slint/slint-viewer.exe") || (std::system("where slint-viewer >nul 2>&1") == 0);
+        if (!hasSlintTool && functionName == "run") {
+            runtime().run();
+            return "null";
+        }
+
+        std::string input;
+        if (!args.empty()) {
+            if (args[0].type == AppJsonValue::String) {
+                input = args[0].to_string();
+            } else if (args[0].type == AppJsonValue::Object) {
+                auto itType = args[0].obj.find("__type__");
+                auto itTag = args[0].obj.find("tag");
+                if ((itType != args[0].obj.end() && itType->second.to_string() == "Element") || itTag != args[0].obj.end()) {
+                    input = compile_element_to_slint_app(args[0], "RayQuiro Application", 960, 680);
+                } else {
+                    std::string title = "RayQuiro Application";
+                    int width = 960;
+                    int height = 680;
+                    auto itT = args[0].obj.find("title");
+                    if (itT != args[0].obj.end()) title = itT->second.to_string();
+                    auto itW = args[0].obj.find("width");
+                    if (itW != args[0].obj.end()) width = itW->second.to_int(960);
+                    auto itH = args[0].obj.find("height");
+                    if (itH != args[0].obj.end()) height = itH->second.to_int(680);
+                    auto itC = args[0].obj.find("content");
+                    if (itC == args[0].obj.end()) itC = args[0].obj.find("root");
+                    if (itC == args[0].obj.end()) itC = args[0].obj.find("body");
+                    if (itC != args[0].obj.end()) {
+                        input = compile_element_to_slint_app(itC->second, title, width, height);
+                    }
+                }
+            }
+        }
+        if (input.empty()) {
+            input = g_default_slint_app;
+        }
+
+        std::string slintPath;
+        bool isTemp = false;
+        std::filesystem::path tempFilePath;
+        if (input.size() > 6 && input.substr(input.size() - 6) == ".slint" && std::filesystem::exists(input)) {
+            slintPath = input;
+        } else {
+            tempFilePath = std::filesystem::temp_directory_path() / "rayquiro_studio_ui.slint";
+            slintPath = tempFilePath.string();
+            std::ofstream f(slintPath);
+            f << input;
+            f.close();
+            isTemp = true;
+        }
+
+        std::string viewerExe = "slint-viewer";
+        if (std::filesystem::exists(localTool)) {
+            viewerExe = "\"" + localTool.string() + "\"";
+        } else if (std::filesystem::exists("tools/slint/slint-viewer.exe")) {
+            viewerExe = "\"tools\\slint\\slint-viewer.exe\"";
+        }
+
+        bool asyncLaunch = (functionName == "slint_launch");
+        std::string extraArgs;
+        if (functionName == "slint_check") {
+            extraArgs = " --check";
+        } else if (functionName == "slint_screenshot") {
+            std::string outImg = args.size() > 1 ? args[1].to_string() : "screenshot.png";
+            extraArgs = " --screenshot \"" + outImg + "\"";
+        } else {
+            for (size_t i = 1; i < args.size(); ++i) {
+                extraArgs += " " + args[i].to_string();
+            }
+        }
+
+        std::string cmd;
+        if (asyncLaunch) {
+            cmd = "cmd /C start \"\" " + viewerExe + " \"" + slintPath + "\"" + extraArgs;
+        } else {
+#ifdef _WIN32
+            cmd = "cmd /C \"" + viewerExe + " \"" + slintPath + "\"" + extraArgs + "\"";
+#else
+            cmd = viewerExe + " \"" + slintPath + "\"" + extraArgs;
+#endif
+        }
+
+        int ret = std::system(cmd.c_str());
+        if (isTemp && !asyncLaunch) {
+            std::error_code ec;
+            std::filesystem::remove(tempFilePath, ec);
+        }
+        return ret == 0 ? "true" : "false";
     }
 
     throw std::runtime_error("rayquiro.app does not export app." + functionName);

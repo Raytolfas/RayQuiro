@@ -37,6 +37,8 @@
 #include "Bytecode.h"
 #include "Framework.h"
 
+#include "BuiltinModules.h"
+
 class VM {
 public:
     using BuiltinHandler = std::function<std::optional<VMValue>(const std::string&, const std::vector<VMValue>&)>;
@@ -336,6 +338,17 @@ private:
 
         int totalSlots = std::max(static_cast<int>(args.size()), function.localCount);
         frame.locals.resize(static_cast<std::size_t>(totalSlots));
+        if (function.isVariadic && !function.params.empty()) {
+            size_t regularCount = function.params.size() - 1;
+            for (size_t i = 0; i < regularCount && i < args.size(); ++i) {
+                frame.locals[i] = args[i];
+            }
+            VMValue::Array rest;
+            for (size_t i = regularCount; i < args.size(); ++i) {
+                rest.push_back(args[i]);
+            }
+            frame.locals[regularCount] = VMValue(rest);
+        } else
         for (std::size_t i = 0; i < args.size(); ++i) {
             frame.locals[i] = args[i];
         }
@@ -813,6 +826,34 @@ private:
 
 public:
     static std::optional<VMValue> callDefaultBuiltin(const std::string& name, const std::vector<VMValue>& args) {
+        if (name.rfind("engine.", 0) == 0 || name.rfind("ui.", 0) == 0 || name.rfind("app.", 0) == 0 || name.rfind("web.", 0) == 0) {
+            std::string modName;
+            std::string fnName;
+            size_t dot = name.find('.');
+            modName = name.substr(0, dot);
+            fnName = name.substr(dot + 1);
+
+            VMValue::Array argArray;
+            for (const auto& a : args) argArray.push_back(a);
+            std::string payload = jsonStringifyValue(VMValue(argArray));
+            char* resultJson = nullptr;
+            char* errorMsg = nullptr;
+            int code = 1;
+            if (modName == "engine") code = rqm_builtin_engine_invoke(fnName.c_str(), payload.c_str(), &resultJson, &errorMsg);
+            else if (modName == "ui") code = rqm_builtin_ui_invoke(fnName.c_str(), payload.c_str(), &resultJson, &errorMsg);
+            else if (modName == "app") code = rqm_builtin_app_invoke(fnName.c_str(), payload.c_str(), &resultJson, &errorMsg);
+            else if (modName == "web") code = rqm_builtin_web_invoke(fnName.c_str(), payload.c_str(), &resultJson, &errorMsg);
+
+            std::string resStr = resultJson ? std::string(resultJson) : "null";
+            if (resultJson) rqm_builtin_free(resultJson);
+            if (errorMsg) rqm_builtin_free(errorMsg);
+
+            if (code == 0) {
+                size_t p = 0;
+                return jsonParseValue(resStr, p);
+            }
+            return VMValue();
+        }
         if (name == "channel") {
             int64_t id = ++vmChannelCounter_;
             auto chan = std::make_shared<VMChannelState>();

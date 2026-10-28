@@ -80,6 +80,7 @@ struct BytecodeFunction {
     std::vector<Instruction> code;
     std::vector<VMValue> constants;
     int localCount = 0;
+    bool isVariadic = false;
 };
 
 struct BytecodeProgram {

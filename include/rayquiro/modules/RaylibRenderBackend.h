@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <stdexcept>
+#include <unordered_map>
 
 #include "EngineBackend.h"
 
@@ -84,6 +86,100 @@ inline void init(int width, int height, const char* title) {
     rte::backendState.windowReady = true;
 }
 
+inline std::unordered_map<int64_t, Model>& model_registry() {
+    static std::unordered_map<int64_t, Model> s_models;
+    return s_models;
+}
+inline int64_t next_model_id() {
+    static int64_t s_id = 1;
+    return s_id++;
+}
+
+inline std::unordered_map<int64_t, Texture2D>& texture_registry() {
+    static std::unordered_map<int64_t, Texture2D> s_textures;
+    return s_textures;
+}
+inline int64_t next_texture_id() {
+    static int64_t s_id = 1;
+    return s_id++;
+}
+
+inline int64_t load_model(const char* filename) {
+    if (!rte::backendState.windowReady || !filename) return 0;
+    Model m = LoadModel(filename);
+    if (m.meshCount == 0) return 0;
+    int64_t id = next_model_id();
+    model_registry()[id] = m;
+    return id;
+}
+
+inline void unload_model(int64_t id) {
+    auto& reg = model_registry();
+    auto it = reg.find(id);
+    if (it != reg.end()) {
+        UnloadModel(it->second);
+        reg.erase(it);
+    }
+}
+
+inline void draw_model(int64_t id, RTVec3 position, float scale, RTColor tint) {
+    if (!rte::backendState.windowReady) return;
+    auto& reg = model_registry();
+    auto it = reg.find(id);
+    if (it == reg.end()) return;
+    rte::ensure_mode3d();
+    DrawModel(it->second, rte::convert_vec3(position), scale, rte::convert_color(tint));
+    rte::backendState.frameDrawCalls += 1;
+}
+
+inline void draw_model_ex(int64_t id, RTVec3 position, RTVec3 rotationAxis, float rotationAngle, RTVec3 scale, RTColor tint) {
+    if (!rte::backendState.windowReady) return;
+    auto& reg = model_registry();
+    auto it = reg.find(id);
+    if (it == reg.end()) return;
+    rte::ensure_mode3d();
+    DrawModelEx(it->second, rte::convert_vec3(position), rte::convert_vec3(rotationAxis), rotationAngle, rte::convert_vec3(scale), rte::convert_color(tint));
+    rte::backendState.frameDrawCalls += 1;
+}
+
+inline int64_t load_texture(const char* filename) {
+    if (!rte::backendState.windowReady || !filename) return 0;
+    Texture2D t = LoadTexture(filename);
+    if (t.id == 0) return 0;
+    int64_t id = next_texture_id();
+    texture_registry()[id] = t;
+    return id;
+}
+
+inline void unload_texture(int64_t id) {
+    auto& reg = texture_registry();
+    auto it = reg.find(id);
+    if (it != reg.end()) {
+        UnloadTexture(it->second);
+        reg.erase(it);
+    }
+}
+
+inline void draw_texture(int64_t id, int posX, int posY, RTColor tint) {
+    if (!rte::backendState.windowReady) return;
+    auto& reg = texture_registry();
+    auto it = reg.find(id);
+    if (it == reg.end()) return;
+    rte::ensure_mode2d();
+    DrawTexture(it->second, posX, posY, rte::convert_color(tint));
+    rte::backendState.frameDrawCalls += 1;
+}
+
+inline void draw_texture_ex(int64_t id, float posX, float posY, float rotation, float scale, RTColor tint) {
+    if (!rte::backendState.windowReady) return;
+    auto& reg = texture_registry();
+    auto it = reg.find(id);
+    if (it == reg.end()) return;
+    rte::ensure_mode2d();
+    DrawTextureEx(it->second, Vector2{posX, posY}, rotation, scale, rte::convert_color(tint));
+    rte::backendState.frameDrawCalls += 1;
+}
+
 inline void shutdown() {
     if (!rte::backendState.windowReady) {
         return;
@@ -92,6 +188,14 @@ inline void shutdown() {
         EndMode3D();
         rte::backendState.mode3dReady = false;
     }
+    for (auto& pair : model_registry()) {
+        UnloadModel(pair.second);
+    }
+    model_registry().clear();
+    for (auto& pair : texture_registry()) {
+        UnloadTexture(pair.second);
+    }
+    texture_registry().clear();
     CloseWindow();
     rte::backendState.windowReady = false;
     rte::backendState.drawingReady = false;

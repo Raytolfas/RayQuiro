@@ -579,6 +579,70 @@ inline void rt_draw_axes(RTVec3 origin, float length) {
     rt_draw_line_3d(origin, RTVec3{origin.x, origin.y, origin.z + length}, RTColor{60, 100, 255, 255});
 }
 
+inline int64_t rt_load_model(const char* filename) {
+#if RAYQUIRO_HAS_RAYLIB
+    return raylib_backend::load_model(filename);
+#else
+    (void)filename; return 0;
+#endif
+}
+
+inline void rt_unload_model(int64_t id) {
+#if RAYQUIRO_HAS_RAYLIB
+    raylib_backend::unload_model(id);
+#else
+    (void)id;
+#endif
+}
+
+inline void rt_draw_model(int64_t id, RTVec3 position, float scale, RTColor tint) {
+#if RAYQUIRO_HAS_RAYLIB
+    raylib_backend::draw_model(id, position, scale, tint);
+#else
+    (void)id; (void)position; (void)scale; (void)tint;
+#endif
+}
+
+inline void rt_draw_model_ex(int64_t id, RTVec3 position, RTVec3 rotationAxis, float rotationAngle, RTVec3 scale, RTColor tint) {
+#if RAYQUIRO_HAS_RAYLIB
+    raylib_backend::draw_model_ex(id, position, rotationAxis, rotationAngle, scale, tint);
+#else
+    (void)id; (void)position; (void)rotationAxis; (void)rotationAngle; (void)scale; (void)tint;
+#endif
+}
+
+inline int64_t rt_load_texture(const char* filename) {
+#if RAYQUIRO_HAS_RAYLIB
+    return raylib_backend::load_texture(filename);
+#else
+    (void)filename; return 0;
+#endif
+}
+
+inline void rt_unload_texture(int64_t id) {
+#if RAYQUIRO_HAS_RAYLIB
+    raylib_backend::unload_texture(id);
+#else
+    (void)id;
+#endif
+}
+
+inline void rt_draw_texture(int64_t id, int posX, int posY, RTColor tint) {
+#if RAYQUIRO_HAS_RAYLIB
+    raylib_backend::draw_texture(id, posX, posY, tint);
+#else
+    (void)id; (void)posX; (void)posY; (void)tint;
+#endif
+}
+
+inline void rt_draw_texture_ex(int64_t id, float posX, float posY, float rotation, float scale, RTColor tint) {
+#if RAYQUIRO_HAS_RAYLIB
+    raylib_backend::draw_texture_ex(id, posX, posY, rotation, scale, tint);
+#else
+    (void)id; (void)posX; (void)posY; (void)rotation; (void)scale; (void)tint;
+#endif
+}
+
 inline void rt_draw_text(const char* text, int x, int y, int size, RTColor color) {
     switch (rte::backendState.activeKind) {
     case RTBackendKind::Vulkan:

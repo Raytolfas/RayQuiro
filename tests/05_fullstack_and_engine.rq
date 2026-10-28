@@ -83,6 +83,16 @@ assert_eq(hex, "#ff0080");
 var blended = ui.blend("#000000", "#ffffff", 0.5);
 assert_eq(blended, "#7f7f7f");
 
+var appDark = app.dark();
+assert_eq(appDark["name"], "dark");
+assert_eq(appDark["primary"], "#3b82f6");
+
+var appHex = app.rgb(255, 0, 128);
+assert_eq(appHex, "#ff0080");
+
+var appBlended = app.blend("#000000", "#ffffff", 0.5);
+assert_eq(appBlended, "#7f7f7f");
+
 var btn = app.button("Click", { "id": "btn1" });
 assert_eq(btn["tag"], "button");
 assert_eq(btn["text"], "Click");

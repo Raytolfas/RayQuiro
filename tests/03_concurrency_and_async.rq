@@ -1,4 +1,3 @@
-// Spawn and channels
 var ch = channel();
 
 fn worker(delta) {
@@ -12,7 +11,6 @@ spawn fn() {
 var received = ch.recv();
 assert_eq(received, 150);
 
-// Thread pool
 var poolChannel = channel();
 var spawnedCount = 20;
 var i = 0;
@@ -35,7 +33,6 @@ while (collected < spawnedCount) {
 assert_eq(collected, 20);
 assert_eq(receivedSum, 380);
 
-// Message passing
 var objChannel = channel();
 spawn fn() {
     objChannel.send({"status": "ready", "code": 200});

@@ -1,4 +1,3 @@
-// Structs
 struct Point {
     x: 0,
     y: 0
@@ -21,7 +20,6 @@ assert_eq(u["name"], "mixitosik");
 assert_eq(u["role"], "Admin");
 assert_true(u["active"]);
 
-// Pattern matching
 var matchedNum = "";
 match (2) {
     1 => matchedNum = "one",
@@ -38,7 +36,6 @@ match "world" {
 }
 assert_eq(matchedStr, "w");
 
-// Range and guards
 fn classifyStatus(code) {
     var desc = "";
     match (code) {
@@ -60,7 +57,6 @@ assert_eq(classifyStatus(403), "client_error");
 assert_eq(classifyStatus(500), "server_error");
 assert_eq(classifyStatus(999), "unknown");
 
-// Error handling
 var caught = false;
 var finallyExecuted = false;
 try {
@@ -74,7 +70,6 @@ try {
 assert_true(caught);
 assert_true(finallyExecuted);
 
-// Stack unwinding and defer
 var deferInCatch = [];
 fn testThrowWithDefer() {
     defer push(deferInCatch, "cleaned_up");

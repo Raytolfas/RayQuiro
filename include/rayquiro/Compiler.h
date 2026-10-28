@@ -422,6 +422,7 @@ private:
             moduleName == "rayquiro.math" || moduleName == "math" ||
             moduleName == "rayquiro.datetime" || moduleName == "datetime" ||
             moduleName == "rayquiro.path" || moduleName == "path" ||
+            moduleName == "rayquiro.ffi" || moduleName == "ffi" ||
             moduleName == "rayquiro.regex" || moduleName == "regex";
     }
 
@@ -447,6 +448,7 @@ private:
         if (moduleName == "rayquiro.math" || moduleName == "math") return "math";
         if (moduleName == "rayquiro.datetime" || moduleName == "datetime") return "datetime";
         if (moduleName == "rayquiro.path" || moduleName == "path") return "path";
+        if (moduleName == "rayquiro.ffi" || moduleName == "ffi") return "ffi";
         if (moduleName == "rayquiro.regex" || moduleName == "regex") return "regex";
         if (isNativeRuntimeModule(moduleName)) {
             return moduleName.substr(std::string("rayquiro.").size());

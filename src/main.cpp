@@ -23,6 +23,7 @@
 #include "LLVMEmitter.h"
 #include "LLVMToolchain.h"
 #include "TCCToolchain.h"
+#include "TypeChecker.h"
 #include "Repl.h"
 #include "Log.h"
 
@@ -32,7 +33,7 @@
 #endif
 
 namespace {
-const char* kRayQuiroVersion = "1.2";
+const char* kRayQuiroVersion = "1.3";
 
 std::string rebuildCommandLine(int argc, char* argv[]) {
     std::string cmd;
@@ -123,6 +124,7 @@ struct CliOptions {
     bool noLLVM      = false;
     bool useTCC      = false;
     bool useLLVM     = false;
+    bool testNative  = false;
     std::string targetTriple;
     int  dapPort = 4711;
     std::vector<std::string> scriptArgs;
@@ -141,7 +143,7 @@ void printHelp() {
     std::cout << "\033[1;36mRayQuiro\033[0m " << kRayQuiroVersion << " — modern, fast programming language\n";
     std::cout << "\n\033[1mUsage:\033[0m\n";
     std::cout << "  rqio run <script.rq> [--watch]      Run script via Bytecode VM (--watch for Hot Reload)\n";
-    std::cout << "  rqio test [path]                    Run test suite (*_test.rq or tests/)\n";
+    std::cout << "  rqio test [path] [--native]         Run test suite (VM by default, --native for compiler build)\n";
     std::cout << "  rqio repl                           Start interactive REPL\n";
     std::cout << "  rqio                                Start REPL (or run project if in rqio.json folder)\n";
     std::cout << "  rqio build <script.rq> [-o out]     Compile to standalone native binary via TinyCC/LLVM\n";
@@ -415,8 +417,18 @@ CliOptions parseArguments(int argc, char* argv[]) {
     if (first == "test") {
         options.mode = CliMode::Test;
         ++index;
-        if (index < argc) {
-            options.inputPath = argv[index];
+        while (index < argc) {
+            std::string arg = argv[index];
+            if (arg == "--build" || arg == "--native") {
+                options.testNative = true;
+            } else if (arg == "--tcc") {
+                options.useTCC = true;
+            } else if (arg == "--llvm") {
+                options.useLLVM = true;
+            } else if (!arg.empty() && arg[0] != '-') {
+                options.inputPath = arg;
+            }
+            ++index;
         }
         return options;
     }
@@ -929,7 +941,7 @@ int runTestSuite(const CliOptions& cliOptions, const ProjectConfig& projectConfi
 
     std::sort(testFiles.begin(), testFiles.end());
 
-    std::cout << "\033[1;36m[RayQuiro Test Runner v" << kRayQuiroVersion << "]\033[0m\n";
+    std::cout << "\033[1;36m[RayQuiro Test Runner v" << kRayQuiroVersion << (cliOptions.testNative ? " (Native Compiler Mode)" : " (Bytecode VM Mode)") << "]\033[0m\n";
     if (testFiles.empty()) {
         std::cout << "No tests found.\n";
         return 0;
@@ -954,21 +966,51 @@ int runTestSuite(const CliOptions& cliOptions, const ProjectConfig& projectConfi
         std::string errorMsg;
 
         try {
-            auto resolved = Compiler::resolveForExecution(testFile);
-            if (BytecodeCompiler::supports(
-                    *resolved.program,
-                    resolved.builtinNamespaceAliases,
-                    resolved.builtinSymbolAliases)) {
-                try {
-                    const auto program = BytecodeCompiler::compile(
+            if (cliOptions.testNative) {
+                CliOptions bOpt = cliOptions;
+                bOpt.inputPath = testFile;
+                std::filesystem::path exeRoot = exePath.parent_path();
+                BuildOptions buildOptions = makeBuildOptions(bOpt, exeRoot, projectConfig);
+                Compiler compiler;
+                BuildResult result = compiler.compile(buildOptions);
+                int buildCode = compiler.buildExecutable(result);
+                std::error_code ignore;
+                std::filesystem::remove(result.outputCppPath, ignore);
+                if (buildCode != 0) {
+                    throw std::runtime_error("Native compile failed with code " + std::to_string(buildCode));
+                }
+                int runCode = std::system(("\"" + result.outputExePath.string() + "\"").c_str());
+                std::filesystem::remove(result.outputExePath, ignore);
+                if (runCode != 0) {
+                    throw std::runtime_error("Native execution exited with status code " + std::to_string(runCode));
+                }
+            } else {
+                auto resolved = Compiler::resolveForExecution(testFile);
+                if (BytecodeCompiler::supports(
                         *resolved.program,
                         resolved.builtinNamespaceAliases,
-                        resolved.builtinSymbolAliases);
-                    int vmCode = runVmProgram(program);
-                    if (vmCode != 0) {
-                        throw std::runtime_error("Test exited with status code " + std::to_string(vmCode));
+                        resolved.builtinSymbolAliases)) {
+                    try {
+                        const auto program = BytecodeCompiler::compile(
+                            *resolved.program,
+                            resolved.builtinNamespaceAliases,
+                            resolved.builtinSymbolAliases);
+                        int vmCode = runVmProgram(program);
+                        if (vmCode != 0) {
+                            throw std::runtime_error("Test exited with status code " + std::to_string(vmCode));
+                        }
+                    } catch (const std::exception& vmErr) {
+                        Interpreter interpreter(
+                            projectConfig.projectRoot,
+                            exePath,
+                            resolved.builtinNamespaceAliases,
+                            resolved.builtinSymbolAliases);
+                        int code = interpreter.run(*resolved.program);
+                        if (code != 0) {
+                            throw std::runtime_error("Test exited with status code " + std::to_string(code));
+                        }
                     }
-                } catch (const std::exception& vmErr) {
+                } else {
                     Interpreter interpreter(
                         projectConfig.projectRoot,
                         exePath,
@@ -978,16 +1020,6 @@ int runTestSuite(const CliOptions& cliOptions, const ProjectConfig& projectConfi
                     if (code != 0) {
                         throw std::runtime_error("Test exited with status code " + std::to_string(code));
                     }
-                }
-            } else {
-                Interpreter interpreter(
-                    projectConfig.projectRoot,
-                    exePath,
-                    resolved.builtinNamespaceAliases,
-                    resolved.builtinSymbolAliases);
-                int code = interpreter.run(*resolved.program);
-                if (code != 0) {
-                    throw std::runtime_error("Test exited with status code " + std::to_string(code));
                 }
             }
         } catch (const std::exception& e) {
@@ -1191,8 +1223,13 @@ int main(int argc, char* argv[]) {
             auto tokens = lexer.tokenize();
             Parser parser(tokens);
             auto program = parser.parse();
-            (void)program;
-            std::cout << "\033[1;32m[PASS]\033[0m " << checkTarget.filename().string() << " syntax and AST validated successfully.\n";
+            TypeChecker checker;
+            checker.checkProgram(program.get());
+            if (checker.hasErrors()) {
+                std::cerr << checker.formatDiagnostics(checkTarget.filename().string());
+                return 1;
+            }
+            std::cout << "\033[1;32m[PASS]\033[0m " << checkTarget.filename().string() << " syntax and types validated successfully.\n";
             return 0;
         }
         if (cliOptions.mode == CliMode::CCompile) {
@@ -1224,8 +1261,23 @@ int main(int argc, char* argv[]) {
                     *resolved.program,
                     resolved.builtinNamespaceAliases,
                     resolved.builtinSymbolAliases)) {
-                throw std::runtime_error(
-                    "rqio build: script uses import statements not yet supported by the native backend.");
+                cleanupGeneratedCppArtifacts(projectConfig.projectRoot / projectConfig.buildDir);
+                const BuildOptions buildOptions = makeBuildOptions(cliOptions, exeRoot, projectConfig);
+                Compiler compiler;
+                const BuildResult result = compiler.compile(buildOptions);
+                const auto cleanupGeneratedCpp = [&]() {
+                    std::error_code ignore;
+                    std::filesystem::remove(result.outputCppPath, ignore);
+                    cleanupGeneratedCppArtifacts(projectConfig.projectRoot / projectConfig.buildDir);
+                };
+                const int buildCode = compiler.buildExecutable(result);
+                if (buildCode != 0) {
+                    cleanupGeneratedCpp();
+                    throw std::runtime_error("Compile failed with code " + std::to_string(buildCode));
+                }
+                cleanupGeneratedCpp();
+                Log::status("Finished", result.outputExePath.string());
+                return 0;
             }
             const BytecodeProgram program = BytecodeCompiler::compile(
                 *resolved.program,
@@ -1265,7 +1317,7 @@ int main(int argc, char* argv[]) {
                 return "\"" + p.string() + "\"";
             };
             auto runCmd = [](const std::string& cmd) -> int {
-                return std::system(("cmd /C \"" + cmd + "\"").c_str());
+                return std::system(("\"" + cmd + "\"").c_str());
             };
 #else
             auto q = [](const std::filesystem::path& p) {
