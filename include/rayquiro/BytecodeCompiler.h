@@ -264,7 +264,8 @@ private:
             name.rfind("regex.", 0) == 0 ||
             name.rfind("buffer.", 0) == 0 ||
             name.rfind("struct.", 0) == 0 ||
-            name.rfind("ffi.", 0) == 0) {
+            name.rfind("ffi.", 0) == 0 ||
+            name.rfind("wasm.", 0) == 0) {
             return true;
         }
         return name == "print" ||

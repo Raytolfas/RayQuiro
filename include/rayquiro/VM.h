@@ -38,6 +38,7 @@
 #include "Framework.h"
 
 #include "BuiltinModules.h"
+#include "WasmSandbox.h"
 
 class VM {
 public:
@@ -54,6 +55,22 @@ public:
         globals_["pi"] = VMValue(3.14159265358979323846);
         stack_.clear();
         return execute(program, program.entry, {});
+    }
+
+    VMValue runPreservingState(const BytecodeProgram& program) {
+        if (globals_.find("pi") == globals_.end()) {
+            globals_["pi"] = VMValue(3.14159265358979323846);
+        }
+        stack_.clear();
+        return execute(program, program.entry, {});
+    }
+
+    const std::unordered_map<std::string, VMValue>& getGlobals() const {
+        return globals_;
+    }
+
+    void setGlobals(const std::unordered_map<std::string, VMValue>& g) {
+        globals_ = g;
     }
 
 private:
@@ -853,6 +870,110 @@ public:
                 return jsonParseValue(resStr, p);
             }
             return VMValue();
+        }
+        if (name == "wasm.load" || name == "wasm.load_bytes" || name == "wasm.init") {
+            if (args.empty()) return VMValue();
+            std::vector<uint8_t> bytes;
+            if (std::holds_alternative<std::string>(args[0].data)) {
+                const auto& s = std::get<std::string>(args[0].data);
+                bytes.assign(s.begin(), s.end());
+            } else if (std::holds_alternative<VMValue::Array>(args[0].data)) {
+                for (const auto& el : std::get<VMValue::Array>(args[0].data)) {
+                    bytes.push_back(static_cast<uint8_t>(toNumber(el)));
+                }
+            } else if (std::holds_alternative<VMValue::Object>(args[0].data)) {
+                const auto& obj = std::get<VMValue::Object>(args[0].data);
+                auto bufIt = obj.find("__buffer_id__");
+                if (bufIt != obj.end()) {
+                    int64_t bId = static_cast<int64_t>(toNumber(bufIt->second));
+                    if (auto rawBuf = getVMBuffer(bId)) {
+                        bytes = rawBuf->bytes;
+                    }
+                }
+            }
+            size_t memLimit = 16 * 1024 * 1024;
+            uint64_t quota = 1000000;
+            if (args.size() > 1 && std::holds_alternative<VMValue::Object>(args[1].data)) {
+                const auto& cfg = std::get<VMValue::Object>(args[1].data);
+                auto memIt = cfg.find("memory_limit_mb");
+                if (memIt != cfg.end()) memLimit = static_cast<size_t>(toNumber(memIt->second)) * 1024 * 1024;
+                auto qIt = cfg.find("max_instructions");
+                if (qIt != cfg.end()) quota = static_cast<uint64_t>(toNumber(qIt->second));
+            }
+            int64_t id = WasmManager::instance().create(std::move(bytes), memLimit, quota);
+            VMValue::Object obj;
+            obj["__type__"] = VMValue(std::string("WasmModule"));
+            obj["__wasm_id__"] = VMValue(static_cast<double>(id));
+            return VMValue(obj);
+        }
+        if (name == "wasm.call" || name == "wasm.invoke") {
+            if (args.size() < 2 || !std::holds_alternative<VMValue::Object>(args[0].data)) return VMValue();
+            const auto& obj = std::get<VMValue::Object>(args[0].data);
+            auto it = obj.find("__wasm_id__");
+            if (it == obj.end()) return VMValue();
+            int64_t id = static_cast<int64_t>(toNumber(it->second));
+            auto instance = WasmManager::instance().get(id);
+            if (!instance) return VMValue();
+            std::string fnName = toString(args[1]);
+            std::vector<double> fnArgs;
+            for (size_t i = 2; i < args.size(); ++i) {
+                fnArgs.push_back(toNumber(args[i]));
+            }
+            try {
+                double res = instance->invoke(fnName, fnArgs);
+                return VMValue(res);
+            } catch (const std::exception& e) {
+                return VMValue();
+            }
+        }
+        if (name == "wasm.memory_size") {
+            if (args.empty() || !std::holds_alternative<VMValue::Object>(args[0].data)) return VMValue(0.0);
+            const auto& obj = std::get<VMValue::Object>(args[0].data);
+            auto it = obj.find("__wasm_id__");
+            if (it == obj.end()) return VMValue(0.0);
+            int64_t id = static_cast<int64_t>(toNumber(it->second));
+            auto instance = WasmManager::instance().get(id);
+            return VMValue(instance ? static_cast<double>(instance->getMemorySize()) : 0.0);
+        }
+        if (name == "wasm.set_memory_limit") {
+            if (args.size() < 2 || !std::holds_alternative<VMValue::Object>(args[0].data)) return VMValue(false);
+            const auto& obj = std::get<VMValue::Object>(args[0].data);
+            auto it = obj.find("__wasm_id__");
+            if (it == obj.end()) return VMValue(false);
+            int64_t id = static_cast<int64_t>(toNumber(it->second));
+            auto instance = WasmManager::instance().get(id);
+            if (instance) {
+                instance->setMemoryLimit(static_cast<size_t>(toNumber(args[1])));
+                return VMValue(true);
+            }
+            return VMValue(false);
+        }
+        if (name == "wasm.set_instruction_quota") {
+            if (args.size() < 2 || !std::holds_alternative<VMValue::Object>(args[0].data)) return VMValue(false);
+            const auto& obj = std::get<VMValue::Object>(args[0].data);
+            auto it = obj.find("__wasm_id__");
+            if (it == obj.end()) return VMValue(false);
+            int64_t id = static_cast<int64_t>(toNumber(it->second));
+            auto instance = WasmManager::instance().get(id);
+            if (instance) {
+                instance->setInstructionQuota(static_cast<uint64_t>(toNumber(args[1])));
+                return VMValue(true);
+            }
+            return VMValue(false);
+        }
+        if (name == "wasm.exports") {
+            if (args.empty() || !std::holds_alternative<VMValue::Object>(args[0].data)) return VMValue();
+            const auto& obj = std::get<VMValue::Object>(args[0].data);
+            auto it = obj.find("__wasm_id__");
+            if (it == obj.end()) return VMValue();
+            int64_t id = static_cast<int64_t>(toNumber(it->second));
+            auto instance = WasmManager::instance().get(id);
+            if (!instance) return VMValue();
+            VMValue::Array items;
+            for (const auto& exp : instance->getExports()) {
+                items.push_back(VMValue(exp));
+            }
+            return VMValue(items);
         }
         if (name == "channel") {
             int64_t id = ++vmChannelCounter_;

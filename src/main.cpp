@@ -21,6 +21,7 @@
 #include "VM.h"
 #include "CEmitter.h"
 #include "LLVMEmitter.h"
+#include "FFIGenerator.h"
 #include "LLVMToolchain.h"
 #include "TCCToolchain.h"
 #include "TypeChecker.h"
@@ -102,7 +103,8 @@ enum class CliMode {
     Repl,
     Test,
     Check,
-    CCompile
+    CCompile,
+    FfiGen
 };
 
 struct CliOptions {
@@ -124,6 +126,7 @@ struct CliOptions {
     bool noLLVM      = false;
     bool useTCC      = false;
     bool useLLVM     = false;
+    bool emitLLVM    = false;
     bool testNative  = false;
     std::string targetTriple;
     int  dapPort = 4711;
@@ -154,6 +157,7 @@ void printHelp() {
     std::cout << "  rqio build <script.rq> --target <T> Target triple (linux-x64, win-x64, macos-arm64)\n";
     std::cout << "  rqio build <script.rq> --no-llvm    Compile via GCC fallback\n";
     std::cout << "  rqio check <script.rq>              Validate syntax & AST without execution\n";
+    std::cout << "  rqio ffi-gen <header.h> [-o out.rq] Generate Zero-Overhead RayQuiro FFI bindings\n";
     std::cout << "  rqio cc <files.c> [-o out]          Autonomous C compiler via bundled TinyCC\n";
     std::cout << "  rqio lsp                            Start Language Server Protocol (VS Code IntelliSense)\n";
     std::cout << "  rqio debug <script.rq> [--port N]   Start DAP debug server (VS Code F5)\n";
@@ -440,6 +444,20 @@ CliOptions parseArguments(int argc, char* argv[]) {
         }
         return options;
     }
+    if (first == "ffi-gen" || first == "gen-ffi") {
+        options.mode = CliMode::FfiGen;
+        ++index;
+        while (index < argc) {
+            std::string arg = argv[index];
+            if ((arg == "-o" || arg == "--out") && index + 1 < argc) {
+                options.outExePath = argv[++index];
+            } else if (!arg.empty() && arg[0] != '-') {
+                options.inputPath = arg;
+            }
+            ++index;
+        }
+        return options;
+    }
     if (first == "cc") {
         options.mode = CliMode::CCompile;
         for (int i = 2; i < argc; ++i) {
@@ -643,6 +661,11 @@ CliOptions parseArguments(int argc, char* argv[]) {
             continue;
         }
         if (arg == "--llvm") {
+            options.useLLVM = true;
+            continue;
+        }
+        if (arg == "--emit-llvm") {
+            options.emitLLVM = true;
             options.useLLVM = true;
             continue;
         }
@@ -1232,6 +1255,24 @@ int main(int argc, char* argv[]) {
             std::cout << "\033[1;32m[PASS]\033[0m " << checkTarget.filename().string() << " syntax and types validated successfully.\n";
             return 0;
         }
+        if (cliOptions.mode == CliMode::FfiGen) {
+            if (cliOptions.inputPath.empty()) {
+                throw std::runtime_error("Usage: rqio ffi-gen <header.h> [-o output.rq]");
+            }
+            if (!std::filesystem::exists(cliOptions.inputPath)) {
+                throw std::runtime_error("Header file not found: " + cliOptions.inputPath.string());
+            }
+            std::string headerContent = readTextFile(cliOptions.inputPath);
+            std::string baseStem = cliOptions.inputPath.stem().string();
+            std::string rqCode = FFIGenerator::generate(headerContent, baseStem);
+            std::filesystem::path outPath = cliOptions.outExePath;
+            if (outPath.empty()) {
+                outPath = cliOptions.inputPath.parent_path() / (baseStem + "_ffi.rq");
+            }
+            writeTextFile(outPath, rqCode);
+            Log::status("Generated", outPath.string());
+            return 0;
+        }
         if (cliOptions.mode == CliMode::CCompile) {
             std::string tccBin = TCCToolchain::resolveTcc(exePath);
             if (tccBin.empty()) {
@@ -1376,6 +1417,20 @@ int main(int argc, char* argv[]) {
                 return 0;
             }
 
+            if (cliOptions.emitLLVM) {
+                std::filesystem::path llFile = cliOptions.outExePath.empty()
+                    ? (outBin.parent_path() / (outBin.stem().string() + ".ll"))
+                    : (cliOptions.outExePath.extension() == ".ll" ? cliOptions.outExePath : (outBin.parent_path() / (outBin.stem().string() + ".ll")));
+                std::string llSrc = LLVMEmitter::emit(program, effectiveTarget);
+                {
+                    std::ofstream f(llFile);
+                    if (!f) throw std::runtime_error("rqio build: cannot write LLVM IR file.");
+                    f << llSrc;
+                }
+                Log::status("Emitted", llFile.string());
+                return 0;
+            }
+
             std::string cSrc = CEmitter::emit(program);
             std::filesystem::path cFile = srcDir / "_rqio_tmp.c";
             {
@@ -1389,6 +1444,7 @@ int main(int argc, char* argv[]) {
                 platformFlags = " -mconsole";
             }
             bool isTCC = (cc.find("tcc") != std::string::npos);
+            bool isLLVM = (cc.find("clang") != std::string::npos);
             std::string targetFlag = (effectiveTarget.empty() || isTCC) ? "" : (" --target=" + effectiveTarget);
             std::string mathFlag = (isTargetWindows || isTargetWasm) ? "" : " -lm ";
             std::string cmd = q(std::filesystem::path(cc))
@@ -1397,7 +1453,6 @@ int main(int argc, char* argv[]) {
                 + " " + q(cFile)
                 + " -o " + q(outBin);
 
-            bool isLLVM = (cc.find("clang") != std::string::npos);
             std::string modeDesc = cliOptions.releaseMode ? "release" : cliOptions.debugBuild ? "debug" : "optimized";
             if (!effectiveTarget.empty() && !isTCC) {
                 modeDesc += " -> " + effectiveTarget;
@@ -1486,11 +1541,38 @@ int main(int argc, char* argv[]) {
             };
 
             if (cliOptions.watchMode) {
-                Log::status("Watching", cliOptions.inputPath.filename().string() + " (Hot Reload active)");
+                Log::status("Watching", cliOptions.inputPath.filename().string() + " (Stateful Hot Reload active)");
                 std::error_code ec;
                 auto lastTime = std::filesystem::last_write_time(cliOptions.inputPath, ec);
+                std::unique_ptr<VM> statefulVM = std::make_unique<VM>();
+                statefulVM->setBuiltinHandler([](const std::string& name, const std::vector<VMValue>& args) -> std::optional<VMValue> {
+                    if (name == "process.args") {
+                        VMValue::Array items;
+                        for (const auto& a : g_scriptArgs) {
+                            items.push_back(VMValue(a));
+                        }
+                        return VMValue(items);
+                    }
+                    return VM::callDefaultBuiltin(name, args);
+                });
+
+                auto runIteration = [&](bool preserve) {
+                    auto resolved = Compiler::resolveForExecution(cliOptions.inputPath);
+                    g_scriptArgs = cliOptions.scriptArgs;
+                    if (BytecodeCompiler::supports(*resolved.program, resolved.builtinNamespaceAliases, resolved.builtinSymbolAliases)) {
+                        const auto program = BytecodeCompiler::compile(*resolved.program, resolved.builtinNamespaceAliases, resolved.builtinSymbolAliases);
+                        if (preserve) {
+                            statefulVM->runPreservingState(program);
+                        } else {
+                            statefulVM->run(program);
+                        }
+                    } else {
+                        runOnce();
+                    }
+                };
+
                 try {
-                    runOnce();
+                    runIteration(false);
                 } catch (const std::exception& e) {
                     Log::reportException(e, cliOptions.inputPath);
                 }
@@ -1500,9 +1582,9 @@ int main(int argc, char* argv[]) {
                     auto curTime = std::filesystem::last_write_time(cliOptions.inputPath, ec);
                     if (!ec && curTime != lastTime) {
                         lastTime = curTime;
-                        std::cout << "\n\033[1;36m[rqio]\033[0m File changed. Reloading...\n";
+                        std::cout << "\n\033[1;36m[rqio]\033[0m File changed. Reloading statefully...\n";
                         try {
-                            runOnce();
+                            runIteration(true);
                         } catch (const std::exception& e) {
                             Log::reportException(e, cliOptions.inputPath);
                         }
