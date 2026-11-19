@@ -39,6 +39,7 @@
 
 #include "BuiltinModules.h"
 #include "WasmSandbox.h"
+#include "Arena.h"
 
 class VM {
 public:
@@ -974,6 +975,76 @@ public:
                 items.push_back(VMValue(exp));
             }
             return VMValue(items);
+        }
+        if (name == "arena.create" || name == "arena_create") {
+            size_t cap = !args.empty() ? static_cast<size_t>(std::max(1024.0, toNumber(args[0]))) : 65536;
+            int64_t id = ArenaManager::instance().createArena(cap);
+            VMValue::Object obj;
+            obj["__type__"] = VMValue(std::string("Arena"));
+            obj["__arena_id__"] = VMValue(static_cast<double>(id));
+            return VMValue(obj);
+        }
+        if (name == "arena.alloc" || name == "arena_alloc") {
+            if (args.size() < 2 || !std::holds_alternative<VMValue::Object>(args[0].data)) return VMValue();
+            const auto& obj = std::get<VMValue::Object>(args[0].data);
+            auto it = obj.find("__arena_id__");
+            if (it == obj.end()) return VMValue();
+            int64_t id = static_cast<int64_t>(toNumber(it->second));
+            auto arena = ArenaManager::instance().getArena(id);
+            if (!arena) return VMValue();
+            size_t size = static_cast<size_t>(std::max(0.0, toNumber(args[1])));
+            uint8_t* ptr = arena->alloc(size);
+            int64_t bid = ++vmBufferCounter_;
+            auto buf = std::make_shared<VMRawBuffer>();
+            buf->bytes.resize(size, 0);
+            {
+                std::lock_guard<std::mutex> lock(vmBufferRegistryMutex_);
+                vmBufferRegistry_[bid] = buf;
+            }
+            VMValue::Object bobj;
+            bobj["__type__"] = VMValue(std::string("Buffer"));
+            bobj["__buf_id__"] = VMValue(static_cast<double>(bid));
+            bobj["length"] = VMValue(static_cast<double>(size));
+            return VMValue(bobj);
+        }
+        if (name == "arena.reset" || name == "arena_reset") {
+            if (args.empty() || !std::holds_alternative<VMValue::Object>(args[0].data)) return VMValue(false);
+            const auto& obj = std::get<VMValue::Object>(args[0].data);
+            auto it = obj.find("__arena_id__");
+            if (it == obj.end()) return VMValue(false);
+            int64_t id = static_cast<int64_t>(toNumber(it->second));
+            auto arena = ArenaManager::instance().getArena(id);
+            if (arena) {
+                arena->reset();
+                return VMValue(true);
+            }
+            return VMValue(false);
+        }
+        if (name == "arena.used" || name == "arena_used") {
+            if (args.empty() || !std::holds_alternative<VMValue::Object>(args[0].data)) return VMValue(0.0);
+            const auto& obj = std::get<VMValue::Object>(args[0].data);
+            auto it = obj.find("__arena_id__");
+            if (it == obj.end()) return VMValue(0.0);
+            int64_t id = static_cast<int64_t>(toNumber(it->second));
+            auto arena = ArenaManager::instance().getArena(id);
+            return VMValue(arena ? static_cast<double>(arena->used()) : 0.0);
+        }
+        if (name == "arena.capacity" || name == "arena_capacity") {
+            if (args.empty() || !std::holds_alternative<VMValue::Object>(args[0].data)) return VMValue(0.0);
+            const auto& obj = std::get<VMValue::Object>(args[0].data);
+            auto it = obj.find("__arena_id__");
+            if (it == obj.end()) return VMValue(0.0);
+            int64_t id = static_cast<int64_t>(toNumber(it->second));
+            auto arena = ArenaManager::instance().getArena(id);
+            return VMValue(arena ? static_cast<double>(arena->capacity()) : 0.0);
+        }
+        if (name == "arena.destroy" || name == "arena_destroy") {
+            if (args.empty() || !std::holds_alternative<VMValue::Object>(args[0].data)) return VMValue(false);
+            const auto& obj = std::get<VMValue::Object>(args[0].data);
+            auto it = obj.find("__arena_id__");
+            if (it == obj.end()) return VMValue(false);
+            int64_t id = static_cast<int64_t>(toNumber(it->second));
+            return VMValue(ArenaManager::instance().destroyArena(id));
         }
         if (name == "channel") {
             int64_t id = ++vmChannelCounter_;

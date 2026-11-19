@@ -265,10 +265,12 @@ private:
             name.rfind("buffer.", 0) == 0 ||
             name.rfind("struct.", 0) == 0 ||
             name.rfind("ffi.", 0) == 0 ||
-            name.rfind("wasm.", 0) == 0) {
+            name.rfind("wasm.", 0) == 0 ||
+            name.rfind("arena.", 0) == 0) {
             return true;
         }
         return name == "print" ||
+            name == "println" ||
             name == "str" ||
             name == "to_string" ||
             name == "num" ||

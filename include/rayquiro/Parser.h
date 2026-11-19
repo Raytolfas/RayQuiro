@@ -5,6 +5,8 @@
 #include <memory>
 #include <stdexcept>
 #include <utility>
+#include <fstream>
+#include <filesystem>
 
 class Parser {
     std::vector<Token> tokens;
@@ -47,13 +49,56 @@ class Parser {
         throw error(msg, peek());
     }
 
+    std::string baseDir_;
+
     std::runtime_error error(const std::string& msg, const Token& token) const {
         std::string where = " at " + std::to_string(token.line) + ":" + std::to_string(token.col);
         return std::runtime_error(msg + where);
     }
 
+    std::unique_ptr<Expr> handleEmbed(const std::string& name, const std::string& relPath) {
+        std::filesystem::path target(relPath);
+        std::filesystem::path resolved;
+        if (!baseDir_.empty() && std::filesystem::exists(std::filesystem::path(baseDir_) / target)) {
+            resolved = std::filesystem::path(baseDir_) / target;
+        } else if (std::filesystem::exists(target)) {
+            resolved = target;
+        } else if (std::filesystem::exists(std::filesystem::current_path() / target)) {
+            resolved = std::filesystem::current_path() / target;
+        } else {
+            throw std::runtime_error("Cannot embed file '" + relPath + "': file not found");
+        }
+        std::ifstream file(resolved, std::ios::binary);
+        if (!file.is_open()) {
+            throw std::runtime_error("Cannot open embedded file '" + relPath + "'");
+        }
+        std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+        if (name == "@embed_str" || name == "@embed_string") {
+            auto lit = std::make_unique<LiteralExpr>();
+            lit->kind = LiteralExpr::Kind::String;
+            lit->value = content;
+            return lit;
+        }
+        if (name == "@embed_json") {
+            auto lit = std::make_unique<LiteralExpr>();
+            lit->kind = LiteralExpr::Kind::String;
+            lit->value = content;
+            auto call = std::make_unique<CallExpr>();
+            call->callee = "json.parse";
+            call->args.push_back(std::move(lit));
+            return call;
+        }
+        auto lit = std::make_unique<LiteralExpr>();
+        lit->kind = LiteralExpr::Kind::String;
+        lit->value = content;
+        auto call = std::make_unique<CallExpr>();
+        call->callee = "buffer.from_string";
+        call->args.push_back(std::move(lit));
+        return call;
+    }
+
 public:
-    Parser(const std::vector<Token>& t) : tokens(t) {}
+    Parser(const std::vector<Token>& t, const std::string& baseDir = "") : tokens(t), baseDir_(baseDir) {}
 
     std::unique_ptr<ProgramNode> parse() {
         auto program = std::make_unique<ProgramNode>();
@@ -900,6 +945,12 @@ private:
         }
         if (match({TokenType::IDENTIFIER})) {
             std::string name = previous().value;
+            if (name == "@embed_file" || name == "@embed_bytes" || name == "@embed_str" || name == "@embed_string" || name == "@embed_json") {
+                expect(TokenType::LPAREN, "Expected '(' after " + name);
+                std::string relPath = expect(TokenType::STRING, "Expected file path string for " + name).value;
+                expect(TokenType::RPAREN, "Expected ')' after file path");
+                return handleEmbed(name, relPath);
+            }
 
             if (check(TokenType::LBRACE)
                 && pos + 1 < tokens.size() && tokens[pos + 1].type == TokenType::IDENTIFIER

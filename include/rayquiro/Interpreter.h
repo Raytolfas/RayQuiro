@@ -75,6 +75,7 @@ static constexpr int SOCKET_ERROR = -1;
 inline int closesocket(SOCKET socket) { return ::close(socket); }
 #endif
 #endif
+#include "Arena.h"
 
 class Interpreter {
 public:
@@ -2497,6 +2498,63 @@ private:
         if (builtin == "buffer.get_f64" || builtin == "buffer_get_f64") return builtin_buffer_get_f64(args);
         if (builtin == "buffer.set_f64" || builtin == "buffer_set_f64") return builtin_buffer_set_f64(args);
         if (builtin == "buffer.slice" || builtin == "buffer_slice") return builtin_buffer_slice(args);
+
+        if (builtin == "arena.create" || builtin == "arena_create") {
+            size_t cap = !args.empty() ? static_cast<size_t>(std::max(1024.0, to_number(args[0]))) : 65536;
+            int64_t id = ArenaManager::instance().createArena(cap);
+            auto obj = Value::object();
+            (*obj.as_object())["__type__"] = Value(std::string("Arena"));
+            (*obj.as_object())["__arena_id__"] = Value(static_cast<double>(id));
+            return obj;
+        }
+        if (builtin == "arena.alloc" || builtin == "arena_alloc") {
+            if (args.size() < 2 || !is_object(args[0])) return Value();
+            auto it = args[0].as_object()->find("__arena_id__");
+            if (it == args[0].as_object()->end()) return Value();
+            int64_t id = static_cast<int64_t>(to_number(it->second));
+            auto arena = ArenaManager::instance().getArena(id);
+            if (!arena) return Value();
+            size_t size = static_cast<size_t>(std::max(0.0, to_number(args[1])));
+            arena->alloc(size);
+            auto buf = std::make_shared<RawBuffer>();
+            buf->bytes.resize(size, 0);
+            return makeBufferValue(buf);
+        }
+        if (builtin == "arena.reset" || builtin == "arena_reset") {
+            if (args.empty() || !is_object(args[0])) return Value(false);
+            auto it = args[0].as_object()->find("__arena_id__");
+            if (it == args[0].as_object()->end()) return Value(false);
+            int64_t id = static_cast<int64_t>(to_number(it->second));
+            auto arena = ArenaManager::instance().getArena(id);
+            if (arena) {
+                arena->reset();
+                return Value(true);
+            }
+            return Value(false);
+        }
+        if (builtin == "arena.used" || builtin == "arena_used") {
+            if (args.empty() || !is_object(args[0])) return Value(0.0);
+            auto it = args[0].as_object()->find("__arena_id__");
+            if (it == args[0].as_object()->end()) return Value(0.0);
+            int64_t id = static_cast<int64_t>(to_number(it->second));
+            auto arena = ArenaManager::instance().getArena(id);
+            return Value(arena ? static_cast<double>(arena->used()) : 0.0);
+        }
+        if (builtin == "arena.capacity" || builtin == "arena_capacity") {
+            if (args.empty() || !is_object(args[0])) return Value(0.0);
+            auto it = args[0].as_object()->find("__arena_id__");
+            if (it == args[0].as_object()->end()) return Value(0.0);
+            int64_t id = static_cast<int64_t>(to_number(it->second));
+            auto arena = ArenaManager::instance().getArena(id);
+            return Value(arena ? static_cast<double>(arena->capacity()) : 0.0);
+        }
+        if (builtin == "arena.destroy" || builtin == "arena_destroy") {
+            if (args.empty() || !is_object(args[0])) return Value(false);
+            auto it = args[0].as_object()->find("__arena_id__");
+            if (it == args[0].as_object()->end()) return Value(false);
+            int64_t id = static_cast<int64_t>(to_number(it->second));
+            return Value(ArenaManager::instance().destroyArena(id));
+        }
 
         if (builtin == "is_impl") {
             if (args.size() < 2) return Value(false);

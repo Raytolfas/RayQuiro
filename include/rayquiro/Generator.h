@@ -1141,6 +1141,7 @@ public:
         if (features.usesApp) out << "#include \"Framework.h\"\n";
         if (features.usesUi) out << "#include \"ModernUI.h\"\n";
         if (features.usesEngine) out << "#include \"rte_api.h\"\n";
+        out << "#include \"Arena.h\"\n";
         out << "\n";
 
         RuntimeEmitter::emit(out, features);

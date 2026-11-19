@@ -292,7 +292,7 @@ private:
         const std::string source = readText(path);
         Lexer lexer(source);
         const auto tokens = lexer.tokenize();
-        Parser parser(tokens);
+        Parser parser(tokens, path.parent_path().string());
         return parser.parse();
     }
 

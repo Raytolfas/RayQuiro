@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <ostream>
+#include "Arena.h"
 
 #ifdef _WIN32
 #ifdef SOCKET
@@ -713,6 +714,68 @@ inline Value buffer_slice(const std::vector<Value>& args) {
         std::memcpy(newBuf->bytes.data(), srcBuf->bytes.data() + start, sliceSize);
     }
     return make_buffer_value(newBuf);
+}
+
+inline Value arena_create(const std::vector<Value>& args) {
+    size_t cap = !args.empty() ? static_cast<size_t>(std::max(1024.0, to_number(args[0]))) : 65536;
+    int64_t id = ArenaManager::instance().createArena(cap);
+    auto obj = Value::object();
+    (*obj.as_object())["__type__"] = Value(std::string("Arena"));
+    (*obj.as_object())["__arena_id__"] = Value(static_cast<double>(id));
+    return obj;
+}
+
+inline Value arena_alloc(const std::vector<Value>& args) {
+    if (args.size() < 2 || !is_object(args[0])) return Value();
+    auto it = args[0].as_object()->find("__arena_id__");
+    if (it == args[0].as_object()->end()) return Value();
+    int64_t id = static_cast<int64_t>(to_number(it->second));
+    auto arena = ArenaManager::instance().getArena(id);
+    if (!arena) return Value();
+    size_t size = static_cast<size_t>(std::max(0.0, to_number(args[1])));
+    arena->alloc(size);
+    auto buf = std::make_shared<RawBuffer>();
+    buf->bytes.resize(size, 0);
+    return make_buffer_value(buf);
+}
+
+inline Value arena_reset(const std::vector<Value>& args) {
+    if (args.empty() || !is_object(args[0])) return Value(false);
+    auto it = args[0].as_object()->find("__arena_id__");
+    if (it == args[0].as_object()->end()) return Value(false);
+    int64_t id = static_cast<int64_t>(to_number(it->second));
+    auto arena = ArenaManager::instance().getArena(id);
+    if (arena) {
+        arena->reset();
+        return Value(true);
+    }
+    return Value(false);
+}
+
+inline Value arena_used(const std::vector<Value>& args) {
+    if (args.empty() || !is_object(args[0])) return Value(0.0);
+    auto it = args[0].as_object()->find("__arena_id__");
+    if (it == args[0].as_object()->end()) return Value(0.0);
+    int64_t id = static_cast<int64_t>(to_number(it->second));
+    auto arena = ArenaManager::instance().getArena(id);
+    return Value(arena ? static_cast<double>(arena->used()) : 0.0);
+}
+
+inline Value arena_capacity(const std::vector<Value>& args) {
+    if (args.empty() || !is_object(args[0])) return Value(0.0);
+    auto it = args[0].as_object()->find("__arena_id__");
+    if (it == args[0].as_object()->end()) return Value(0.0);
+    int64_t id = static_cast<int64_t>(to_number(it->second));
+    auto arena = ArenaManager::instance().getArena(id);
+    return Value(arena ? static_cast<double>(arena->capacity()) : 0.0);
+}
+
+inline Value arena_destroy(const std::vector<Value>& args) {
+    if (args.empty() || !is_object(args[0])) return Value(false);
+    auto it = args[0].as_object()->find("__arena_id__");
+    if (it == args[0].as_object()->end()) return Value(false);
+    int64_t id = static_cast<int64_t>(to_number(it->second));
+    return Value(ArenaManager::instance().destroyArena(id));
 }
 
 inline size_t struct_format_element_size(char c) {
@@ -2177,6 +2240,13 @@ inline Value native_call(const std::string& builtin, const std::vector<Value>& a
     if (builtin == "struct.calcsize" || builtin == "struct_calcsize") return struct_calcsize(args);
     if (builtin == "struct.pack" || builtin == "struct_pack") return struct_pack(args);
     if (builtin == "struct.unpack" || builtin == "struct_unpack") return struct_unpack(args);
+
+    if (builtin == "arena.create" || builtin == "arena_create") return arena_create(args);
+    if (builtin == "arena.alloc" || builtin == "arena_alloc") return arena_alloc(args);
+    if (builtin == "arena.reset" || builtin == "arena_reset") return arena_reset(args);
+    if (builtin == "arena.used" || builtin == "arena_used") return arena_used(args);
+    if (builtin == "arena.capacity" || builtin == "arena_capacity") return arena_capacity(args);
+    if (builtin == "arena.destroy" || builtin == "arena_destroy") return arena_destroy(args);
 
     if (builtin == "ffi.load" || builtin == "ffi_load") return ffi_load(args);
     if (builtin == "ffi.sym" || builtin == "ffi_sym") return ffi_sym(args);

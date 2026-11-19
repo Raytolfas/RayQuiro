@@ -180,14 +180,14 @@ public:
                 continue;
             }
 
-            if (std::isalpha(static_cast<unsigned char>(c)) || c == '_') {
+            if (std::isalpha(static_cast<unsigned char>(c)) || c == '_' || c == '@') {
                 std::string s;
                 while (pos < src.size()) {
                     char ch = peek();
                     if (ch == '.' && peekNext() == '.') {
                         break;
                     }
-                    if (std::isalnum(static_cast<unsigned char>(ch)) || ch == '_' || ch == '.') {
+                    if (std::isalnum(static_cast<unsigned char>(ch)) || ch == '_' || ch == '.' || ch == '@') {
                         s += advance();
                     } else {
                         break;

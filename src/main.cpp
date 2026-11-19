@@ -1244,7 +1244,7 @@ int main(int argc, char* argv[]) {
             const std::string source = readTextFile(checkTarget);
             Lexer lexer(source);
             auto tokens = lexer.tokenize();
-            Parser parser(tokens);
+            Parser parser(tokens, checkTarget.parent_path().string());
             auto program = parser.parse();
             TypeChecker checker;
             checker.checkProgram(program.get());
