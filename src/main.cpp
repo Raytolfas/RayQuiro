@@ -143,44 +143,42 @@ struct ProjectConfig {
 };
 
 void printHelp() {
-    std::cout << "\033[1;36mRayQuiro\033[0m " << kRayQuiroVersion << " — modern, fast programming language\n";
-    std::cout << "\n\033[1mUsage:\033[0m\n";
-    std::cout << "  rqio run <script.rq> [--watch]      Run script via Bytecode VM (--watch for Hot Reload)\n";
-    std::cout << "  rqio test [path] [--native]         Run test suite (VM by default, --native for compiler build)\n";
-    std::cout << "  rqio repl                           Start interactive REPL\n";
-    std::cout << "  rqio                                Start REPL (or run project if in rqio.json folder)\n";
-    std::cout << "  rqio build <script.rq> [-o out]     Compile to standalone native binary via TinyCC/LLVM\n";
-    std::cout << "  rqio build <script.rq> --emit-llvm  Generate direct LLVM IR (.ll) representation\n";
-    std::cout << "  rqio build <script.rq> --tcc        Compile via TinyCC (fast autonomous build)\n";
-    std::cout << "  rqio build <script.rq> --llvm       Compile via LLVM Clang\n";
-    std::cout << "  rqio build <script.rq> --release    Compile with -O3 optimization\n";
-    std::cout << "  rqio build <script.rq> --debug      Compile with -O0 -g debug symbols\n";
-    std::cout << "  rqio build <script.rq> --target <T> Target triple (linux-x64, win-x64, macos-arm64)\n";
-    std::cout << "  rqio build <script.rq> --no-llvm    Compile via GCC fallback\n";
-    std::cout << "  rqio check <script.rq>              Validate syntax & AST without execution\n";
-    std::cout << "  rqio ffi-gen <header.h> [-o out.rq] Generate Zero-Overhead RayQuiro FFI bindings\n";
-    std::cout << "  rqio cc <files.c> [-o out]          Autonomous C compiler via bundled TinyCC\n";
-    std::cout << "  rqio lsp                            Start Language Server Protocol (VS Code IntelliSense)\n";
-    std::cout << "  rqio debug <script.rq> [--port N]   Start DAP debug server (VS Code F5)\n";
-    std::cout << "\n\033[1mPackage Manager:\033[0m\n";
-    std::cout << "  rqio init [folder]                  Initialize project with rqio.json\n";
-    std::cout << "  rqio add <name|owner/repo>          Install package globally\n";
-    std::cout << "  rqio add <name> --local             Install into project (.rqio/packages/)\n";
-    std::cout << "  rqio install                        Install all dependencies from rqio.json\n";
-    std::cout << "  rqio install <name> [--local]       Install specific package\n";
-    std::cout << "  rqio remove <name> [--local]        Remove package\n";
-    std::cout << "  rqio list [--global|--local]        List installed packages\n";
-    std::cout << "\n\033[1mBuilt-in Modules:\033[0m\n";
-    std::cout << "  web       rayquiro.web     (live server, reactive HTML/CSS DSL)\n";
-    std::cout << "  engine    rayquiro.engine  (2D/3D graphics, audio, physics, sprites)\n";
-    std::cout << "  app       rayquiro.app     (native window & application lifecycle)\n";
-    std::cout << "  ui        rayquiro.ui      (modern cross-platform desktop UI)\n";
-    std::cout << "  systems   ffi, buffer, struct, wasm, arena\n";
-    std::cout << "  stdlib    json, datetime, path, fs, env, hash, crypto, regex, process\n";
-    std::cout << "\n\033[1mOther:\033[0m\n";
-    std::cout << "  rqio self-update [check]            Check or install CLI update\n";
-    std::cout << "  rqio version                        Show version number\n";
-    std::cout << "  rqio help                           Show this help menu\n";
+    std::cout << "\033[1;36mRayQuiro\033[0m " << kRayQuiroVersion << " — fast, modern, expressive systems language\n\n";
+    std::cout << "\033[1mUsage:\033[0m\n";
+    std::cout << "  rqio run <script.rq>      Execute script with Bytecode VM\n";
+    std::cout << "  rqio build <script.rq>    Compile into standalone native binary\n";
+    std::cout << "  rqio check <script.rq>    Validate syntax and AST structure\n";
+    std::cout << "  rqio test [path]          Run test suites\n";
+    std::cout << "  rqio repl                 Launch interactive REPL\n";
+    std::cout << "  rqio                      Run current project or launch REPL\n\n";
+    std::cout << "\033[1mProject & Packages:\033[0m\n";
+    std::cout << "  rqio init [path]          Initialize project with rqio.json\n";
+    std::cout << "  rqio add <pkg>            Add package dependency\n";
+    std::cout << "  rqio install              Install dependencies from rqio.json\n";
+    std::cout << "  rqio remove <pkg>         Remove installed package\n";
+    std::cout << "  rqio list                 Show installed packages\n\n";
+    std::cout << "\033[1mBuild Options:\033[0m\n";
+    std::cout << "  -o <path>                 Output binary path\n";
+    std::cout << "  --release                 Optimize build with -O3\n";
+    std::cout << "  --debug                   Emit debug symbols\n";
+    std::cout << "  --emit-llvm               Generate direct LLVM IR\n";
+    std::cout << "  --target <arch>           Target architecture triple\n";
+    std::cout << "  --tcc                     Fast compilation with TinyCC\n";
+    std::cout << "  --llvm                    Optimized compilation with LLVM Clang\n";
+    std::cout << "  --native                  Execute tests in native compiler mode\n";
+    std::cout << "  --watch                   Hot reload on file changes\n\n";
+    std::cout << "\033[1mTooling:\033[0m\n";
+    std::cout << "  rqio lsp                  Start Language Server Protocol\n";
+    std::cout << "  rqio debug <script.rq>    Start DAP debug adapter\n";
+    std::cout << "  rqio ffi-gen <header.h>   Generate C FFI bindings\n";
+    std::cout << "  rqio cc <files.c>         Autonomous C compiler\n";
+    std::cout << "  rqio self-update          Update rqio toolchain to latest release\n";
+    std::cout << "  rqio version              Print compiler version\n";
+    std::cout << "  rqio help                 Show this help menu\n\n";
+    std::cout << "\033[1mNamespaces:\033[0m\n";
+    std::cout << "  systems                   arena, buffer, struct, ffi, wasm\n";
+    std::cout << "  stdlib                    fs, path, env, process, json, datetime, regex, crypto\n";
+    std::cout << "  framework                 web, app, ui, engine\n";
 }
 
 std::optional<std::filesystem::path> resolveScriptPath(const std::string& rawValue) {
@@ -292,58 +290,46 @@ void createStarterProject(const std::filesystem::path& requestedRoot) {
     const std::filesystem::path mainFile = projectRoot / "main.rq";
     const std::filesystem::path gitignoreFile = projectRoot / ".gitignore";
 
-    if (std::filesystem::exists(projectFile) || std::filesystem::exists(mainFile)) {
-        throw std::runtime_error("The target already contains rqio.json or main.rq. Choose an empty folder.");
+    if (std::filesystem::exists(projectFile)) {
+        throw std::runtime_error("The target directory already contains rqio.json.");
     }
 
-    std::filesystem::create_directories(projectRoot / ".rq_modules");
-    std::filesystem::create_directories(projectRoot / "build");
+    std::filesystem::create_directories(projectRoot);
+    std::filesystem::create_directories(projectRoot / ".rqio");
 
     writeTextFile(
         projectFile,
         "{\n"
         "  \"name\": \"" + jsonEscape(projectName) + "\",\n"
         "  \"version\": \"0.1.0\",\n"
-        "  \"entry\": \"main.rq\",\n"
-        "  \"build_dir\": \"build\"\n"
+        "  \"entry\": \"main.rq\"\n"
         "}\n");
 
-    writeTextFile(
-        mainFile,
-        "import rayquiro.web as web;\n"
-        "\n"
-        "var project = \"" + projectName + "\";\n"
-        "\n"
-        "web.begin(project, \"build/index.html\");\n"
-        "web.style(\"\n"
-        ".page { max-width: 1080px; margin: 0 auto; padding: 64px 24px 96px; }\n"
-        ".hero { padding: 48px; border-radius: 32px; background: linear-gradient(145deg, #08111f, #13213a); color: #f5f8ff; box-shadow: 0 28px 80px rgba(8, 17, 31, .35); }\n"
-        ".eyebrow { display: inline-flex; padding: 8px 14px; border-radius: 999px; background: rgba(92, 200, 255, .16); color: #5cc8ff; font-size: 13px; letter-spacing: .08em; text-transform: uppercase; }\n"
-        ".title { font-size: 56px; line-height: 1.02; margin: 18px 0 14px; }\n"
-        ".lead { font-size: 19px; line-height: 1.8; color: #b4c6df; max-width: 680px; }\n"
-        ".primary { display: inline-flex; margin-top: 18px; background: #5cc8ff; color: #07111d; }\n"
-        "\");\n"
-        "web.open(\"main\", \"page\");\n"
-        "web.open(\"section\", \"hero\");\n"
-        "web.text(\"RayQuiro Starter\", \"eyebrow\");\n"
-        "web.h1(\"Build apps, installers and websites with one language.\", \"title\");\n"
-        "web.p(\"This starter already uses rqio.json, build/ and live web mode on port 5274.\", \"lead\");\n"
-        "web.button(\"Open RayQuiro GitHub\", \"primary\", \"https://github.com/\");\n"
-        "web.close(\"section\");\n"
-        "web.close(\"main\");\n"
-        "web.live(5274);\n"
-        "web.end();\n");
+    if (!std::filesystem::exists(mainFile)) {
+        writeTextFile(
+            mainFile,
+            "fn main() {\n"
+            "    println(\"Welcome to RayQuiro 1.4!\");\n"
+            "    println(\"Project: " + projectName + "\");\n"
+            "}\n\n"
+            "main();\n");
+    }
 
-    writeTextFile(
-        gitignoreFile,
-        ".rq_modules/\n"
-        "build/\n"
-        "*.generated.cpp\n"
-        "*.exe\n"
-        "*.html\n");
+    if (!std::filesystem::exists(gitignoreFile)) {
+        writeTextFile(
+            gitignoreFile,
+            ".rqio/\n"
+            ".rq_modules/\n"
+            "build/\n"
+            "*.exe\n"
+            "*.o\n"
+            "*.dll\n"
+            "*.so\n"
+            "*.dylib\n");
+    }
 
-    Log::status("Created", "project at " + projectRoot.string());
-    Log::info("next: cd " + projectRoot.filename().string() + " && rqio");
+    Log::status("Created", "RayQuiro project at " + projectRoot.string());
+    Log::info("Run with: rqio run main.rq (or simply 'rqio')");
 }
 
 ProjectConfig loadProjectConfig(const std::filesystem::path& startPath) {
@@ -409,14 +395,12 @@ CliOptions parseArguments(int argc, char* argv[]) {
         return options;
     }
     if (first == "init") {
+        options.mode = CliMode::Init;
         if (argc >= 3) {
-
-            options.mode = CliMode::Init;
             options.initPath = argv[2];
             if (argc > 3) throw std::runtime_error("Usage: rqio init [project-folder]");
         } else {
-
-            options.mode = CliMode::PackageInit;
+            options.initPath = "";
         }
         return options;
     }
@@ -601,12 +585,13 @@ CliOptions parseArguments(int argc, char* argv[]) {
         options.mode = CliMode::PackageList;
         ++index;
     } else if (first == "init") {
-
+        options.mode = CliMode::Init;
         if (index + 1 < argc && std::string(argv[index + 1]).rfind("--", 0) != 0
                               && std::string(argv[index + 1]).find('=') == std::string::npos) {
-
+            options.initPath = argv[index + 1];
+            index += 2;
         } else {
-            options.mode = CliMode::PackageInit;
+            options.initPath = "";
             ++index;
         }
     }

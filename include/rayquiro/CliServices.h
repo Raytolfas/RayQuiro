@@ -686,7 +686,7 @@ inline void launchHiddenBatch(const std::filesystem::path& batchPath) {
         throw std::runtime_error("Failed to launch updater batch.");
     }
 #else
-    const std::string cmd = "bash " + batchPath.string() + " &";
+    const std::string cmd = "nohup bash \"" + batchPath.string() + "\" >/dev/null 2>&1 &";
     if (std::system(cmd.c_str()) != 0) {
         throw std::runtime_error("Failed to launch updater shell script.");
     }
@@ -845,10 +845,6 @@ struct UpdateCheckResult {
 inline UpdateCheckResult checkForUpdatesQuietly(const std::string& currentVersion) {
     UpdateCheckResult res;
     res.currentVersion = currentVersion;
-#ifndef _WIN32
-    (void)currentVersion;
-    return res;
-#else
     try {
         const std::filesystem::path manifestPath = RayQuiroUserPaths::updatesRoot() / "remote_update.json";
         fetchResource(updateManifestUrl(), manifestPath);
@@ -868,7 +864,6 @@ inline UpdateCheckResult checkForUpdatesQuietly(const std::string& currentVersio
 
     }
     return res;
-#endif
 }
 
 inline int selfUpdate(
@@ -877,13 +872,6 @@ inline int selfUpdate(
     bool checkOnly,
     const std::string& relaunchCmd = ""
 ) {
-#ifndef _WIN32
-    (void)exePath;
-    (void)currentVersion;
-    (void)checkOnly;
-    (void)relaunchCmd;
-    throw std::runtime_error("Self-update is currently supported on Windows only.");
-#else
     const std::filesystem::path manifestPath = RayQuiroUserPaths::updatesRoot() / "remote_update.json";
     fetchResource(updateManifestUrl(), manifestPath);
     const UpdateManifest manifest = parseUpdateManifest(readText(manifestPath));
@@ -915,7 +903,6 @@ inline int selfUpdate(
 
     std::cout << "[RayQuiro] Update downloaded. The updater is replacing files in " << exePath.parent_path().string() << std::endl;
     return 0;
-#endif
 }
 
 struct RqioManifest {

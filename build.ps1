@@ -73,9 +73,6 @@ if (-not $glslc) {
 }
 
 $supportsLto = $false
-if ($cxxCompiler -eq "g++" -or $cxxCompiler -like "*\\g++.exe" -or $cxxCompiler -like "*/g++") {
-    $supportsLto = $true
-}
 
 
 $raylibObjectRoot = Join-Path ".cache" ("rqio-raylib-" + [DateTime]::UtcNow.ToString("yyyyMMddHHmmssfff"))
