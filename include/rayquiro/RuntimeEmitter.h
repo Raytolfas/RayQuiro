@@ -2224,7 +2224,56 @@ inline NativeModule& load_native_module(const std::string& moduleName) {
     return modules[moduleName];
 }
 
+inline Value wasm_load(const std::vector<Value>& args);
+inline Value wasm_call(const std::vector<Value>& args);
+inline Value wasm_memory_size(const std::vector<Value>& args);
+inline Value wasm_set_memory_limit(const std::vector<Value>& args);
+inline Value wasm_set_instruction_quota(const std::vector<Value>& args);
+inline Value wasm_exports(const std::vector<Value>& args);
+inline Value regex_test(const std::vector<Value>& args);
+inline Value regex_match(const std::vector<Value>& args);
+inline Value regex_replace(const std::vector<Value>& args);
+inline Value regex_split(const std::vector<Value>& args);
+inline Value datetime_now(const std::vector<Value>& args);
+inline Value datetime_timestamp(const std::vector<Value>& args);
+inline Value datetime_format(const std::vector<Value>& args);
+inline Value fs_readdir(const std::vector<Value>& args);
+inline Value path_stem(const std::vector<Value>& args);
+inline Value path_abs(const std::vector<Value>& args);
+inline Value env_all(const std::vector<Value>& args);
+inline Value process_args(const std::vector<Value>& args);
+inline Value process_pid(const std::vector<Value>& args);
+inline Value process_exit(const std::vector<Value>& args);
+inline Value sha1_value(const std::vector<Value>& args);
+inline Value md5_value(const std::vector<Value>& args);
+inline Value random_bytes_value(const std::vector<Value>& args);
+inline Value hmac_sha256_value(const std::vector<Value>& args);
+
 inline Value native_call(const std::string& builtin, const std::vector<Value>& args) {
+    if (builtin == "wasm.load" || builtin == "wasm_load") return wasm_load(args);
+    if (builtin == "wasm.call" || builtin == "wasm_call") return wasm_call(args);
+    if (builtin == "wasm.memory_size" || builtin == "wasm_memory_size") return wasm_memory_size(args);
+    if (builtin == "wasm.set_memory_limit" || builtin == "wasm_set_memory_limit") return wasm_set_memory_limit(args);
+    if (builtin == "wasm.set_instruction_quota" || builtin == "wasm_set_instruction_quota") return wasm_set_instruction_quota(args);
+    if (builtin == "wasm.exports" || builtin == "wasm_exports") return wasm_exports(args);
+    if (builtin == "regex.test" || builtin == "regex_test") return regex_test(args);
+    if (builtin == "regex.match" || builtin == "regex_match") return regex_match(args);
+    if (builtin == "regex.replace" || builtin == "regex_replace") return regex_replace(args);
+    if (builtin == "regex.split" || builtin == "regex_split") return regex_split(args);
+    if (builtin == "datetime.now" || builtin == "datetime_now") return datetime_now(args);
+    if (builtin == "datetime.timestamp" || builtin == "datetime_timestamp") return datetime_timestamp(args);
+    if (builtin == "datetime.format" || builtin == "datetime_format") return datetime_format(args);
+    if (builtin == "fs.readdir" || builtin == "fs_readdir" || builtin == "fs.read_dir") return fs_readdir(args);
+    if (builtin == "path.stem" || builtin == "path_stem") return path_stem(args);
+    if (builtin == "path.abs" || builtin == "path_abs") return path_abs(args);
+    if (builtin == "env.all" || builtin == "env_all") return env_all(args);
+    if (builtin == "process.args" || builtin == "process_args") return process_args(args);
+    if (builtin == "process.pid" || builtin == "process_pid") return process_pid(args);
+    if (builtin == "process.exit" || builtin == "process_exit") return process_exit(args);
+    if (builtin == "hash.sha1" || builtin == "crypto.sha1") return sha1_value(args);
+    if (builtin == "crypto.md5") return md5_value(args);
+    if (builtin == "crypto.random_bytes") return random_bytes_value(args);
+    if (builtin == "crypto.hmac_sha256") return hmac_sha256_value(args);
     if (builtin == "buffer.alloc" || builtin == "buffer_alloc") return buffer_alloc(args);
     if (builtin == "buffer.from_string" || builtin == "buffer_from_string") return buffer_from_string(args);
     if (builtin == "buffer.to_string" || builtin == "buffer_to_string") return buffer_to_string(args);
@@ -2514,6 +2563,377 @@ inline Value uuid_value(const std::vector<Value>&) {
     oss << std::setw(4) << ((lo >> 48) & 0xFFFF) << "-";
     oss << std::setw(12) << (lo & 0xFFFFFFFFFFFFull);
     return Value(oss.str());
+}
+
+inline Value sha1_value(const std::vector<Value>& args) {
+    if (args.empty()) return Value(std::string(""));
+    std::string input = to_string(args[0]);
+    auto rotl = [](uint32_t x, int n){ return (x << n) | (x >> (32 - n)); };
+    uint32_t h0 = 0x67452301, h1 = 0xEFCDAB89, h2 = 0x98BADCFE, h3 = 0x10325476, h4 = 0xC3D2E1F0;
+    std::vector<uint8_t> msg(input.begin(), input.end());
+    uint64_t ml = msg.size() * 8;
+    msg.push_back(0x80);
+    while (msg.size() % 64 != 56) msg.push_back(0);
+    for (int i = 7; i >= 0; --i) msg.push_back((ml >> (i * 8)) & 0xFF);
+    for (size_t c = 0; c < msg.size(); c += 64) {
+        uint32_t w[80];
+        for (int i = 0; i < 16; ++i) w[i] = (msg[c + i * 4] << 24) | (msg[c + i * 4 + 1] << 16) | (msg[c + i * 4 + 2] << 8) | msg[c + i * 4 + 3];
+        for (int i = 16; i < 80; ++i) w[i] = rotl(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1);
+        uint32_t a = h0, b = h1, cc = h2, d = h3, e = h4;
+        for (int i = 0; i < 80; ++i) {
+            uint32_t f2, k2;
+            if (i < 20) { f2 = (b & cc) | (~b & d); k2 = 0x5A827999; }
+            else if (i < 40) { f2 = b ^ cc ^ d; k2 = 0x6ED9EBA1; }
+            else if (i < 60) { f2 = (b & cc) | (b & d) | (cc & d); k2 = 0x8F1BBCDC; }
+            else { f2 = b ^ cc ^ d; k2 = 0xCA62C1D6; }
+            uint32_t tmp = rotl(a, 5) + f2 + e + k2 + w[i];
+            e = d; d = cc; cc = rotl(b, 30); b = a; a = tmp;
+        }
+        h0 += a; h1 += b; h2 += cc; h3 += d; h4 += e;
+    }
+    std::ostringstream oss;
+    oss << std::hex << std::setfill('0');
+    oss << std::setw(8) << h0 << std::setw(8) << h1 << std::setw(8) << h2 << std::setw(8) << h3 << std::setw(8) << h4;
+    return Value(oss.str());
+}
+
+inline Value md5_value(const std::vector<Value>& args) {
+    if (args.empty()) return Value(std::string(""));
+    std::string s = to_string(args[0]);
+    const auto msg = [&](){
+        std::vector<uint8_t> v(s.begin(), s.end());
+        uint64_t origLen = v.size() * 8;
+        v.push_back(0x80);
+        while ((v.size() % 64) != 56) v.push_back(0);
+        for (int i = 0; i < 8; ++i) v.push_back((origLen >> (i * 8)) & 0xFF);
+        return v;
+    }();
+    uint32_t a0 = 0x67452301, b0 = 0xefcdab89, c0 = 0x98badcfe, d0 = 0x10325476;
+    static const uint32_t S[] = {7,12,17,22,7,12,17,22,7,12,17,22,7,12,17,22,5,9,14,20,5,9,14,20,5,9,14,20,5,9,14,20,4,11,16,23,4,11,16,23,4,11,16,23,4,11,16,23,6,10,15,21,6,10,15,21,6,10,15,21,6,10,15,21};
+    static const uint32_t T[] = {0xd76aa478,0xe8c7b756,0x242070db,0xc1bdceee,0xf57c0faf,0x4787c62a,0xa8304613,0xfd469501,0x698098d8,0x8b44f7af,0xffff5bb1,0x895cd7be,0x6b901122,0xfd987193,0xa679438e,0x49b40821,0xf61e2562,0xc040b340,0x265e5a51,0xe9b6c7aa,0xd62f105d,0x02441453,0xd8a1e681,0xe7d3fbc8,0x21e1cde6,0xc33707d6,0xf4d50d87,0x455a14ed,0xa9e3e905,0xfcefa3f8,0x676f02d9,0x8d2a4c8a,0xfffa3942,0x8771f681,0x6d9d6122,0xfde5380c,0xa4beea44,0x4bdecfa9,0xf6bb4b60,0xbebfbc70,0x289b7ec6,0xeaa127fa,0xd4ef3085,0x04881d05,0xd9d4d039,0xe6db99e5,0x1fa27cf8,0xc4ac5665,0xf4292244,0x432aff97,0xab9423a7,0xfc93a039,0x655b59c3,0x8f0ccc92,0xffeff47d,0x85845dd1,0x6fa87e4f,0xfe2ce6e0,0xa3014314,0x4e0811a1,0xf7537e82,0xbd3af235,0x2ad7d2bb,0xeb86d391};
+    auto lrot = [](uint32_t x, uint32_t n){ return (x << n) | (x >> (32 - n)); };
+    for (size_t c = 0; c < msg.size(); c += 64) {
+        uint32_t M[16];
+        for (int i = 0; i < 16; ++i) M[i] = msg[c + i * 4] | (msg[c + i * 4 + 1] << 8) | (msg[c + i * 4 + 2] << 16) | (msg[c + i * 4 + 3] << 24);
+        uint32_t A = a0, B = b0, C = c0, D = d0;
+        for (int i = 0; i < 64; ++i) {
+            uint32_t F2, g;
+            if (i < 16) { F2 = (B & C) | (~B & D); g = i; }
+            else if (i < 32) { F2 = (D & B) | (~D & C); g = (5 * i + 1) % 16; }
+            else if (i < 48) { F2 = B ^ C ^ D; g = (3 * i + 5) % 16; }
+            else { F2 = C ^ (B | ~D); g = (7 * i) % 16; }
+            F2 = F2 + A + T[i] + M[g];
+            A = D; D = C; C = B; B = B + lrot(F2, S[i]);
+        }
+        a0 += A; b0 += B; c0 += C; d0 += D;
+    }
+    std::ostringstream oss;
+    auto le = [&](uint32_t v){ for (int i = 0; i < 4; ++i) oss << std::hex << std::setw(2) << std::setfill('0') << ((v >> (i * 8)) & 0xFF); };
+    le(a0); le(b0); le(c0); le(d0);
+    return Value(oss.str());
+}
+
+inline Value random_bytes_value(const std::vector<Value>& args) {
+    int n = args.empty() ? 16 : static_cast<int>(to_number(args[0]));
+    if (n < 1) n = 1;
+    if (n > 1024) n = 1024;
+    std::random_device rd;
+    std::mt19937 rng(rd());
+    std::uniform_int_distribution<int> dist(0, 255);
+    std::ostringstream oss;
+    for (int i = 0; i < n; ++i)
+        oss << std::hex << std::setw(2) << std::setfill('0') << dist(rng);
+    return Value(oss.str());
+}
+
+inline Value hmac_sha256_value(const std::vector<Value>& args) {
+    if (args.size() < 2) return Value(std::string(""));
+    std::string msg2 = to_string(args[0]);
+    std::string key2 = to_string(args[1]);
+    if (key2.size() > 64) {
+        key2 = to_string(sha256_value({Value(key2)}));
+    }
+    while (key2.size() < 64) key2.push_back('\0');
+    std::string opad(64, '\x5c'), ipad(64, '\x36');
+    for (size_t i = 0; i < 64; ++i) { opad[i] ^= key2[i]; ipad[i] ^= key2[i]; }
+    std::string inner = to_string(sha256_value({Value(ipad + msg2)}));
+    return sha256_value({Value(opad + inner)});
+}
+
+inline Value path_stem(const std::vector<Value>& args) {
+    if (args.empty()) return Value(std::string(""));
+    return Value(std::filesystem::path(to_string(args[0])).stem().string());
+}
+
+inline Value path_abs(const std::vector<Value>& args) {
+    if (args.empty()) return Value(std::string(""));
+    std::error_code ec;
+    auto absPath = std::filesystem::absolute(to_string(args[0]), ec);
+    return Value(ec ? to_string(args[0]) : absPath.string());
+}
+
+inline Value env_all(const std::vector<Value>& args) {
+    (void)args;
+    Value obj = Value::object();
+#ifdef _WIN32
+    if (LPWCH envBlock = GetEnvironmentStringsW()) {
+        for (LPCWSTR var = envBlock; *var != L'\0'; var += wcslen(var) + 1) {
+            std::wstring line(var);
+            size_t eq = line.find(L'=');
+            if (eq != std::wstring::npos && eq > 0) {
+                std::string k(line.begin(), line.begin() + eq);
+                std::string v(line.begin() + eq + 1, line.end());
+                (*obj.as_object())[k] = Value(v);
+            }
+        }
+        FreeEnvironmentStringsW(envBlock);
+    }
+#else
+    extern char** environ;
+    if (environ) {
+        for (char** env = environ; *env != nullptr; ++env) {
+            std::string line(*env);
+            size_t eq = line.find('=');
+            if (eq != std::string::npos && eq > 0) {
+                (*obj.as_object())[line.substr(0, eq)] = Value(line.substr(eq + 1));
+            }
+        }
+    }
+#endif
+    return obj;
+}
+
+inline Value process_args(const std::vector<Value>& args) {
+    (void)args;
+    return Value::array();
+}
+
+inline Value process_pid(const std::vector<Value>& args) {
+    (void)args;
+#ifdef _WIN32
+    return Value(static_cast<double>(GetCurrentProcessId()));
+#else
+    return Value(static_cast<double>(getpid()));
+#endif
+}
+
+inline Value process_exit(const std::vector<Value>& args) {
+    int code = args.empty() ? 0 : static_cast<int>(to_number(args[0]));
+    std::exit(code);
+}
+
+inline Value fs_readdir(const std::vector<Value>& args) {
+    Value arr = Value::array();
+    if (args.empty()) return arr;
+    std::error_code ec;
+    std::filesystem::path p(to_string(args[0]));
+    if (std::filesystem::exists(p, ec) && std::filesystem::is_directory(p, ec)) {
+        for (const auto& entry : std::filesystem::directory_iterator(p, ec)) {
+            arr.as_array()->push_back(Value(entry.path().filename().string()));
+        }
+    }
+    return arr;
+}
+
+inline Value regex_test(const std::vector<Value>& args) {
+    if (args.size() < 2) return Value(false);
+    try {
+        std::regex re(to_string(args[0]));
+        return Value(std::regex_search(to_string(args[1]), re));
+    } catch (...) { return Value(false); }
+}
+
+inline Value regex_match(const std::vector<Value>& args) {
+    if (args.size() < 2) return Value();
+    try {
+        std::regex re(to_string(args[0]));
+        std::string target = to_string(args[1]);
+        std::smatch m;
+        if (std::regex_search(target, m, re)) {
+            Value arr = Value::array();
+            for (size_t i = 0; i < m.size(); ++i) {
+                arr.as_array()->push_back(Value(m[i].str()));
+            }
+            return arr;
+        }
+        return Value();
+    } catch (...) { return Value(); }
+}
+
+inline Value regex_replace(const std::vector<Value>& args) {
+    if (args.size() < 3) return args.size() > 1 ? args[1] : Value(std::string(""));
+    try {
+        std::regex re(to_string(args[0]));
+        return Value(std::regex_replace(to_string(args[1]), re, to_string(args[2])));
+    } catch (...) { return args.size() > 1 ? args[1] : Value(std::string("")); }
+}
+
+inline Value regex_split(const std::vector<Value>& args) {
+    Value arr = Value::array();
+    if (args.size() < 2) return arr;
+    try {
+        std::regex re(to_string(args[0]));
+        std::string target = to_string(args[1]);
+        std::sregex_token_iterator it(target.begin(), target.end(), re, -1);
+        std::sregex_token_iterator end;
+        for (; it != end; ++it) {
+            arr.as_array()->push_back(Value(it->str()));
+        }
+        return arr;
+    } catch (...) {
+        arr.as_array()->push_back(args[1]);
+        return arr;
+    }
+}
+
+inline Value datetime_now(const std::vector<Value>& args) {
+    (void)args;
+    auto now = std::chrono::system_clock::now();
+    auto t = std::chrono::system_clock::to_time_t(now);
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
+    std::tm tm_buf{};
+#ifdef _WIN32
+    localtime_s(&tm_buf, &t);
+#else
+    localtime_r(&t, &tm_buf);
+#endif
+    Value obj = Value::object();
+    (*obj.as_object())["year"]   = Value(static_cast<double>(tm_buf.tm_year + 1900));
+    (*obj.as_object())["month"]  = Value(static_cast<double>(tm_buf.tm_mon + 1));
+    (*obj.as_object())["day"]    = Value(static_cast<double>(tm_buf.tm_mday));
+    (*obj.as_object())["hour"]   = Value(static_cast<double>(tm_buf.tm_hour));
+    (*obj.as_object())["minute"] = Value(static_cast<double>(tm_buf.tm_min));
+    (*obj.as_object())["second"] = Value(static_cast<double>(tm_buf.tm_sec));
+    (*obj.as_object())["ms"]     = Value(static_cast<double>(ms.count()));
+    (*obj.as_object())["timestamp"] = Value(static_cast<double>(t));
+    return obj;
+}
+
+inline Value datetime_timestamp(const std::vector<Value>& args) {
+    (void)args;
+    return Value(static_cast<double>(std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count()));
+}
+
+inline Value datetime_format(const std::vector<Value>& args) {
+    if (args.size() < 2) return Value(std::string(""));
+    time_t t = static_cast<time_t>(to_number(args[0]));
+    std::string fmt = to_string(args[1]);
+    std::tm tm_buf{};
+#ifdef _WIN32
+    localtime_s(&tm_buf, &t);
+#else
+    localtime_r(&t, &tm_buf);
+#endif
+    char buf[256];
+    if (std::strftime(buf, sizeof(buf), fmt.c_str(), &tm_buf)) {
+        return Value(std::string(buf));
+    }
+    return Value(std::string(""));
+}
+
+inline Value wasm_load(const std::vector<Value>& args) {
+    if (args.empty()) return Value();
+    std::vector<uint8_t> bytes;
+    if (is_string(args[0])) {
+        const auto& s = std::get<std::string>(args[0].data);
+        bytes.assign(s.begin(), s.end());
+    } else if (is_array(args[0])) {
+        for (const auto& el : *args[0].as_array()) {
+            bytes.push_back(static_cast<uint8_t>(to_number(el)));
+        }
+    } else if (is_object(args[0])) {
+        auto bufIt = args[0].as_object()->find("__buf_id__");
+        if (bufIt != args[0].as_object()->end()) {
+            int64_t bId = static_cast<int64_t>(to_number(bufIt->second));
+            if (auto rawBuf = get_buffer(bId)) {
+                bytes = rawBuf->bytes;
+            }
+        }
+    }
+    size_t memLimit = 16 * 1024 * 1024;
+    uint64_t quota = 1000000;
+    if (args.size() > 1 && is_object(args[1])) {
+        auto memIt = args[1].as_object()->find("memory_limit_mb");
+        if (memIt != args[1].as_object()->end()) memLimit = static_cast<size_t>(to_number(memIt->second)) * 1024 * 1024;
+        auto qIt = args[1].as_object()->find("max_instructions");
+        if (qIt != args[1].as_object()->end()) quota = static_cast<uint64_t>(to_number(qIt->second));
+    }
+    int64_t id = WasmManager::instance().create(std::move(bytes), memLimit, quota);
+    auto obj = Value::object();
+    (*obj.as_object())["__type__"] = Value(std::string("WasmModule"));
+    (*obj.as_object())["__wasm_id__"] = Value(static_cast<double>(id));
+    return obj;
+}
+
+inline Value wasm_call(const std::vector<Value>& args) {
+    if (args.size() < 2 || !is_object(args[0])) return Value();
+    auto it = args[0].as_object()->find("__wasm_id__");
+    if (it == args[0].as_object()->end()) return Value();
+    int64_t id = static_cast<int64_t>(to_number(it->second));
+    auto instance = WasmManager::instance().get(id);
+    if (!instance) return Value();
+    std::string fnName = to_string(args[1]);
+    std::vector<double> fnArgs;
+    for (size_t i = 2; i < args.size(); ++i) {
+        fnArgs.push_back(to_number(args[i]));
+    }
+    try {
+        double res = instance->invoke(fnName, fnArgs);
+        return Value(res);
+    } catch (const std::exception& e) {
+        throw std::runtime_error("WASM error: " + std::string(e.what()));
+    }
+}
+
+inline Value wasm_memory_size(const std::vector<Value>& args) {
+    if (args.empty() || !is_object(args[0])) return Value(0.0);
+    auto it = args[0].as_object()->find("__wasm_id__");
+    if (it == args[0].as_object()->end()) return Value(0.0);
+    int64_t id = static_cast<int64_t>(to_number(it->second));
+    auto instance = WasmManager::instance().get(id);
+    return Value(instance ? static_cast<double>(instance->getMemorySize()) : 0.0);
+}
+
+inline Value wasm_set_memory_limit(const std::vector<Value>& args) {
+    if (args.size() < 2 || !is_object(args[0])) return Value(false);
+    auto it = args[0].as_object()->find("__wasm_id__");
+    if (it == args[0].as_object()->end()) return Value(false);
+    int64_t id = static_cast<int64_t>(to_number(it->second));
+    auto instance = WasmManager::instance().get(id);
+    if (instance) {
+        instance->setMemoryLimit(static_cast<size_t>(to_number(args[1])));
+        return Value(true);
+    }
+    return Value(false);
+}
+
+inline Value wasm_set_instruction_quota(const std::vector<Value>& args) {
+    if (args.size() < 2 || !is_object(args[0])) return Value(false);
+    auto it = args[0].as_object()->find("__wasm_id__");
+    if (it == args[0].as_object()->end()) return Value(false);
+    int64_t id = static_cast<int64_t>(to_number(it->second));
+    auto instance = WasmManager::instance().get(id);
+    if (instance) {
+        instance->setInstructionQuota(static_cast<uint64_t>(to_number(args[1])));
+        return Value(true);
+    }
+    return Value(false);
+}
+
+inline Value wasm_exports(const std::vector<Value>& args) {
+    if (args.empty() || !is_object(args[0])) return Value::array();
+    auto it = args[0].as_object()->find("__wasm_id__");
+    if (it == args[0].as_object()->end()) return Value::array();
+    int64_t id = static_cast<int64_t>(to_number(it->second));
+    auto instance = WasmManager::instance().get(id);
+    auto arr = Value::array();
+    if (instance) {
+        for (const auto& exp : instance->getExports()) {
+            arr.as_array()->push_back(Value(exp));
+        }
+    }
+    return arr;
 }
 }
 

@@ -92,4 +92,39 @@ var cb = ffi.callback(fn(a, b, c, d) {
 });
 assert(cb > 0);
 
+var ar = arena.create(2048);
+assert_eq(arena.capacity(ar), 2048);
+assert_eq(arena.used(ar), 0);
+var abuf = arena.alloc(ar, 64);
+assert(arena.used(ar) >= 64);
+buffer.set_u8(abuf, 0, 77);
+assert_eq(buffer.get_u8(abuf, 0), 77);
+arena.reset(ar);
+assert_eq(arena.used(ar), 0);
+assert_true(arena.destroy(ar));
+
+assert_true(regex.test("^[0-9]+$", "12345"));
+assert_false(regex.test("^[0-9]+$", "123a45"));
+var rmatch = regex.match("([a-z]+)-([0-9]+)", "item-42");
+assert_eq(len(rmatch), 3);
+assert_eq(rmatch[0], "item-42");
+assert_eq(rmatch[1], "item");
+assert_eq(rmatch[2], "42");
+var replaced = regex.replace("[0-9]+", "foo 123 bar 456", "NUM");
+assert_eq(replaced, "foo NUM bar NUM");
+var parts = regex.split(",", "apple,banana,cherry");
+assert_eq(len(parts), 3);
+assert_eq(parts[0], "apple");
+assert_eq(parts[1], "banana");
+assert_eq(parts[2], "cherry");
+
+var emb_s = @embed_str("tests/embedded.txt");
+assert_eq(emb_s, "RayQuiro 1.4 Embedded Asset");
+var emb_j = @embed_json("tests/embedded.json");
+assert_eq(emb_j["name"], "RayQuiro");
+assert_eq(emb_j["version"], "1.4");
+
+var dir_files = fs.readdir("tests");
+assert(len(dir_files) > 0);
+
 print("02_systems_and_memory: PASS");

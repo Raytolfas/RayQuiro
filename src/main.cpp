@@ -34,7 +34,7 @@
 #endif
 
 namespace {
-const char* kRayQuiroVersion = "1.3";
+const char* kRayQuiroVersion = "1.4";
 
 std::string rebuildCommandLine(int argc, char* argv[]) {
     std::string cmd;
@@ -150,6 +150,7 @@ void printHelp() {
     std::cout << "  rqio repl                           Start interactive REPL\n";
     std::cout << "  rqio                                Start REPL (or run project if in rqio.json folder)\n";
     std::cout << "  rqio build <script.rq> [-o out]     Compile to standalone native binary via TinyCC/LLVM\n";
+    std::cout << "  rqio build <script.rq> --emit-llvm  Generate direct LLVM IR (.ll) representation\n";
     std::cout << "  rqio build <script.rq> --tcc        Compile via TinyCC (fast autonomous build)\n";
     std::cout << "  rqio build <script.rq> --llvm       Compile via LLVM Clang\n";
     std::cout << "  rqio build <script.rq> --release    Compile with -O3 optimization\n";
@@ -174,6 +175,7 @@ void printHelp() {
     std::cout << "  engine    rayquiro.engine  (2D/3D graphics, audio, physics, sprites)\n";
     std::cout << "  app       rayquiro.app     (native window & application lifecycle)\n";
     std::cout << "  ui        rayquiro.ui      (modern cross-platform desktop UI)\n";
+    std::cout << "  systems   ffi, buffer, struct, wasm, arena\n";
     std::cout << "  stdlib    json, datetime, path, fs, env, hash, crypto, regex, process\n";
     std::cout << "\n\033[1mOther:\033[0m\n";
     std::cout << "  rqio self-update [check]            Check or install CLI update\n";
@@ -301,7 +303,7 @@ void createStarterProject(const std::filesystem::path& requestedRoot) {
         projectFile,
         "{\n"
         "  \"name\": \"" + jsonEscape(projectName) + "\",\n"
-        "  \"version\": \"0.2.2\",\n"
+        "  \"version\": \"0.1.0\",\n"
         "  \"entry\": \"main.rq\",\n"
         "  \"build_dir\": \"build\"\n"
         "}\n");
@@ -633,7 +635,7 @@ CliOptions parseArguments(int argc, char* argv[]) {
             continue;
         }
         if (arg == "--legacy") {
-            Log::warn("--legacy interpreter is deprecated in RayQuiro 1.2; running on Bytecode VM.");
+            Log::warn("--legacy interpreter is deprecated in RayQuiro 1.4; running on Bytecode VM.");
             continue;
         }
         if (arg == "--watch" || arg == "-w") {

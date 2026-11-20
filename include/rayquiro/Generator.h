@@ -293,6 +293,36 @@ class Generator {
         if (builtin == "buffer.get_f64" || builtin == "buffer_get_f64") return "rq::buffer_get_f64";
         if (builtin == "buffer.set_f64" || builtin == "buffer_set_f64") return "rq::buffer_set_f64";
         if (builtin == "buffer.slice" || builtin == "buffer_slice") return "rq::buffer_slice";
+        if (builtin == "arena.create" || builtin == "arena_create") return "rq::arena_create";
+        if (builtin == "arena.alloc" || builtin == "arena_alloc") return "rq::arena_alloc";
+        if (builtin == "arena.reset" || builtin == "arena_reset") return "rq::arena_reset";
+        if (builtin == "arena.used" || builtin == "arena_used") return "rq::arena_used";
+        if (builtin == "arena.capacity" || builtin == "arena_capacity") return "rq::arena_capacity";
+        if (builtin == "arena.destroy" || builtin == "arena_destroy") return "rq::arena_destroy";
+        if (builtin == "wasm.load" || builtin == "wasm_load") return "rq::wasm_load";
+        if (builtin == "wasm.call" || builtin == "wasm_call") return "rq::wasm_call";
+        if (builtin == "wasm.memory_size" || builtin == "wasm_memory_size") return "rq::wasm_memory_size";
+        if (builtin == "wasm.set_memory_limit" || builtin == "wasm_set_memory_limit") return "rq::wasm_set_memory_limit";
+        if (builtin == "wasm.set_instruction_quota" || builtin == "wasm_set_instruction_quota") return "rq::wasm_set_instruction_quota";
+        if (builtin == "wasm.exports" || builtin == "wasm_exports") return "rq::wasm_exports";
+        if (builtin == "regex.test" || builtin == "regex_test") return "rq::regex_test";
+        if (builtin == "regex.match" || builtin == "regex_match") return "rq::regex_match";
+        if (builtin == "regex.replace" || builtin == "regex_replace") return "rq::regex_replace";
+        if (builtin == "regex.split" || builtin == "regex_split") return "rq::regex_split";
+        if (builtin == "datetime.now" || builtin == "datetime_now") return "rq::datetime_now";
+        if (builtin == "datetime.timestamp" || builtin == "datetime_timestamp") return "rq::datetime_timestamp";
+        if (builtin == "datetime.format" || builtin == "datetime_format") return "rq::datetime_format";
+        if (builtin == "fs.readdir" || builtin == "fs_readdir" || builtin == "fs.read_dir") return "rq::fs_readdir";
+        if (builtin == "path.abs" || builtin == "path_abs") return "rq::path_abs";
+        if (builtin == "path.stem" || builtin == "path_stem") return "rq::path_stem";
+        if (builtin == "env.all" || builtin == "env_all") return "rq::env_all";
+        if (builtin == "process.args" || builtin == "process_args") return "rq::process_args";
+        if (builtin == "process.pid" || builtin == "process_pid") return "rq::process_pid";
+        if (builtin == "process.exit" || builtin == "process_exit") return "rq::process_exit";
+        if (builtin == "hash.sha1" || builtin == "crypto.sha1") return "rq::sha1_value";
+        if (builtin == "crypto.md5") return "rq::md5_value";
+        if (builtin == "crypto.random_bytes") return "rq::random_bytes_value";
+        if (builtin == "crypto.hmac_sha256") return "rq::hmac_sha256_value";
         if (builtin == "struct.calcsize" || builtin == "struct_calcsize") return "rq::struct_calcsize";
         if (builtin == "struct.pack" || builtin == "struct_pack") return "rq::struct_pack";
         if (builtin == "struct.unpack" || builtin == "struct_unpack") return "rq::struct_unpack";
@@ -616,7 +646,7 @@ class Generator {
                     prefix != "net" && prefix != "http" && prefix != "db" && prefix != "time" &&
                     prefix != "json" && prefix != "buffer" && prefix != "struct" && prefix != "ffi" &&
                     prefix != "hash" && prefix != "crypto" && prefix != "path" && prefix != "math" &&
-                    prefix != "datetime") {
+                    prefix != "datetime" && prefix != "arena" && prefix != "wasm" && prefix != "regex") {
                     return "rq::method_call(" + mangleSymbol(prefix) + ", \"" + escapeString(method) + "\", " + genValueVector(call->args) + ")";
                 }
                 return "rq::native_call(\"" + escapeString(canonical) + "\", " + genValueVector(call->args) + ")";
@@ -1031,7 +1061,10 @@ public:
             {"crypto", "crypto"},
             {"path", "path"},
             {"math", "math"},
-            {"datetime", "datetime"}
+            {"datetime", "datetime"},
+            {"arena", "arena"},
+            {"wasm", "wasm"},
+            {"regex", "regex"}
         };
         builtinSymbolAliases.clear();
         for (const auto& entry : namespaceAliases) {
@@ -1080,6 +1113,7 @@ public:
         out << "#include <mutex>\n";
         out << "#include <condition_variable>\n";
         out << "#include <atomic>\n";
+        out << "#include <regex>\n";
         if (!features.usesApp && !features.usesUi) {
             out << "#ifdef _WIN32\n";
             out << "#ifndef WIN32_LEAN_AND_MEAN\n";
@@ -1142,6 +1176,7 @@ public:
         if (features.usesUi) out << "#include \"ModernUI.h\"\n";
         if (features.usesEngine) out << "#include \"rte_api.h\"\n";
         out << "#include \"Arena.h\"\n";
+        out << "#include \"WasmSandbox.h\"\n";
         out << "\n";
 
         RuntimeEmitter::emit(out, features);

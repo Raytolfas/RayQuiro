@@ -108,7 +108,7 @@ private:
 
 public:
     static int run(Interpreter& interpreter) {
-        std::cout << "\033[1;36mRayQuiro\033[0m 1.0 REPL\n";
+        std::cout << "\033[1;36mRayQuiro\033[0m 1.4 REPL\n";
         std::cout << "Type \"exit\" or press Ctrl+C to quit.\n\n";
 
         interpreter.initGlobals();

@@ -76,6 +76,7 @@ inline int closesocket(SOCKET socket) { return ::close(socket); }
 #endif
 #endif
 #include "Arena.h"
+#include "WasmSandbox.h"
 
 class Interpreter {
 public:
@@ -2499,6 +2500,105 @@ private:
         if (builtin == "buffer.set_f64" || builtin == "buffer_set_f64") return builtin_buffer_set_f64(args);
         if (builtin == "buffer.slice" || builtin == "buffer_slice") return builtin_buffer_slice(args);
 
+        if (builtin == "wasm.load" || builtin == "wasm.load_bytes" || builtin == "wasm.init") {
+            if (args.empty()) return Value();
+            std::vector<uint8_t> bytes;
+            if (is_string(args[0])) {
+                const auto& s = std::get<std::string>(args[0].data);
+                bytes.assign(s.begin(), s.end());
+            } else if (is_array(args[0])) {
+                for (const auto& el : *args[0].as_array()) {
+                    bytes.push_back(static_cast<uint8_t>(to_number(el)));
+                }
+            } else if (is_object(args[0])) {
+                auto bufIt = args[0].as_object()->find("__buf_id__");
+                if (bufIt != args[0].as_object()->end()) {
+                    int64_t bId = static_cast<int64_t>(to_number(bufIt->second));
+                    if (auto rawBuf = getBuffer(bId)) {
+                        bytes = rawBuf->bytes;
+                    }
+                }
+            }
+            size_t memLimit = 16 * 1024 * 1024;
+            uint64_t quota = 1000000;
+            if (args.size() > 1 && is_object(args[1])) {
+                auto memIt = args[1].as_object()->find("memory_limit_mb");
+                if (memIt != args[1].as_object()->end()) memLimit = static_cast<size_t>(to_number(memIt->second)) * 1024 * 1024;
+                auto qIt = args[1].as_object()->find("max_instructions");
+                if (qIt != args[1].as_object()->end()) quota = static_cast<uint64_t>(to_number(qIt->second));
+            }
+            int64_t id = WasmManager::instance().create(std::move(bytes), memLimit, quota);
+            auto obj = Value::object();
+            (*obj.as_object())["__type__"] = Value(std::string("WasmModule"));
+            (*obj.as_object())["__wasm_id__"] = Value(static_cast<double>(id));
+            return obj;
+        }
+        if (builtin == "wasm.call" || builtin == "wasm.invoke") {
+            if (args.size() < 2 || !is_object(args[0])) return Value();
+            auto it = args[0].as_object()->find("__wasm_id__");
+            if (it == args[0].as_object()->end()) return Value();
+            int64_t id = static_cast<int64_t>(to_number(it->second));
+            auto instance = WasmManager::instance().get(id);
+            if (!instance) return Value();
+            std::string fnName = to_string(args[1]);
+            std::vector<double> fnArgs;
+            for (size_t i = 2; i < args.size(); ++i) {
+                fnArgs.push_back(to_number(args[i]));
+            }
+            try {
+                double res = instance->invoke(fnName, fnArgs);
+                return Value(res);
+            } catch (const std::exception& e) {
+                throw std::runtime_error("WASM error: " + std::string(e.what()));
+            }
+        }
+        if (builtin == "wasm.memory_size") {
+            if (args.empty() || !is_object(args[0])) return Value(0.0);
+            auto it = args[0].as_object()->find("__wasm_id__");
+            if (it == args[0].as_object()->end()) return Value(0.0);
+            int64_t id = static_cast<int64_t>(to_number(it->second));
+            auto instance = WasmManager::instance().get(id);
+            return Value(instance ? static_cast<double>(instance->getMemorySize()) : 0.0);
+        }
+        if (builtin == "wasm.set_memory_limit") {
+            if (args.size() < 2 || !is_object(args[0])) return Value(false);
+            auto it = args[0].as_object()->find("__wasm_id__");
+            if (it == args[0].as_object()->end()) return Value(false);
+            int64_t id = static_cast<int64_t>(to_number(it->second));
+            auto instance = WasmManager::instance().get(id);
+            if (instance) {
+                instance->setMemoryLimit(static_cast<size_t>(to_number(args[1])));
+                return Value(true);
+            }
+            return Value(false);
+        }
+        if (builtin == "wasm.set_instruction_quota") {
+            if (args.size() < 2 || !is_object(args[0])) return Value(false);
+            auto it = args[0].as_object()->find("__wasm_id__");
+            if (it == args[0].as_object()->end()) return Value(false);
+            int64_t id = static_cast<int64_t>(to_number(it->second));
+            auto instance = WasmManager::instance().get(id);
+            if (instance) {
+                instance->setInstructionQuota(static_cast<uint64_t>(to_number(args[1])));
+                return Value(true);
+            }
+            return Value(false);
+        }
+        if (builtin == "wasm.exports") {
+            if (args.empty() || !is_object(args[0])) return Value::array();
+            auto it = args[0].as_object()->find("__wasm_id__");
+            if (it == args[0].as_object()->end()) return Value::array();
+            int64_t id = static_cast<int64_t>(to_number(it->second));
+            auto instance = WasmManager::instance().get(id);
+            auto arr = Value::array();
+            if (instance) {
+                for (const auto& exp : instance->getExports()) {
+                    arr.as_array()->push_back(Value(exp));
+                }
+            }
+            return arr;
+        }
+
         if (builtin == "arena.create" || builtin == "arena_create") {
             size_t cap = !args.empty() ? static_cast<size_t>(std::max(1024.0, to_number(args[0]))) : 65536;
             int64_t id = ArenaManager::instance().createArena(cap);
@@ -2719,6 +2819,7 @@ private:
         if (builtin == "fs.remove") return builtin_fs_remove(args);
         if (builtin == "fs.read") return builtin_fs_read(args);
         if (builtin == "fs.write") return builtin_fs_write(args);
+        if (builtin == "fs.readdir" || builtin == "fs.read_dir") return builtin_fs_readdir(args);
         if (builtin == "process.run") return builtin_process_run(args);
         if (builtin == "process.exe_dir") return builtin_process_exe_dir(args);
         if (builtin == "env.get") return builtin_env_get(args);
@@ -4651,6 +4752,19 @@ private:
         } catch (...) {
             return Value(false);
         }
+    }
+
+    static Value builtin_fs_readdir(const std::vector<Value>& args) {
+        Value arr = Value::array();
+        if (args.empty()) return arr;
+        std::error_code ec;
+        std::filesystem::path p(to_string(args[0]));
+        if (std::filesystem::exists(p, ec) && std::filesystem::is_directory(p, ec)) {
+            for (const auto& entry : std::filesystem::directory_iterator(p, ec)) {
+                arr.as_array()->push_back(Value(entry.path().filename().string()));
+            }
+        }
+        return arr;
     }
 
     static Value builtin_process_run(const std::vector<Value>& args) {

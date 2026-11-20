@@ -843,6 +843,11 @@ private:
     }
 
 public:
+    static inline std::vector<std::string>& vmProcessArgs() {
+        static std::vector<std::string> s_args;
+        return s_args;
+    }
+
     static std::optional<VMValue> callDefaultBuiltin(const std::string& name, const std::vector<VMValue>& args) {
         if (name.rfind("engine.", 0) == 0 || name.rfind("ui.", 0) == 0 || name.rfind("app.", 0) == 0 || name.rfind("web.", 0) == 0) {
             std::string modName;
@@ -2389,6 +2394,18 @@ public:
                 return VMValue(false);
             }
         }
+        if (name == "fs.readdir" || name == "fs.read_dir") {
+            if (args.empty()) return VMValue(VMValue::Array{});
+            std::string p = toString(args[0]);
+            std::error_code ec;
+            VMValue::Array arr;
+            if (std::filesystem::exists(p, ec) && std::filesystem::is_directory(p, ec)) {
+                for (const auto& entry : std::filesystem::directory_iterator(p, ec)) {
+                    arr.push_back(VMValue(entry.path().filename().string()));
+                }
+            }
+            return VMValue(arr);
+        }
 
         if (name == "time.sleep" || name == "sleep") {
             int duration = args.empty() ? 0 : static_cast<int>(toNumber(args[0]));
@@ -2538,6 +2555,11 @@ public:
 #else
             return VMValue(static_cast<double>(getpid()));
 #endif
+        }
+        if (name == "process.args") {
+            VMValue::Array arr;
+            for (const auto& a : vmProcessArgs()) arr.push_back(VMValue(a));
+            return VMValue(arr);
         }
         if (name == "process.exit") {
             int code = args.empty() ? 0 : static_cast<int>(toNumber(args[0]));

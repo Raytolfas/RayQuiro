@@ -644,6 +644,34 @@ class LSPServer {
             return items;
         }
 
+        if (target == "arena") {
+            items.push_back(makeCompletionItem("create", 3, "arena.create(capacity?) -> Arena", "Create memory arena"));
+            items.push_back(makeCompletionItem("alloc", 3, "arena.alloc(arena, size) -> Buffer", "Sub-allocate memory slice as Buffer"));
+            items.push_back(makeCompletionItem("reset", 3, "arena.reset(arena) -> bool", "Reset arena offset back to zero in O(1)"));
+            items.push_back(makeCompletionItem("used", 3, "arena.used(arena) -> number", "Active allocated bytes in arena"));
+            items.push_back(makeCompletionItem("capacity", 3, "arena.capacity(arena) -> number", "Total capacity in bytes of arena"));
+            items.push_back(makeCompletionItem("destroy", 3, "arena.destroy(arena) -> bool", "Destroy arena and free memory"));
+            return items;
+        }
+
+        if (target == "wasm") {
+            items.push_back(makeCompletionItem("load", 3, "wasm.load(bytes, [options]) -> WasmModule", "Load WebAssembly module"));
+            items.push_back(makeCompletionItem("call", 3, "wasm.call(module, fnName, ...args) -> any", "Invoke WebAssembly export"));
+            items.push_back(makeCompletionItem("memory_size", 3, "wasm.memory_size(module) -> number", "Linear memory size in bytes"));
+            items.push_back(makeCompletionItem("set_memory_limit", 3, "wasm.set_memory_limit(module, limit_bytes) -> null", "Set memory limit"));
+            items.push_back(makeCompletionItem("set_instruction_quota", 3, "wasm.set_instruction_quota(module, quota) -> null", "Set instruction step quota"));
+            items.push_back(makeCompletionItem("exports", 3, "wasm.exports(module) -> array", "List exported function names"));
+            return items;
+        }
+
+        if (target == "regex") {
+            items.push_back(makeCompletionItem("test", 3, "regex.test(str, pattern) -> bool", "Test pattern match"));
+            items.push_back(makeCompletionItem("match", 3, "regex.match(str, pattern) -> array", "Find pattern matches"));
+            items.push_back(makeCompletionItem("replace", 3, "regex.replace(str, pattern, repl) -> string", "Replace pattern matches"));
+            items.push_back(makeCompletionItem("split", 3, "regex.split(str, pattern) -> array", "Split string by regex"));
+            return items;
+        }
+
         std::regex structRegex(R"(struct\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{([^}]*)\})");
         textBegin = docText.cbegin();
         while (std::regex_search(textBegin, docText.cend(), match, structRegex)) {
@@ -736,6 +764,12 @@ class LSPServer {
 
         std::vector<std::pair<std::string, std::string>> globals = {
             {"print", "print(val) -> null"},
+            {"println", "println(val) -> null"},
+            {"@embed_file", "@embed_file(path) -> Buffer"},
+            {"@embed_bytes", "@embed_bytes(path) -> Buffer"},
+            {"@embed_str", "@embed_str(path) -> string"},
+            {"@embed_string", "@embed_string(path) -> string"},
+            {"@embed_json", "@embed_json(path) -> value"},
             {"len", "len(val) -> number"},
             {"slice", "slice(target, start, [end]) -> value"},
             {"str", "str(val) -> string"},
@@ -875,6 +909,15 @@ class LSPServer {
         else if (word == "fs.read") doc = "**fs.read**(path) -> string\n\nReads and returns the complete text contents of a file.";
         else if (word == "fs.write") doc = "**fs.write**(path, text) -> null\n\nWrites text contents to a file, creating it if it does not exist.";
         else if (word == "datetime.now") doc = "**datetime.now**() -> object\n\nReturns current local date and time object containing year, month, day, hour, minute, second.";
+        else if (word == "println") doc = "**println**(value) -> null\n\nPrints a string representation of the given value with a newline to standard output.";
+        else if (word == "arena" || word == "arena.create") doc = "**arena** namespace\n\nFast monotonic bump-allocator memory system (`create`, `alloc`, `used`, `capacity`, `reset`, `destroy`).";
+        else if (word == "wasm" || word == "wasm.load") doc = "**wasm** namespace\n\nWebAssembly runtime sandbox (`load`, `call`, `memory_size`, `set_memory_limit`, `set_instruction_quota`, `exports`).";
+        else if (word == "regex" || word == "regex.test" || word == "regex.match") doc = "**regex** namespace\n\nRegular expressions (`test`, `match`, `replace`, `split`).";
+        else if (word == "@embed_file" || word == "@embed_str" || word == "@embed_string") doc = "**@embed_file / @embed_str**(\"path\") -> string\n\nCompile-time embed directive inserting file content as a string literal.";
+        else if (word == "@embed_bytes") doc = "**@embed_bytes**(\"path\") -> buffer\n\nCompile-time embed directive inserting binary file content into a memory buffer.";
+        else if (word == "@embed_json") doc = "**@embed_json**(\"path\") -> object / array\n\nCompile-time embed directive parsing and inlining a JSON file.";
+        else if (word == "fs.readdir" || word == "fs.read_dir") doc = "**fs.readdir**(path) -> array\n\nReads directory entries and returns an array of filenames.";
+        else if (word == "process.args") doc = "**process.args**() -> array\n\nReturns command-line arguments passed to the script.";
 
         if (doc.empty()) return dap::json();
 
@@ -922,7 +965,7 @@ public:
 
                 dap::json serverInfo;
                 serverInfo["name"] = "rayquiro-lsp";
-                serverInfo["version"] = "1.0";
+                serverInfo["version"] = "1.4.0";
                 result["serverInfo"] = serverInfo;
 
                 sendResponse(id, result);
